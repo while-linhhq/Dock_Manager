@@ -1,0 +1,55 @@
+---
+description: Frontend naming — React/Next.js files, components, hooks, routes, query keys, tests, data-testid
+alwaysApply: false
+---
+# Naming Conventions (Frontend)
+
+> **Scope:** React, Next.js 14+ (App Router), TypeScript, Tailwind, shadcn/ui.  
+> **Cache, DB, queues, env vars, REST paths** → `naming-conventions-backend.mdc`.  
+> **TS/JS symbols** (camelCase, PascalCase) → `code-style.mdc`.
+
+## 📁 Files & folders
+
+| Kind | Rule | Examples |
+|------|------|----------|
+| Source files | **kebab-case** | `user-card.tsx`, `auth-guard.tsx`, `use-cart.ts` |
+| Next.js entries | **Framework-fixed names** | `page.tsx`, `layout.tsx`, `loading.tsx`, `error.tsx`, `not-found.tsx`, `template.tsx`, `route.ts`, `default.tsx` |
+| App Router segments | **kebab-case** directories | `app/user-settings/page.tsx`, `app/blog/[slug]/page.tsx` |
+| Route groups | **Lowercase, kebab in parens** | `app/(marketing)/`, `app/(dashboard)/` |
+| `components/ui/` (shadcn) | **kebab-case** matching CLI output | `button.tsx`, `dropdown-menu.tsx` |
+| Feature folders | **kebab-case**, plural collections | `components/`, `hooks/`, `features/user-profile/` |
+| Tests | Match source + suffix | `user-card.test.tsx`, or `__tests__/user-card.test.tsx` |
+| Public static assets | **kebab-case** | `hero-banner.webp`, `logo-dark.svg` |
+
+## ⚛️ Components & types
+
+- **Component name (export):** `PascalCase` — `UserCard`, `DateRangePicker`.
+- **Props interface/type:** suffix `Props` — `UserCardProps`, or `interface UserCardProps`.
+- **DOM `id` (when needed):** kebab-case — `email-input`, `checkout-summary`.
+- **Types / interfaces (non-component):** `PascalCase` — `CheckoutState`, `ApiListResponse<T>`.
+
+## 🪝 Hooks
+
+- **Function name:** `use` + `PascalCase` remainder — `useAuth`, `useOnlineStatus`.
+- **File:** kebab-case — `use-auth.ts`, `use-online-status.ts`.
+- **Return tuple** (if any): stable names — `[data, setData]`, not vague `[x, y]` for public hooks.
+
+## 🗺️ Zustand & TanStack Query
+
+- **Store module file:** kebab-case — `cart-store.ts`, `use-cart-store.ts` (pick one pattern per repo).
+- **Store hook:** `useCartStore` (camelCase), matches file purpose.
+- **Query keys:** **semantic tuples**, stable and hierarchical — `['users', userId]`, `['products', 'list', filters]`. Avoid string-only keys for entities that need invalidation by id.
+
+## 🧪 E2E / test selectors
+
+- **`data-testid`:** **kebab-case**, role-ish — `login-form`, `checkout-submit`, `nav-user-menu`.
+- Prefer stable ids tied to behavior, not copy text.
+
+## 🎨 CSS & Tailwind
+
+- Prefer Tailwind utilities; **no** ad-hoc BEM in class strings unless legacy.
+- **`cva` / variants** (shadcn): variant keys **camelCase** in code; class groups stay Tailwind tokens.
+
+## 📦 Imports
+
+- Use project alias consistently (`@/components/...`, `@/lib/...`) as configured; paths mirror **kebab-case** file names.

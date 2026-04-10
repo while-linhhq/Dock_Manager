@@ -1,0 +1,65 @@
+---
+alwaysApply: true
+---
+# Cursor AI Configuration
+
+## Project Overview
+This project uses Cursor AI as an intelligent agent to assist with development tasks.
+
+## Core Instructions
+- Always follow the rules defined in `.cursor/rules/` (core rule `.mdc` files)
+- **Always applied** rules load every chat (compact baseline). **Apply intelligently** rules load when Cursor matches the task or file context — still mandatory when that work is in scope; use `@rule` or name the rule if you need it explicitly.
+- Use command rules from `.cursor/rules/command-*.mdc` for workflows (rule picker / `@command-*`)
+- Leverage skills from `.cursor/skills/` for specialized operations
+- Use agent rules in `.cursor/rules/agent-*.mdc` when the task matches that role (apply intelligently)
+
+## Always-applied baseline
+These `.mdc` files use `alwaysApply: true` (loaded every time):
+
+- `tech-stack.mdc` — approved stack
+- `security.mdc` — security (CRITICAL)
+- `clean-code.mdc`, `code-style.mdc`, `error-handling.mdc` — code quality baseline
+- `code.mdc` — interaction preferences for the AI
+
+## Mandatory when relevant (apply intelligently)
+These rules are **not** always injected. Follow them when the task matches their scope (Cursor may attach them automatically, or use `@mention`):
+
+### Architecture & design
+- `system-design.mdc` — CAP, caching, scaling, queues, reliability
+- `project-structure.mdc` — Folder layout and layered architecture
+- `api-conventions.mdc` — REST design standards
+
+### Data & naming
+- `naming-conventions-backend.mdc` — Cache keys, DB, queues, events, env vars, REST URLs, server layout
+- `naming-conventions-frontend.mdc` — React/Next files, components, hooks, routes, query keys, testids
+- `database.mdc` — Queries, transactions, migrations
+
+### Operations & tooling
+- `monitoring.mdc` — Logs, metrics, Grafana, alerting
+- `testing.mdc` — Coverage standards and test patterns
+- `git-workflow.mdc` — Branches, conventional commits, PR expectations
+- `ctx7.mdc` — Prefer Context7 MCP for external library documentation when docs need to be current
+
+## Available Commands
+- `command-deploy.mdc` — Deploy the application
+- `command-fix-issue.mdc` — Analyze and fix a reported issue
+- `command-review.mdc` — Perform a code review
+
+## Available Agents
+Specialized agent rules in `.cursor/rules/agent-*.mdc`. Invoke the right agent for each task:
+
+| Agent | Rule file | When to Invoke |
+|-------|-----------|----------------|
+| Frontend Developer | `agent-frontend.mdc` | Components, pages, routing, state, performance |
+| Backend Developer | `agent-backend.mdc` | APIs, services, DB queries, background jobs |
+| Project Manager | `agent-project-manager.mdc` | User stories, sprint planning, status reports |
+| Systems Architect | `agent-systems-architect.mdc` | Architecture decisions, ADRs, system design, scalability |
+| UI/UX Designer | `agent-ui-ux-designer.mdc` | Design system, wireframes, UX patterns, accessibility |
+| QA Engineer | `agent-qa.mdc` | Test plans, writing tests, bug reports, coverage |
+| Copywriter/SEO | `agent-copywriter-seo.mdc` | Page copy, microcopy, meta tags, SEO optimization |
+
+## Agent Behavior
+- Be proactive in identifying potential issues
+- Always explain changes before making them
+- Prefer incremental changes over large rewrites
+- Test assumptions before acting

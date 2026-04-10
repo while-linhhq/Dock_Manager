@@ -1,0 +1,50 @@
+---
+description: Mandatory structure and coding conventions for the FastAPI backend in the /server directory.
+globs: server/**/*.py, server/**/__init__.py, server/app/**/*.py
+---
+# FastAPI Backend Structure Rules
+
+This rule defines the mandatory directory structure and coding conventions for the FastAPI backend located in the `/server` directory.
+
+## 🎯 Scope
+- **Directory**: `server/`
+- **Trigger**: Apply when working on Python files within the `server/` directory or when the task involves FastAPI backend development.
+
+## 📂 Directory Structure & Responsibilities
+
+All backend logic must follow this layered architecture:
+
+1.  **`app/api/`**: API routing and versioning.
+    - `v1/endpoints/`: Route definitions, HTTP parameters, and calling Services. **NO business logic here.**
+2.  **`app/services/`**: The core Business Logic layer. Orchestrates repositories and handles complex calculations.
+3.  **`app/repositories/`**: The Data Access layer. The ONLY place where database queries (SQLAlchemy) are executed.
+4.  **`app/models/`**: SQLAlchemy ORM models defining the database schema.
+5.  **`app/schemas/`**: Pydantic models for request/response validation and serialization.
+6.  **`app/core/`**: Global configuration (`config.py`), security (`security.py`), and constants.
+7.  **`app/db/`**: Database session management and migrations (`session.py`).
+8.  **`app/utils/`**: Common helper functions and utilities.
+
+## 📏 Coding Conventions
+
+### 1. Naming
+- **Files & Directories**: `snake_case` (e.g., `user_service.py`, `auth_endpoints.py`).
+- **Classes**: `PascalCase` (e.g., `UserCreate`, `UserRepository`).
+- **Functions & Variables**: `snake_case` (e.g., `get_user_by_id`).
+
+### 2. Imports
+- Always use **Absolute Imports** starting from `app`.
+- ✅ `from app.core.config import settings`
+- ❌ `from ..core.config import settings`
+
+### 3. Data Flow (Mandatory)
+1. **Client** → `api/endpoints` (Validate input via **Schemas**)
+2. `api/endpoints` → `services` (Handle business logic)
+3. `services` → `repositories` (Query DB via **Models**)
+4. `repositories` → `services` → `api/endpoints` → **Client** (Return data via **Schemas**)
+
+## 🛠️ Tech Stack Requirements
+- **Framework**: FastAPI
+- **ORM**: SQLAlchemy
+- **Validation**: Pydantic v2
+- **Database**: PostgreSQL
+- **Environment**: Conda (`demo_core`)

@@ -1,0 +1,49 @@
+---
+description: Applied when creating or modifying the Frontend directory structure (React/Vite) in @client
+globs: client/src/**/*
+alwaysApply: true
+---
+
+# Frontend Feature-Based Architecture
+
+Follow this directory structure for all changes in @client (React + Vite + TypeScript + Zustand + Tailwind CSS):
+
+## 1. Feature-Based (src/features/)
+All domain logic must reside within its corresponding feature folder. A feature folder MUST ONLY export via `index.ts` (Public API).
+Mandatory structure inside each feature:
+- `components/`: UI components exclusive to this feature (e.g., `LoginForm.tsx`).
+- `hooks/`: Custom hooks specific to the feature (e.g., `useAuth.ts`).
+- `services/`: API calls related to the feature (e.g., `authApi.ts`).
+- `store/`: State management using Zustand (e.g., `authStore.ts`).
+- `types/`: Feature-specific data types (e.g., `auth.types.ts`).
+- `views/`: Feature-level "screens" combining multiple sub-components (e.g., `LoginView.tsx`).
+- `index.ts`: Public API of the feature; exports what is allowed for external use (Views, hooks, store).
+
+## 2. Shared Directories (src/)
+- `components/`: Reusable, generic UI components (e.g., `Button/`, `Modal/`, `Input/`).
+- `layouts/`: Application layout wrappers (e.g., `MainLayout.tsx`, `AuthLayout.tsx`).
+- `pages/`: Route-level components used to assemble features (e.g., `LoginPage.tsx` wrapping `LoginView`).
+- `router/`: Routing layer, defining `paths.ts` and `index.tsx` (AppRouter).
+- `hooks/`: App-wide shared hooks (e.g., `useDebounce.ts`).
+- `services/`: Shared services (e.g., `httpClient.ts`).
+- `utils/`: Utility functions and helpers (e.g., `cn.ts` for Tailwind, `formatDate.ts`).
+- `styles/`: Global styles and variables.
+- `types/`: App-wide types and interfaces.
+
+## 3. Naming Conventions
+- **Directories & Files**: kebab-case (e.g., `user-profile/`, `auth-api.ts`).
+- **Components**: PascalCase (e.g., `Button.tsx`, `MainLayout.tsx`).
+- **Hooks**: camelCase starting with 'use' (e.g., `useAuth.ts`).
+- **Constants**: UPPER_SNAKE_CASE (e.g., `API_BASE_URL`).
+
+## 4. Tech Stack
+- **State Management**: Use **Zustand**.
+- **Styling**: Use **Tailwind CSS** with the `cn()` helper (`clsx` + `tailwind-merge`).
+- **Routing**: Use **react-router-dom**.
+- **Icons**: Use **lucide-react**.
+
+## 5. Coding Principles
+- Favor **Composition** over inheritance.
+- Keep components small and focused (under 100-150 lines); extract helpers if necessary.
+- Always use `paths.ts` for URL management; do not hard-code strings in the codebase.
+- All API calls must go through `services/` with clear TypeScript definitions.

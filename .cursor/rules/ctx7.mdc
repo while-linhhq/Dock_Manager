@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+IMPORTANT: 
+- Always use Context7 MCP when I ask about library documentation,
+API references, or need code examples from external packages.
+- Think like a senior engineer, use the best possible coding patterns, and consider edge cases for maintainability.
