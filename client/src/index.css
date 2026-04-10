@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Roboto", "Inter", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+@variant dark (&:where(.dark, .dark *));
+
+/* Base styles to increase clarity and size */
+@layer base {
+  html {
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+    font-optical-sizing: auto;
+  }
+
+  body {
+    @apply font-sans;
+    line-height: 1.6;
+    text-shadow: 0 0 1px rgba(0,0,0,0.01); /* Subtle shadow to help with subpixel rendering */
+  }
+
+  .dark body {
+    text-shadow: 0 0 1px rgba(255,255,255,0.01);
+  }
+
+  /* Make system-style mono text even sharper */
+  .font-mono {
+    letter-spacing: -0.01em;
+    font-weight: 500;
+    -webkit-font-smoothing: subpixel-antialiased;
+  }
+}
