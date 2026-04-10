@@ -16,3 +16,4 @@ build/
 .ruff_cache/
 *.sqlite3
 *.db
+test_video_persist_result.json
