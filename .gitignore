@@ -1,0 +1,15 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Local seed / credentials (use register.example.json)
+register.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
