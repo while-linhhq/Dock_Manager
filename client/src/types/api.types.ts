@@ -152,6 +152,13 @@ export type DashboardSummary = {
   revenue_chart_manual: number[];
   top_ship_labels: string[];
   top_ship_counts: number[];
+  /** Trong kỳ (ngày/tháng/năm), múi giờ VN — khớp bộ lọc dashboard */
+  detections_review_accepted: number;
+  detections_review_not_accepted: number;
+  detections_review_unassigned: number;
+  /** Trục thời gian lượt nhận diện theo kỳ (giờ / ngày / tháng); thiếu → FE fallback 24h */
+  detection_volume_labels?: string[];
+  detection_volume_counts?: number[];
 };
 
 export type CameraRead = {

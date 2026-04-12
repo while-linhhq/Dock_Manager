@@ -5,6 +5,7 @@ import { BarChart3, RefreshCw } from 'lucide-react';
 import type {
   DashboardPeriod,
   DashboardStats,
+  DashboardSummary,
   DetectionRead,
 } from '../../../types/api.types';
 import { cn } from '../../../utils/cn';
@@ -50,12 +51,21 @@ function periodLabelVi(p: DashboardPeriod | undefined): string {
   return 'hôm nay';
 }
 
+function detectionVolumeChartTitle(p: DashboardPeriod): string {
+  if (p === 'month') {
+    return 'Lượt nhận diện theo ngày trong tháng';
+  }
+  if (p === 'year') {
+    return 'Lượt nhận diện theo tháng trong năm';
+  }
+  return 'Lượt nhận diện theo giờ trong ngày';
+}
+
 export type DashboardAiAnalyticsChartsProps = {
   detections: DetectionRead[];
   stats: DashboardStats | null;
-  summaryShipLabels?: string[];
-  summaryShipCounts?: number[];
-  summaryPeriod?: DashboardPeriod;
+  summary: DashboardSummary | null;
+  summaryPeriod: DashboardPeriod;
   isLoading: boolean;
   onRefresh: () => void;
 };
@@ -63,8 +73,7 @@ export type DashboardAiAnalyticsChartsProps = {
 export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProps> = ({
   detections,
   stats,
-  summaryShipLabels,
-  summaryShipCounts,
+  summary,
   summaryPeriod,
   isLoading,
   onRefresh,
@@ -72,8 +81,27 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
   const isDark = useHtmlDarkClass();
   const base = useMemo(() => apexCommon(isDark), [isDark]);
 
-  const hourly = useMemo(() => buildDetectionsByHourLast24h(detections), [detections]);
+  const volumeSeries = useMemo(() => {
+    const labels = summary?.detection_volume_labels;
+    const counts = summary?.detection_volume_counts;
+    if (
+      labels &&
+      labels.length > 0 &&
+      counts &&
+      counts.length === labels.length
+    ) {
+      return {
+        categories: labels,
+        data: counts.map((n) => Number(n)),
+        fromSummary: true as const,
+      };
+    }
+    const fb = buildDetectionsByHourLast24h(detections);
+    return { ...fb, fromSummary: false as const };
+  }, [summary, detections]);
   const topShips = useMemo(() => {
+    const summaryShipLabels = summary?.top_ship_labels;
+    const summaryShipCounts = summary?.top_ship_counts;
     if (
       summaryShipLabels?.length &&
       summaryShipCounts &&
@@ -82,13 +110,35 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
       return { labels: summaryShipLabels, counts: summaryShipCounts };
     }
     return buildTopShipCounts(detections, 8);
-  }, [summaryShipLabels, summaryShipCounts, detections]);
-  const acceptance = useMemo(() => buildAcceptanceSplit(detections), [detections]);
+  }, [summary, detections]);
+  const acceptance = useMemo(() => {
+    if (
+      summary &&
+      typeof summary.detections_review_accepted === 'number' &&
+      typeof summary.detections_review_not_accepted === 'number' &&
+      typeof summary.detections_review_unassigned === 'number'
+    ) {
+      return {
+        labels: ['Đã xác nhận', 'Chưa xác nhận', 'Chưa gán'] as const,
+        series: [
+          summary.detections_review_accepted,
+          summary.detections_review_not_accepted,
+          summary.detections_review_unassigned,
+        ],
+      };
+    }
+    return buildAcceptanceSplit(detections);
+  }, [summary, detections]);
+  const acceptanceTotal = useMemo(
+    () => acceptance.series.reduce((a, b) => a + b, 0),
+    [acceptance.series],
+  );
   const confidence = useMemo(() => buildConfidenceBuckets(detections), [detections]);
   const kpi = useMemo(() => formatStatsSummary(stats), [stats]);
 
-  const areaOptions: ApexOptions = useMemo(
-    () => ({
+  const areaOptions: ApexOptions = useMemo(() => {
+    const many = volumeSeries.categories.length > 14;
+    return {
       ...base,
       chart: { ...base.chart, type: 'area', sparkline: { enabled: false } },
       stroke: { curve: 'smooth', width: 2 },
@@ -102,18 +152,20 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
         },
       },
       colors: ['#2563eb'],
-      xaxis: { categories: hourly.categories, labels: { rotate: -45, rotateAlways: false } },
+      xaxis: {
+        categories: volumeSeries.categories,
+        labels: { rotate: many ? -45 : 0, rotateAlways: many },
+      },
       yaxis: { min: 0, tickAmount: 4, labels: { formatter: (v) => String(Math.round(Number(v))) } },
       tooltip: { y: { formatter: (v) => `${v} lượt` } },
-    }),
-    [base, hourly.categories],
-  );
+    };
+  }, [base, volumeSeries.categories]);
 
   const donutOptions: ApexOptions = useMemo(
     () => ({
       ...base,
       chart: { ...base.chart, type: 'donut' },
-      labels: acceptance.labels,
+      labels: [...acceptance.labels],
       colors: ['#059669', '#d97706', '#6b7280'],
       plotOptions: {
         pie: {
@@ -124,7 +176,7 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
               total: {
                 show: true,
                 label: 'Tổng',
-                formatter: () => String(detections.length),
+                formatter: () => String(acceptanceTotal),
               },
             },
           },
@@ -132,7 +184,7 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
       },
       tooltip: { y: { formatter: (v) => `${v} dòng` } },
     }),
-    [base, acceptance.labels, detections.length],
+    [base, acceptance.labels, acceptanceTotal],
   );
 
   const barShipOptions: ApexOptions = useMemo(
@@ -180,8 +232,9 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
               Phân tích dữ liệu nhận diện
             </h3>
             <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 max-w-xl">
-              Biểu đồ từ mẫu đã tải (tối đa 120 dòng gần nhất). Chuyển tab «Xem trực tiếp» để xem luồng
-              camera.
+              Biểu đồ lượt nhận diện, trạng thái duyệt và top tàu theo kỳ{' '}
+              <span className="font-semibold">{periodLabelVi(summaryPeriod)}</span> (múi giờ VN). Phân bố độ tin cậy
+              vẫn theo tối đa 120 dòng đã tải. Tab «Xem trực tiếp» — luồng camera.
             </p>
           </div>
         </div>
@@ -213,20 +266,27 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="lg:col-span-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-1 px-1">
-            Lượt nhận diện theo giờ (24h gần nhất)
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-0.5 px-1">
+            {detectionVolumeChartTitle(summaryPeriod)}
+          </p>
+          <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
+            Kỳ: {periodLabelVi(summaryPeriod)}
+            {!volumeSeries.fromSummary ? ' — đang dùng mẫu 24h gần nhất (API summary chưa có chuỗi khối lượng).' : ''}
           </p>
           <ReactApexChart
             options={areaOptions}
-            series={[{ name: 'Detections', data: hourly.data }]}
+            series={[{ name: 'Lượt nhận diện', data: volumeSeries.data }]}
             type="area"
             height={280}
           />
         </div>
 
         <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-1 px-1">
-            Trạng thái duyệt
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-0.5 px-1">
+            Trạng thái duyệt (kỳ: {periodLabelVi(summaryPeriod)})
+          </p>
+          <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
+            Đếm theo cùng kỳ ngày / tháng / năm đã chọn phía trên dashboard (Asia/Ho_Chi_Minh).
           </p>
           <ReactApexChart options={donutOptions} series={acceptance.series} type="donut" height={300} />
         </div>

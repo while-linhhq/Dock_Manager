@@ -174,8 +174,7 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
         <DashboardAiAnalyticsCharts
           detections={detections}
           stats={stats}
-          summaryShipLabels={summary?.top_ship_labels}
-          summaryShipCounts={summary?.top_ship_counts}
+          summary={summary}
           summaryPeriod={summaryPeriod}
           isLoading={isLoading}
           onRefresh={onRefreshAnalytics}
