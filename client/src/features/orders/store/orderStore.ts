@@ -18,7 +18,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   orders: [],
   isLoading: false,
   error: null,
-  fetchOrders: async (skip, limit, status) => {
+  fetchOrders: async (skip = 0, limit = 500, status) => {
     set({ isLoading: true, error: null });
     try {
       const orders = await ordersApi.getOrders(skip, limit, status);

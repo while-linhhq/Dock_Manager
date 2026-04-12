@@ -9,8 +9,22 @@ export type VesselCreate = {
   is_active?: boolean;
 }
 
+function toApiVesselPayload(data: Partial<VesselCreate> & Record<string, unknown>) {
+  const vessel_type_id =
+    data.vessel_type_id !== undefined && data.vessel_type_id !== ''
+      ? Number(data.vessel_type_id)
+      : undefined;
+  return {
+    ship_id: data.ship_id,
+    name: data.name,
+    vessel_type_id,
+    owner: data.owner_info,
+    is_active: data.is_active,
+  };
+}
+
 export type VesselTypeCreate = {
-  name: string;
+  type_name: string;
   description?: string;
 }
 
@@ -22,10 +36,10 @@ export const vesselsApi = {
     return httpClient.get<VesselRead>(`/vessels/${id}`);
   },
   createVessel: async (data: VesselCreate): Promise<VesselRead> => {
-    return httpClient.post<VesselRead>('/vessels/', data);
+    return httpClient.post<VesselRead>('/vessels/', toApiVesselPayload(data));
   },
   updateVessel: async (id: string, data: Partial<VesselCreate>): Promise<VesselRead> => {
-    return httpClient.put<VesselRead>(`/vessels/${id}`, data);
+    return httpClient.put<VesselRead>(`/vessels/${id}`, toApiVesselPayload(data));
   },
   deleteVessel: async (id: string): Promise<void> => {
     return httpClient.delete(`/vessels/${id}`);

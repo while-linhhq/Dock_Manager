@@ -21,6 +21,7 @@ interface PortState {
   fetchConfigs: () => Promise<void>;
   verifyDetection: (id: string, data: DetectionVerify) => Promise<void>;
   upsertCamera: (id: string | null, data: CameraCreate) => Promise<void>;
+  deleteCamera: (id: string | number) => Promise<void>;
   updateConfig: (key: string, data: PortConfigUpdate) => Promise<void>;
   upsertConfig: (key: string | null, data: PortConfigCreate | PortConfigUpdate) => Promise<void>;
   deleteConfig: (key: string) => Promise<void>;
@@ -83,6 +84,16 @@ export const usePortStore = create<PortState>((set, get) => ({
       await get().fetchCameras();
     } catch (err: any) {
       set({ error: err.message || 'Failed to save camera', isLoading: false });
+      throw err;
+    }
+  },
+  deleteCamera: async (id) => {
+    set({ isLoading: true, error: null });
+    try {
+      await portApi.deleteCamera(id);
+      await get().fetchCameras();
+    } catch (err: any) {
+      set({ error: err.message || 'Failed to delete camera', isLoading: false });
       throw err;
     }
   },

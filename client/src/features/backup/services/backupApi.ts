@@ -1,5 +1,5 @@
 import { httpClient } from '../../../services/httpClient';
-import type { AuditLogRead, DetectionRead } from '../../../types/api.types';
+import type { AuditLogRead } from '../../../types/api.types';
 
 export type DetectionMediaRead = {
   id: string;

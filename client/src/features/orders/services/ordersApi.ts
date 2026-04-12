@@ -16,7 +16,7 @@ export type OrderUpdate = {
 }
 
 export const ordersApi = {
-  getOrders: async (skip: number = 0, limit: number = 100, status?: string): Promise<OrderRead[]> => {
+  getOrders: async (skip: number = 0, limit: number = 500, status?: string): Promise<OrderRead[]> => {
     const params = new URLSearchParams({ skip: skip.toString(), limit: limit.toString() });
     if (status) params.append('status', status);
     return httpClient.get<OrderRead[]>(`/orders/?${params.toString()}`);

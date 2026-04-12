@@ -108,9 +108,15 @@ export const MainLayout: React.FC = () => {
             </div>
             <div className="flex-1 min-w-0">
               <p className={cn("text-xs font-bold truncate uppercase", isDarkMode ? "text-white" : "text-gray-900")}>
-                {user?.name || 'Nhân Viên'}
+                {user?.full_name || 'Nhân Viên'}
               </p>
-              <p className="text-[10px] text-gray-500 truncate font-mono uppercase">{user?.role || 'Quản Trị'}</p>
+              <p className="text-[10px] text-gray-500 truncate font-mono uppercase">
+                {user?.role == null
+                  ? 'Quản Trị'
+                  : typeof user.role === 'string'
+                    ? user.role
+                    : (user.role.name ?? user.role.role_name ?? 'Quản Trị')}
+              </p>
             </div>
           </div>
           <button

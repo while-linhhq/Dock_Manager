@@ -53,6 +53,9 @@ export const portApi = {
   updateCamera: async (id: string, data: Partial<CameraCreate>): Promise<CameraRead> => {
     return httpClient.put<CameraRead>(`/cameras/${id}`, data);
   },
+  deleteCamera: async (id: string | number): Promise<void> => {
+    await httpClient.delete(`/cameras/${id}`);
+  },
   getPortConfigs: async (): Promise<PortConfigRead[]> => {
     return httpClient.get<PortConfigRead[]>('/port-configs/');
   },
