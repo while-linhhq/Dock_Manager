@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 
 class PortLogBase(BaseModel):
     seq: Optional[int] = None
+    ships_completed_today: Optional[int] = None
     logged_at: Optional[datetime] = None
     track_id: Optional[str] = None
     voted_ship_id: Optional[str] = None

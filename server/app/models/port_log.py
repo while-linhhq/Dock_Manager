@@ -6,7 +6,8 @@ class PortLog(Base):
     __tablename__ = "port_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    seq = Column(Integer) # Sequence number for the day
+    seq = Column(Integer)  # Sequence number for the day
+    ships_completed_today = Column(Integer, nullable=True)  # OCR audit parity: cumulative count
     logged_at = Column(DateTime, default=datetime.datetime.utcnow)
     track_id = Column(String, index=True)
     voted_ship_id = Column(String, index=True)

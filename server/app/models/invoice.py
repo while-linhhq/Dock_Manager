@@ -18,7 +18,10 @@ class Invoice(Base):
     payment_status = Column(String(20), default='UNPAID')
     due_date = Column(Date, nullable=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     notes = Column(Text, nullable=True)
+    # USER = tạo tay; ORDER_AUTO = sinh khi tạo đơn; AI = pipeline tự động
+    creation_source = Column(String(20), nullable=False, default='USER', server_default='USER')
     created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

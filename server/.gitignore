@@ -18,6 +18,9 @@ build/
 *.db
 test_video_persist_result.json
 
+# Generated exports (local downloads)
+exports/
+
 # Model weights (download at deploy/runtime)
 *.pt
 *.onnx

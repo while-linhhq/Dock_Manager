@@ -13,6 +13,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 from app.db.session import engine, Base
+from app.db.schema_patches import apply_schema_patches
 
 # Import all models so Base.metadata picks them up
 import app.models  # noqa: F401
@@ -50,6 +51,7 @@ def init_db() -> None:
     logger.info('Initializing database...')
 
     create_tables_via_orm()
+    apply_schema_patches()
 
     # Seed data and indexes via SQL file
     run_init_sql()

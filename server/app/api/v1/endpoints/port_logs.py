@@ -1,14 +1,38 @@
+from datetime import date, datetime
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from datetime import date
 from typing import List, Optional
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.port_log import PortLogRead
+from app.schemas.port_log import PortLogCreate, PortLogRead
 from app.repositories.port_log_repository import port_log_repo
 
 router = APIRouter()
+
+
+@router.post('/', response_model=PortLogRead, status_code=201)
+def create_port_log(
+    data: PortLogCreate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    payload = data.model_dump(exclude_unset=True)
+    now = datetime.utcnow()
+    if not payload.get('track_id'):
+        payload['track_id'] = f'mcp_{uuid4().hex}'
+    payload.setdefault('seq', 0)
+    payload.setdefault('voted_ship_id', 'UNKNOWN')
+    payload.setdefault('logged_at', now)
+    payload.setdefault('first_seen_at', now)
+    payload.setdefault('last_seen_at', now)
+    payload.setdefault('confidence', 0.0)
+    payload.setdefault('ocr_attempts', 0)
+    payload.setdefault('vote_summary', {})
+    payload.setdefault('schema_version', 3)
+    return port_log_repo.create(db, payload)
 
 
 @router.get('/', response_model=List[PortLogRead])

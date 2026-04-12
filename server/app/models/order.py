@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Numeric
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -11,6 +11,7 @@ class Order(Base):
     order_number = Column(String(50), unique=True, nullable=False, index=True)
     vessel_id = Column(Integer, ForeignKey('vessels.id', ondelete='SET NULL'), nullable=True)
     description = Column(Text, nullable=True)
+    total_amount = Column(Numeric(12, 2), nullable=True)
     status = Column(String(20), default='PENDING')  # PENDING | COMPLETED | CANCELLED
     notes = Column(Text, nullable=True)
     created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)

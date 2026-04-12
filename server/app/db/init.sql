@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_number VARCHAR(50) UNIQUE NOT NULL,
     vessel_id    INTEGER REFERENCES vessels(id) ON DELETE SET NULL,
     description  TEXT,
+    total_amount DECIMAL(12, 2),
     status       VARCHAR(20) DEFAULT 'PENDING',
     notes        TEXT,
     created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -121,11 +122,14 @@ CREATE TABLE IF NOT EXISTS invoices (
     payment_status  VARCHAR(20) DEFAULT 'UNPAID',
     due_date        DATE,
     paid_at         TIMESTAMP,
+    deleted_at      TIMESTAMPTZ,
     notes           TEXT,
+    creation_source VARCHAR(20) NOT NULL DEFAULT 'USER',
     created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW(),
-    CONSTRAINT chk_invoices_payment_status CHECK (payment_status IN ('UNPAID', 'PARTIAL', 'PAID', 'OVERDUE', 'CANCELLED'))
+    CONSTRAINT chk_invoices_payment_status CHECK (payment_status IN ('UNPAID', 'PARTIAL', 'PAID', 'OVERDUE', 'CANCELLED')),
+    CONSTRAINT chk_invoices_creation_source CHECK (creation_source IN ('USER', 'ORDER_AUTO', 'AI'))
 );
 
 CREATE TABLE IF NOT EXISTS invoice_items (
@@ -191,6 +195,7 @@ CREATE TABLE IF NOT EXISTS cameras (
 CREATE TABLE IF NOT EXISTS port_logs (
     id             SERIAL PRIMARY KEY,
     seq            INTEGER,
+    ships_completed_today INTEGER,
     logged_at      TIMESTAMP DEFAULT NOW(),
     track_id       VARCHAR(100),
     voted_ship_id  VARCHAR(50),

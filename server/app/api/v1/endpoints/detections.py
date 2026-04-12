@@ -1,15 +1,33 @@
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.detection import DetectionRead, DetectionVerify
+from app.schemas.detection import DetectionCreate, DetectionRead, DetectionVerify
 from app.schemas.detection_media import DetectionMediaRead
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 
 router = APIRouter()
+
+
+@router.post('/', response_model=DetectionRead, status_code=201)
+def create_detection(
+    data: DetectionCreate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    payload = data.model_dump(exclude_unset=True)
+    tid = payload.get('track_id')
+    if not tid:
+        tid = f'mcp_{uuid4().hex}'
+        payload['track_id'] = tid
+    if detection_repo.get_by_track_id(db, tid):
+        raise HTTPException(status_code=409, detail='track_id already exists')
+    return detection_repo.create(db, payload)
 
 
 @router.get('/', response_model=List[DetectionRead])

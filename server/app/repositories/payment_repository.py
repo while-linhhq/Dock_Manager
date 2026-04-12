@@ -1,7 +1,10 @@
-from sqlalchemy.orm import Session
-from app.models.payment import Payment
-from typing import List, Optional
 from decimal import Decimal
+
+from sqlalchemy.orm import Session
+
+from app.models.payment import Payment
+from app.repositories.invoice_repository import invoice_repo
+from typing import List, Optional
 
 
 class PaymentRepository:
@@ -21,6 +24,8 @@ class PaymentRepository:
             created_by=created_by,
         )
         db.add(db_obj)
+        db.flush()
+        invoice_repo.recalculate_payment_status(db, invoice_id)
         db.commit()
         db.refresh(db_obj)
         return db_obj

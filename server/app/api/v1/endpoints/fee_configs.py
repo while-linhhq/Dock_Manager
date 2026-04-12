@@ -40,5 +40,6 @@ def update_fee_config(fee_id: int, data: FeeConfigUpdate, db: Session = Depends(
 
 @router.delete('/{fee_id}', status_code=204)
 def delete_fee_config(fee_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    """Hard-delete the row. Invoice line items keep amounts; fee_config_id is set NULL (DB FK)."""
     if not fee_config_repo.delete(db, fee_id):
         raise HTTPException(status_code=404, detail='Fee config not found')

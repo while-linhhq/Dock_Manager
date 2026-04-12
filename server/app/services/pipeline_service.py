@@ -22,6 +22,7 @@ from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 from app.services.ai.video_recorder import VideoRecorderThread
 from app.utils.ai.yolo_detector import load_yolo_detector
 from app.services.ai.yolo_worker import YoloWorkerThread
+from app.services import pipeline_preview
 
 init_windows_cuda_path("pre")
 
@@ -51,24 +52,31 @@ class PipelineService:
 
     def _persist_track_removed(self, db: Session, tb: Any, hist: list[tuple[str, float]]) -> None:
         """Persist finalized track to DB tables: vessel, detection, and port_log."""
+        det_id_for_invoice: int | None = None
+        vessel_preexisted = False
         try:
             ship_id = tb.ship_id or "UNKNOWN"
             # 1. Tìm hoặc tạo Vessel
             vessel = vessel_repo.get_by_ship_id(db, ship_id)
+            vessel_preexisted = vessel is not None
             if not vessel:
                 vessel = vessel_repo.create(db, VesselCreate(ship_id=ship_id))
             else:
                 vessel_repo.update_last_seen(db, vessel.id)
 
             # 2. Lưu Detection record
-            detection_repo.create(db, DetectionCreate(
-                vessel_id=vessel.id,
-                track_id=tb.track_id,
-                start_time=datetime.datetime.fromtimestamp(tb.first_seen_ts),
-                end_time=datetime.datetime.fromtimestamp(tb.last_seen_ts),
-                ocr_results=[{"id": h[0], "conf": h[1]} for h in hist],
-                confidence=tb.conf
-            ))
+            det = detection_repo.create(
+                db,
+                DetectionCreate(
+                    vessel_id=vessel.id,
+                    track_id=tb.track_id,
+                    start_time=datetime.datetime.fromtimestamp(tb.first_seen_ts),
+                    end_time=datetime.datetime.fromtimestamp(tb.last_seen_ts),
+                    ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
+                    confidence=tb.conf,
+                ),
+            )
+            det_id_for_invoice = det.id
 
             # 3. Tự động hoàn thành đơn hàng nếu có
             pending_order = order_repo.get_pending_by_vessel(db, vessel.id)
@@ -89,6 +97,7 @@ class PipelineService:
 
             port_log_repo.create(db, PortLogCreate(
                 seq=next_seq,
+                ships_completed_today=next_seq,
                 logged_at=datetime.datetime.utcnow(),
                 track_id=tb.track_id,
                 voted_ship_id=ship_id,
@@ -101,6 +110,20 @@ class PipelineService:
         except Exception:
             db.rollback()
             raise
+
+        if det_id_for_invoice is not None:
+            try:
+                from app.services.detection_invoice_service import ensure_ai_invoice_for_detection
+
+                ensure_ai_invoice_for_detection(
+                    det_id_for_invoice,
+                    vessel_preexisted=vessel_preexisted,
+                )
+            except Exception:
+                _log.exception(
+                    'AI invoice creation failed for detection_id=%s',
+                    det_id_for_invoice,
+                )
 
     def _on_track_removed_db(self, tb: Any, hist: list[tuple[str, float]]):
         """Callback khi một tàu rời khỏi khung hình, lưu vào DB."""
@@ -116,7 +139,8 @@ class PipelineService:
             return
 
         self._stop.clear()
-        
+        pipeline_preview.clear()
+
         # Load detector if not loaded
         if self._detector is None:
             # COCO class id 8 = boat
@@ -160,7 +184,8 @@ class PipelineService:
             self._detector, self._boat_tracker, self._frame_queue, self._result_queue,
             self._ocr_queue, self._video_queue, self._stop, ocr_interval, ocr_active,
             ocr_cache=self.ocr_cache, ocr_lock=self.ocr_lock, ocr_label_ttl=ocr_label_ttl,
-            record_overlay_resize_scale=settings.RESIZE_SCALE
+            record_overlay_resize_scale=settings.RESIZE_SCALE,
+            enable_preview_stream=True,
         )
 
         if ocr_active:
@@ -201,6 +226,7 @@ class PipelineService:
             self._boat_tracker.flush_shutdown_logs()
             
         self._reader = self._yolo_worker = self._ocr_worker = self._video_worker = None
+        pipeline_preview.clear()
         _log.info("Pipeline stopped")
 
     def test_video_sync(

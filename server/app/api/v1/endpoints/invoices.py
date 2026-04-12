@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -7,6 +7,7 @@ from app.api.deps import get_current_user
 from app.schemas.invoice import InvoiceCreate, InvoiceRead, InvoiceUpdate
 from app.schemas.payment import PaymentCreate, PaymentRead
 from app.repositories.invoice_repository import invoice_repo
+from app.repositories.order_repository import order_repo
 from app.repositories.payment_repository import payment_repo
 from app.services.invoice_service import invoice_service
 
@@ -14,8 +15,33 @@ router = APIRouter()
 
 
 @router.get('/', response_model=List[InvoiceRead])
-def list_invoices(skip: int = 0, limit: int = 100, payment_status: Optional[str] = None, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    return invoice_repo.get_all(db, skip=skip, limit=limit, payment_status=payment_status)
+def list_invoices(
+    skip: int = 0,
+    limit: int = 100,
+    payment_status: Optional[str] = None,
+    awaiting_payment: Optional[bool] = Query(None, description='Mọi trạng thái trừ PAID (chờ / một phần / quá hạn / hủy…)'),
+    deleted_only: bool = Query(False, description='Chỉ hóa đơn đã xóa mềm'),
+    creation_source: Optional[str] = Query(
+        None,
+        description='Lọc đúng nguồn tạo (VD: AI = hóa đơn tự động từ nhận dạng)',
+    ),
+    exclude_creation_source: Optional[str] = Query(
+        None,
+        description='Loại trừ nguồn (VD: AI để tab hóa đơn thủ công/đơn hàng)',
+    ),
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    return invoice_repo.get_all(
+        db,
+        skip=skip,
+        limit=limit,
+        payment_status=payment_status,
+        awaiting_payment=awaiting_payment,
+        deleted_only=deleted_only,
+        creation_source=creation_source,
+        exclude_creation_source=exclude_creation_source,
+    )
 
 
 @router.get('/{invoice_id}', response_model=InvoiceRead)
@@ -28,9 +54,22 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_cu
 
 @router.post('/', response_model=InvoiceRead, status_code=201)
 def create_invoice(data: InvoiceCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    if not data.created_by:
-        data = data.model_copy(update={'created_by': current_user.id})
-    return invoice_service.create_with_items(db, data)
+    inv_no = (data.invoice_number or '').strip() or invoice_repo.generate_unique_invoice_number(db)
+    vessel_id = data.vessel_id
+    if data.order_id is not None and vessel_id is None:
+        ord_row = order_repo.get(db, data.order_id)
+        if ord_row and ord_row.vessel_id is not None:
+            vessel_id = ord_row.vessel_id
+    # ORDER_AUTO / AI chỉ gán từ dịch vụ nội bộ, không tin body client
+    payload = data.model_copy(
+        update={
+            'invoice_number': inv_no,
+            'vessel_id': vessel_id,
+            'created_by': data.created_by or current_user.id,
+            'creation_source': 'USER',
+        },
+    )
+    return invoice_service.create_with_items(db, payload)
 
 
 @router.put('/{invoice_id}', response_model=InvoiceRead)
@@ -54,6 +93,7 @@ def update_invoice(
 
 @router.delete('/{invoice_id}', status_code=204)
 def delete_invoice(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    """Soft-delete (deleted_at). Listed under deleted_only=true."""
     if not invoice_repo.delete(db, invoice_id):
         raise HTTPException(status_code=404, detail='Invoice not found')
 

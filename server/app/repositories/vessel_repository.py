@@ -1,18 +1,23 @@
 from datetime import datetime
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.models.vessel import Vessel
 from typing import List, Optional
 
 
 class VesselRepository:
     def get(self, db: Session, vessel_id: int) -> Optional[Vessel]:
-        return db.query(Vessel).filter(Vessel.id == vessel_id).first()
+        return (
+            db.query(Vessel)
+            .options(joinedload(Vessel.vessel_type))
+            .filter(Vessel.id == vessel_id)
+            .first()
+        )
 
     def get_by_ship_id(self, db: Session, ship_id: str) -> Optional[Vessel]:
         return db.query(Vessel).filter(Vessel.ship_id == ship_id).first()
 
     def get_all(self, db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[Vessel]:
-        q = db.query(Vessel)
+        q = db.query(Vessel).options(joinedload(Vessel.vessel_type))
         if active_only:
             q = q.filter(Vessel.is_active == True)
         return q.offset(skip).limit(limit).all()

@@ -26,8 +26,13 @@ class InvoiceService:
             tax_amount = (subtotal * tax_rate).quantize(Decimal('0.01'))
 
         total_amount = data.total_amount
-        if subtotal is not None and tax_amount is not None:
-            total_amount = subtotal + tax_amount
+        if total_amount is None:
+            if subtotal is not None and tax_amount is not None:
+                total_amount = subtotal + tax_amount
+            elif subtotal is not None:
+                total_amount = subtotal
+            else:
+                total_amount = Decimal('0')
 
         invoice_data = data.model_dump(exclude={'items'})
         invoice_data.update({'subtotal': subtotal, 'tax_amount': tax_amount, 'total_amount': total_amount})

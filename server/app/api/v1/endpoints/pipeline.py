@@ -1,11 +1,16 @@
+import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from jose import JWTError, jwt
 from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.core.config import settings
+from app.db.session import SessionLocal, get_db
 from app.repositories.camera_repository import camera_repo
+from app.repositories.user_repository import user_repo
+from app.services import pipeline_preview
 from app.services.pipeline_service import pipeline_service
 
 router = APIRouter()
@@ -41,8 +46,8 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
             camera = camera_repo.get(db, req.camera_id)
             if not camera:
                 raise HTTPException(status_code=404, detail='Camera not found')
-            if not camera.is_active:
-                raise HTTPException(status_code=400, detail='Selected camera is inactive')
+            # Không chặn is_active: khởi chạy pipeline là thao tác chủ động; cờ active chủ yếu
+            # dùng cho thống kê / danh sách mặc định. RTSP vẫn có thể hợp lệ khi camera «tắt».
             resolved_source = camera.rtsp_url
             camera_name = camera.camera_name
 
@@ -74,6 +79,43 @@ async def get_status():
         "is_running": pipeline_service.is_running,
         "ocr_cache_size": len(pipeline_service.ocr_cache)
     }
+
+
+@router.websocket('/preview-stream')
+async def pipeline_preview_stream(websocket: WebSocket) -> None:
+    """Binary JPEG frames (~8 fps) while pipeline is running; query ?token=JWT."""
+    token = websocket.query_params.get('token')
+    if not token:
+        await websocket.close(code=1008)
+        return
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = payload.get('sub')
+        if user_id is None:
+            await websocket.close(code=1008)
+            return
+    except JWTError:
+        await websocket.close(code=1008)
+        return
+
+    db = SessionLocal()
+    try:
+        user = user_repo.get(db, int(user_id))
+        if user is None or not user.is_active:
+            await websocket.close(code=1008)
+            return
+    finally:
+        db.close()
+
+    await websocket.accept()
+    try:
+        while True:
+            jpeg = pipeline_preview.get_jpeg()
+            if jpeg:
+                await websocket.send_bytes(jpeg)
+            await asyncio.sleep(0.05)
+    except WebSocketDisconnect:
+        pass
 
 @router.post("/test-video")
 async def test_video(req: PipelineTestVideoRequest):

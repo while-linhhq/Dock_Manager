@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
@@ -7,7 +9,20 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.PROJECT_NAME, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.db.schema_patches import apply_schema_patches
+
+    try:
+        apply_schema_patches()
+    except Exception:
+        logger.exception('Schema patches failed — fix DB or run app/db/add_invoice_deleted_at.sql')
+        raise
+    yield
+
+
+app = FastAPI(title=settings.PROJECT_NAME, version='0.1.0', lifespan=lifespan)
 
 # Add CORS middleware
 app.add_middleware(

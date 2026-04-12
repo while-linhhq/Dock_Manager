@@ -20,7 +20,7 @@ class InvoiceItemRepository:
     def create_bulk(self, db: Session, items: List[dict]) -> List[InvoiceItem]:
         db_objs = [InvoiceItem(**item) for item in items]
         db.add_all(db_objs)
-        db.commit()
+        db.flush()
         for obj in db_objs:
             db.refresh(obj)
         return db_objs

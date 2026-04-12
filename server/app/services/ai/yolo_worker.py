@@ -10,6 +10,7 @@ import cv2
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
 from app.utils.ai.overlay import draw_ship_detection_overlay
 from app.utils.ai.pipeline_utils import put_queue_drop_oldest
+from app.services import pipeline_preview
 
 _COLOR_TENTATIVE = (128, 128, 128)
 _COLOR_CONFIRMED = (0, 255, 0)
@@ -40,6 +41,7 @@ class YoloWorkerThread(threading.Thread):
         ocr_lock: threading.RLock | None = None,
         ocr_label_ttl: float = 5.0,
         record_overlay_resize_scale: float = 1.0,
+        enable_preview_stream: bool = True,
     ):
         super().__init__(daemon=True)
         self._detector = detector
@@ -56,6 +58,7 @@ class YoloWorkerThread(threading.Thread):
         self._ocr_lock = ocr_lock
         self._ocr_label_ttl = ocr_label_ttl
         self._record_overlay_resize_scale = record_overlay_resize_scale
+        self._enable_preview_stream = enable_preview_stream
         self._fps_t0: float | None = None
 
     def run(self):
@@ -92,6 +95,12 @@ class YoloWorkerThread(threading.Thread):
                     self._result_queue,
                     (annotated_frame, tracked_boats),
                 )
+
+                if self._enable_preview_stream:
+                    try:
+                        pipeline_preview.push_bgr_frame(annotated_frame)
+                    except Exception:
+                        pass
 
                 if self._video_queue is not None:
                     record_frame = draw_ship_detection_overlay(

@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date, datetime
 from pathlib import Path
@@ -29,7 +30,20 @@ class ExportService:
         ws = wb.active
         ws.title = 'Port Logs'
 
-        headers = ['ID', 'Seq', 'Logged At', 'Track ID', 'Ship ID', 'First Seen', 'Last Seen', 'Confidence', 'OCR Attempts', 'Schema Ver']
+        headers = [
+            'ID',
+            'Seq',
+            'Ships Completed Today',
+            'Logged At',
+            'Track ID',
+            'Voted Ship ID',
+            'First Seen',
+            'Last Seen',
+            'Confidence',
+            'OCR Attempts',
+            'Vote Summary (JSON)',
+            'Schema Ver',
+        ]
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col, value=header)
             cell.fill = _HEADER_FILL
@@ -37,16 +51,24 @@ class ExportService:
             cell.alignment = Alignment(horizontal='center')
 
         for row_idx, log in enumerate(logs, 2):
+            vote_json = ''
+            if log.vote_summary is not None:
+                try:
+                    vote_json = json.dumps(log.vote_summary, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    vote_json = str(log.vote_summary)
             ws.cell(row=row_idx, column=1, value=log.id)
             ws.cell(row=row_idx, column=2, value=log.seq)
-            ws.cell(row=row_idx, column=3, value=str(log.logged_at) if log.logged_at else '')
-            ws.cell(row=row_idx, column=4, value=log.track_id)
-            ws.cell(row=row_idx, column=5, value=log.voted_ship_id)
-            ws.cell(row=row_idx, column=6, value=str(log.first_seen_at) if log.first_seen_at else '')
-            ws.cell(row=row_idx, column=7, value=str(log.last_seen_at) if log.last_seen_at else '')
-            ws.cell(row=row_idx, column=8, value=log.confidence)
-            ws.cell(row=row_idx, column=9, value=log.ocr_attempts)
-            ws.cell(row=row_idx, column=10, value=log.schema_version)
+            ws.cell(row=row_idx, column=3, value=getattr(log, 'ships_completed_today', None))
+            ws.cell(row=row_idx, column=4, value=str(log.logged_at) if log.logged_at else '')
+            ws.cell(row=row_idx, column=5, value=log.track_id)
+            ws.cell(row=row_idx, column=6, value=log.voted_ship_id)
+            ws.cell(row=row_idx, column=7, value=str(log.first_seen_at) if log.first_seen_at else '')
+            ws.cell(row=row_idx, column=8, value=str(log.last_seen_at) if log.last_seen_at else '')
+            ws.cell(row=row_idx, column=9, value=log.confidence)
+            ws.cell(row=row_idx, column=10, value=log.ocr_attempts)
+            ws.cell(row=row_idx, column=11, value=vote_json)
+            ws.cell(row=row_idx, column=12, value=log.schema_version)
 
         EXPORTS_DIR.mkdir(exist_ok=True)
         filename = f"port_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
