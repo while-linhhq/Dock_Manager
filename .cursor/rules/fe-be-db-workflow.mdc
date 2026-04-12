@@ -1,0 +1,55 @@
+---
+description: Opt-in UI-driven FE→BE→DB; verify browser, FE console, BE logs, and DB; Chrome DevTools MCP when attached. Do not assume when rule absent.
+alwaysApply: false
+---
+
+# UI-driven iteration: FE → BE → DB
+
+## How this rule is meant to be used (opt-in)
+
+**Intended trigger:** You **actively attach** this rule (e.g. `@fe-be-db-workflow` / `@.cursor/rules/fe-be-db-workflow.mdc`) **or** you **explicitly** ask for a **UI-first pass** with browser verification and the FE → BE → DB order.
+
+- **Do not** treat this as the default stack for every task. When the rule is **not** in context, follow normal project rules and the user’s wording without forcing this sequence.
+- **Highest precision** when you combine: **(1)** the rule in the prompt **and** **(2)** a **concrete UI description** (which page, what is wrong/missing, what you expect to see).
+
+## When to use (good fit)
+
+Use this workflow when work is anchored in the **graphical interface** and you want end-to-end alignment:
+
+- You **see** the running app (or **describe the screen**): missing block, wrong text, empty stats, broken step, button no-op, wrong data on a table, etc.
+- You want fixes that may span **client → API → DB**, ordered from **what the UI should show** down to persistence.
+- You want **Chrome DevTools MCP** (or equivalent) used to **confirm** the same screen after changes.
+
+## When not to use (use other rules instead)
+
+- Pure backend, schema-only, scripts, infra, or **no UI** in scope.
+- Greenfield design where screens are not yet defined.
+- Large refactors **without** a specific “what’s wrong on this screen” angle.
+- You only need `@agent-backend`, `@api-conventions`, `@testing`, etc. — **no** need to tie the answer to visible UI + browser check.
+- The prompt has **no** screen-level detail and you are **not** asking for browser-level verification.
+
+If the request is **not** about fixing or completing something **as seen or described from the UI**, prefer those rules **without** this workflow.
+
+## Workflow (in order)
+
+1. **`client/` (FE)** — Start from what the UI must show or do. Wire components, routes, forms, stores, and API calls so the screen behavior matches the described expectation.
+2. **`server/` (BE)** — Adjust endpoints, schemas, services, and repositories **only as needed** so the frontend can load or submit the right data.
+3. **Database** — Migrations, models, or seed data **when the backend requires it**; keep schema and API contracts aligned.
+
+Work **top-down from the described UI outcome**, not bottom-up unless the gap is clearly data/API-only.
+
+## Prompt pattern (typical)
+
+> “On [page/screen], [element] does not show / is wrong / is missing — [expected behavior].”
+
+Example: *Statistics section does not appear on the dashboard* → trace which view and API feed it → fix FE, then BE/DB if the data never arrives → confirm on the same screen.
+
+## Verification
+
+After changes that affect what the user sees:
+
+- **Frontend** — Browser **DevTools Console** and **Network** (failed requests, 4xx/5xx, wrong query params). Use **Chrome DevTools MCP** where available to navigate and confirm the flow.
+- **Backend** — **Terminal / server logs** while reproducing the issue (stack traces, SQLAlchemy `ProgrammingError`, validation errors). Empty UI + silent FE often means BE 500: always correlate.
+- **Database** — If BE logs show `UndefinedColumn`, missing relation, or constraint errors, **align schema** (migrations, `init.sql`, or project `schema_patches` / manual `ALTER`). Confirm the DB the app connects to matches the code.
+
+Treat **exploratory checks as driven from the UI** unless the user explicitly asks for automated tests only; still **scan BE logs** on any “nothing shows up” symptom.
