@@ -29,3 +29,8 @@ class DashboardSummaryRead(BaseModel):
     revenue_chart_manual: List[float]
     top_ship_labels: List[str]
     top_ship_counts: List[int]
+    detections_review_accepted: int
+    detections_review_not_accepted: int
+    detections_review_unassigned: int
+    detection_volume_labels: List[str]
+    detection_volume_counts: List[int]

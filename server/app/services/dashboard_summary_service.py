@@ -87,6 +87,87 @@ def _auto_invoices_count(db: Session, start_utc: datetime, end_utc: datetime) ->
     )
 
 
+def _detection_review_counts(
+    db: Session, start_utc: datetime, end_utc: datetime
+) -> Tuple[int, int, int]:
+    """Đếm nhận diện trong kỳ theo is_accepted (khớp donut trên dashboard)."""
+    base_filters = (
+        Detection.created_at >= start_utc,
+        Detection.created_at < end_utc,
+    )
+    accepted = int(
+        db.query(func.count(Detection.id))
+        .filter(*base_filters, Detection.is_accepted.is_(True))
+        .scalar()
+        or 0
+    )
+    not_accepted = int(
+        db.query(func.count(Detection.id))
+        .filter(*base_filters, Detection.is_accepted.is_(False))
+        .scalar()
+        or 0
+    )
+    unassigned = int(
+        db.query(func.count(Detection.id))
+        .filter(*base_filters, Detection.is_accepted.is_(None))
+        .scalar()
+        or 0
+    )
+    return accepted, not_accepted, unassigned
+
+
+def _detection_volume_series(
+    db: Session,
+    period: Period,
+    start_utc: datetime,
+    end_utc: datetime,
+    start_local: datetime,
+) -> Tuple[List[str], List[int]]:
+    """Chuỗi lượt nhận diện theo kỳ: giờ trong ngày / ngày trong tháng / tháng trong năm (TZ VN)."""
+    timestamps = [
+        r[0]
+        for r in db.query(Detection.created_at)
+        .filter(
+            Detection.created_at >= start_utc,
+            Detection.created_at < end_utc,
+        )
+        .all()
+        if r[0] is not None
+    ]
+
+    if period == 'day':
+        labels = [f'{h:02d}h' for h in range(24)]
+        data = [0] * 24
+        for ts in timestamps:
+            lt = ts.astimezone(TZ)
+            data[lt.hour] += 1
+        return labels, data
+
+    if period == 'month':
+        year, month = start_local.year, start_local.month
+        _, last_day = monthrange(year, month)
+        labels = [str(d) for d in range(1, last_day + 1)]
+        data = [0] * last_day
+        for ts in timestamps:
+            lt = ts.astimezone(TZ)
+            if lt.year != year or lt.month != month:
+                continue
+            idx = lt.day - 1
+            if 0 <= idx < last_day:
+                data[idx] += 1
+        return labels, data
+
+    y = start_local.year
+    labels = [f'Th.{m}' for m in range(1, 13)]
+    data = [0] * 12
+    for ts in timestamps:
+        lt = ts.astimezone(TZ)
+        if lt.year != y:
+            continue
+        data[lt.month - 1] += 1
+    return labels, data
+
+
 def _top_ships(
     db: Session, start_utc: datetime, end_utc: datetime, limit: int = 8
 ) -> Tuple[List[str], List[int]]:
@@ -198,6 +279,10 @@ def build_dashboard_summary(db: Session, period: Period) -> dict[str, Any]:
     pending = order_repo.count_by_status(db, 'PENDING')
     top_labels, top_counts = _top_ships(db, start_utc, end_utc, 8)
     r_labels, r_tot, r_ai, r_man = _revenue_series(db, period, start_utc, end_utc, start_local)
+    det_acc, det_not, det_unk = _detection_review_counts(db, start_utc, end_utc)
+    det_vol_labels, det_vol_counts = _detection_volume_series(
+        db, period, start_utc, end_utc, start_local
+    )
 
     return {
         'period': period,
@@ -213,4 +298,9 @@ def build_dashboard_summary(db: Session, period: Period) -> dict[str, Any]:
         'revenue_chart_manual': r_man,
         'top_ship_labels': top_labels,
         'top_ship_counts': top_counts,
+        'detections_review_accepted': det_acc,
+        'detections_review_not_accepted': det_not,
+        'detections_review_unassigned': det_unk,
+        'detection_volume_labels': det_vol_labels,
+        'detection_volume_counts': det_vol_counts,
     }
