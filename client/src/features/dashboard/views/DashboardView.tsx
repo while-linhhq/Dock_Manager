@@ -13,6 +13,7 @@ import { DashboardAiFeedPanel } from '../components/DashboardAiFeedPanel';
 import { DashboardPeriodToggle } from '../components/DashboardPeriodToggle';
 import { DashboardRecentDetectionsSidebar } from '../components/DashboardRecentDetectionsSidebar';
 import { DashboardRevenueSidebarCharts } from '../components/DashboardRevenueSidebarCharts';
+import { DashboardSystemOverviewWidgets } from '../components/DashboardSystemOverviewWidgets';
 import type { DashboardPeriod } from '../../../types/api.types';
 
 const PERIOD_SUB: Record<DashboardPeriod, string> = {
@@ -70,6 +71,7 @@ const StatCard = ({ label, value, icon: Icon, trend, color, isLoading, subtitle 
 export const DashboardView: React.FC = () => {
   const {
     stats,
+    systemOverview,
     summary,
     summaryPeriod,
     recentDetections,
@@ -144,6 +146,8 @@ export const DashboardView: React.FC = () => {
           isLoading={isLoading}
         />
       </div>
+
+      <DashboardSystemOverviewWidgets data={systemOverview} isLoading={isLoading} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">

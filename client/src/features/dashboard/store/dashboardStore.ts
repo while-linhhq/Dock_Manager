@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type {
   DashboardPeriod,
+  DashboardSystemOverview,
   DashboardStats,
   DashboardSummary,
   DetectionRead,
@@ -10,6 +11,7 @@ import type { PipelineStatus } from '../services/dashboardApi';
 
 interface DashboardState {
   stats: DashboardStats | null;
+  systemOverview: DashboardSystemOverview | null;
   summary: DashboardSummary | null;
   summaryPeriod: DashboardPeriod;
   recentDetections: DetectionRead[];
@@ -25,6 +27,7 @@ interface DashboardState {
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   stats: null,
+  systemOverview: null,
   summary: null,
   summaryPeriod: 'day',
   recentDetections: [],
@@ -56,14 +59,16 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     set({ isLoading: true, summaryLoading: true, error: null });
     try {
       const period = get().summaryPeriod;
-      const [stats, summary, recentDetections, pipelineStatus] = await Promise.all([
+      const [stats, systemOverview, summary, recentDetections, pipelineStatus] = await Promise.all([
         dashboardApi.getStats(),
+        dashboardApi.getSystemOverview(),
         dashboardApi.getSummary(period),
         dashboardApi.getRecentDetections(120),
         dashboardApi.getPipelineStatus(),
       ]);
       set({
         stats,
+        systemOverview,
         summary,
         summaryPeriod: period,
         recentDetections,

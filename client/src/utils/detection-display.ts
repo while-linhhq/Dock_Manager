@@ -1,4 +1,5 @@
 import type { DetectionRead } from '../types/api.types';
+import { parseApiDate } from './date-time';
 
 const UNKNOWN_SHIP_LABEL = 'KH\u00d4NG X\u00c1C \u0110\u1ecaNH';
 
@@ -23,6 +24,6 @@ export function getDetectionDisplayTimeIso(det: DetectionRead): string | null {
   if (!raw) {
     return null;
   }
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? null : raw;
+  const d = parseApiDate(raw);
+  return d ? raw : null;
 }

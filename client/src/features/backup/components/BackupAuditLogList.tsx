@@ -2,6 +2,7 @@ import React from 'react';
 import { Clock, Eye, FileCode, History, Loader2, User } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import type { AuditLogRead } from '../../../types/api.types';
+import { formatDateTimeVN } from '../../../utils/date-time';
 
 export type BackupAuditLogListProps = {
   isLoading: boolean;
@@ -76,7 +77,7 @@ export const BackupAuditLogList: React.FC<BackupAuditLogListProps> = ({
                       </div>
                       <div className="flex items-center text-[10px] text-gray-400 font-mono">
                         <Clock className="w-3 h-3 mr-1" />
-                        {new Date(log.created_at).toLocaleString('vi-VN')}
+                        {formatDateTimeVN(log.created_at)}
                       </div>
                     </div>
                   </div>

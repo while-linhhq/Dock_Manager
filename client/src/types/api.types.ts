@@ -97,6 +97,11 @@ export type InvoiceRead = {
   creation_source?: string;
   /** Backend computed: "AI" | tên/email user | "—" */
   created_by_label?: string;
+  vessel_ship_id?: string | null;
+  vessel_type_name?: string | null;
+  detection_confidence_avg?: number | string | null;
+  berth_duration_hours?: number | string | null;
+  berth_duration_seconds?: number | null;
 };
 
 export type FeeConfigRead = {
@@ -137,6 +142,23 @@ export type DashboardStats = {
 };
 
 export type DashboardPeriod = 'day' | 'month' | 'year';
+
+export type DashboardSystemOverview = {
+  registered_vessels_day: number;
+  registered_vessels_month: number;
+  registered_vessels_year: number;
+  total_registered_vessels: number;
+  vessels_without_type: number;
+  vessels_no_fee: number;
+  vessels_billable: number;
+  total_vessel_types: number;
+  vessel_types_without_active_fee: number;
+  active_cameras: number;
+  inactive_cameras: number;
+  pending_orders: number;
+  unpaid_invoices: number;
+  ai_invoices: number;
+};
 
 export type DashboardSummary = {
   period: DashboardPeriod;

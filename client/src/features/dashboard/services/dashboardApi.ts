@@ -1,6 +1,7 @@
 import { httpClient } from '../../../services/httpClient';
 import type {
   DashboardPeriod,
+  DashboardSystemOverview,
   DashboardStats,
   DashboardSummary,
   DetectionRead,
@@ -17,6 +18,9 @@ export const dashboardApi = {
   },
   getStats: async (): Promise<DashboardStats> => {
     return httpClient.get<DashboardStats>('/dashboard/stats');
+  },
+  getSystemOverview: async (): Promise<DashboardSystemOverview> => {
+    return httpClient.get<DashboardSystemOverview>('/dashboard/system-overview');
   },
   getRecentDetections: async (limit: number = 5): Promise<DetectionRead[]> => {
     return httpClient.get<DetectionRead[]>(`/detections/?limit=${limit}`);

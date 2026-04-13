@@ -12,6 +12,7 @@ import {
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
+import { formatDateTimeVN } from '../../../utils/date-time';
 import type { InvoiceRead } from '../../../types/api.types';
 import {
   FilterField,
@@ -78,6 +79,33 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   onOpenPayment,
   onDeleteInvoice,
 }) => {
+  const formatAvgConfidence = (value: number | string | null | undefined) => {
+    const n = Number(value ?? NaN);
+    if (!Number.isFinite(n)) {
+      return '—';
+    }
+    return `${(n * 100).toFixed(1)}%`;
+  };
+
+  const formatBerthDuration = (
+    durationSeconds: number | null | undefined,
+    durationHours: number | string | null | undefined,
+  ) => {
+    let totalSeconds = Number(durationSeconds ?? NaN);
+    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+      const n = Number(durationHours ?? NaN);
+      if (Number.isFinite(n) && n > 0) {
+        totalSeconds = Math.round(n * 3600);
+      }
+    }
+    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+      return '—';
+    }
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes} phút ${seconds} giây`;
+  };
+
   const invoiceTableColSpan =
     8 + (invoiceSubTab === 'trash' ? 1 : 0) + (isAutoInvoiceTab ? 2 : 0);
 
@@ -206,19 +234,19 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
             <thead>
               <tr className={dt.headRow}>
                 <th className={dt.pad}>Số Hóa Đơn</th>
-                <th className={dt.pad}>Mã Đơn Hàng</th>
+                <th className={dt.pad}>{isAutoInvoiceTab ? 'Biển Số Tàu' : 'Mã Đơn Hàng'}</th>
                 {isAutoInvoiceTab && (
                   <>
-                    <th className={dt.pad}>Detection</th>
-                    <th className={dt.pad}>Tàu (ID)</th>
+                    <th className={dt.pad}>Confidence TB</th>
+                    <th className={dt.pad}>Thời Gian Neo Đậu</th>
                   </>
                 )}
-                <th className={dt.pad}>Thời Gian</th>
+                <th className={dt.pad}>Thời Gian Tạo</th>
                 {invoiceSubTab === 'trash' && <th className={dt.pad}>Ngày xóa</th>}
                 <th className={dt.pad}>Trạng Thái</th>
-                <th className={dt.pad}>Phí tham chiếu (đơn vị: giờ / tháng / năm)</th>
+                <th className={dt.pad}>Phí tham chiếu</th>
                 <th className={dt.pad}>Tổng Tiền</th>
-                <th className={dt.pad}>Được tạo bởi</th>
+                <th className={dt.pad}>{isAutoInvoiceTab ? 'Loại Tàu' : 'Được tạo bởi'}</th>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
               </tr>
             </thead>
@@ -235,30 +263,35 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                   return (
                     <tr
                       key={inv.id}
-                      className="hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-colors"
+                      className="hover:bg-gray-50 dark:hover:bg-white/2 transition-colors"
                     >
                       <td className={cn(dt.pad, dt.monoAccent)}>{inv.invoice_number}</td>
                       <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
-                        {inv.order_id != null && inv.order_id !== '' ? String(inv.order_id) : '—'}
+                        {isAutoInvoiceTab
+                          ? (inv.vessel_ship_id ?? '—')
+                          : inv.order_id != null && inv.order_id !== ''
+                            ? String(inv.order_id)
+                            : '—'}
                       </td>
                       {isAutoInvoiceTab && (
                         <>
                           <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
-                            {inv.detection_id != null && inv.detection_id !== ''
-                              ? String(inv.detection_id)
-                              : '—'}
+                            {formatAvgConfidence(inv.detection_confidence_avg)}
                           </td>
                           <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
-                            {inv.vessel_id != null && inv.vessel_id !== '' ? `#${inv.vessel_id}` : '—'}
+                            {formatBerthDuration(
+                              inv.berth_duration_seconds,
+                              inv.berth_duration_hours,
+                            )}
                           </td>
                         </>
                       )}
                       <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
-                        {new Date(inv.created_at).toLocaleString('vi-VN')}
+                        {formatDateTimeVN(inv.created_at)}
                       </td>
                       {invoiceSubTab === 'trash' && (
                         <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
-                          {inv.deleted_at ? new Date(inv.deleted_at).toLocaleString('vi-VN') : '—'}
+                          {inv.deleted_at ? formatDateTimeVN(inv.deleted_at) : '—'}
                         </td>
                       )}
                       <td className={dt.pad}>
@@ -285,10 +318,10 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                         {formatInvoiceTotalCell(inv, isAutoInvoiceTab)}
                       </td>
                       <td
-                        className={cn(dt.pad, dt.bodyMuted, 'max-w-[10rem] truncate')}
-                        title={inv.created_by_label ?? ''}
+                        className={cn(dt.pad, dt.bodyMuted, 'max-w-40 truncate')}
+                        title={isAutoInvoiceTab ? inv.vessel_type_name ?? '' : inv.created_by_label ?? ''}
                       >
-                        {inv.created_by_label ?? '—'}
+                        {isAutoInvoiceTab ? inv.vessel_type_name ?? '—' : inv.created_by_label ?? '—'}
                       </td>
                       <td className={cn(dt.pad, 'text-right')}>
                         {invoiceSubTab === 'trash' ? (

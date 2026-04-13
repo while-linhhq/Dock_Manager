@@ -1,4 +1,5 @@
 import type { DashboardStats, DetectionRead } from '../../../types/api.types';
+import { parseApiDate } from '../../../utils/date-time';
 import { getDetectionShipLabel } from '../../../utils/detection-display';
 
 /** 24 khung giờ kết thúc tại giờ hiện tại (local), đếm detection theo start_time/created_at. */
@@ -27,7 +28,8 @@ export function buildDetectionsByHourLast24h(detections: DetectionRead[]): {
     if (!raw) {
       continue;
     }
-    const ts = new Date(raw).getTime();
+    const parsed = parseApiDate(raw);
+    const ts = parsed ? parsed.getTime() : NaN;
     if (Number.isNaN(ts) || ts < start || ts > now + slotMs) {
       continue;
     }

@@ -2,19 +2,13 @@ import React, { useMemo } from 'react';
 import { Loader2, ScanSearch } from 'lucide-react';
 import type { DetectionRead } from '../../../types/api.types';
 import { cn } from '../../../utils/cn';
+import { formatDateTimeVN } from '../../../utils/date-time';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
 
 const SIDEBAR_LIMIT = 18;
 
 function formatShortDateTime(iso: string | null): string {
-  if (!iso) {
-    return '—';
-  }
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) {
-    return '—';
-  }
-  return d.toLocaleString('vi-VN', {
+  return formatDateTimeVN(iso, {
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',

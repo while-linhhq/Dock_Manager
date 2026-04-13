@@ -3,6 +3,7 @@ import { CheckCircle2, Loader2, RefreshCw, Trash2, XCircle } from 'lucide-react'
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
+import { formatDateTimeVN } from '../../../utils/date-time';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
 import type { DetectionRead } from '../../../types/api.types';
 import {
@@ -144,7 +145,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                     <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
                       {(() => {
                         const iso = getDetectionDisplayTimeIso(det);
-                        return iso ? new Date(iso).toLocaleString('vi-VN') : '\u2014';
+                        return formatDateTimeVN(iso);
                       })()}
                     </td>
                     <td className={cn(dt.pad, dt.body, 'font-bold uppercase')}>

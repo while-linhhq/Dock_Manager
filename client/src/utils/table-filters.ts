@@ -1,3 +1,5 @@
+import { parseApiDate } from './date-time';
+
 /** Local calendar day bounds for filtering ISO timestamps from the API. */
 export function dayStartMs(isoDate: string): number {
   if (!isoDate) {
@@ -24,7 +26,8 @@ export function isoInLocalDateRange(
   if (!iso) {
     return false;
   }
-  const t = new Date(iso).getTime();
+  const parsed = parseApiDate(iso);
+  const t = parsed ? parsed.getTime() : NaN;
   if (Number.isNaN(t)) {
     return false;
   }

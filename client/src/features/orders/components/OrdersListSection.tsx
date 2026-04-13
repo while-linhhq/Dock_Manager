@@ -11,6 +11,7 @@ import {
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
+import { formatDateTimeVN } from '../../../utils/date-time';
 import type { OrderRead } from '../../../types/api.types';
 import {
   FilterField,
@@ -191,7 +192,7 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
                           className={cn('flex items-center', dt.mono, 'text-gray-500 dark:text-gray-400')}
                         >
                           <Clock className="w-3.5 h-3.5 mr-1.5 shrink-0 opacity-50" />
-                          {new Date(order.created_at).toLocaleString('vi-VN')}
+                          {formatDateTimeVN(order.created_at)}
                         </div>
                       </td>
                       <td className={dt.pad}>

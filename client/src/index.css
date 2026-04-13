@@ -9,13 +9,30 @@
 
 /* Base styles to increase clarity and size */
 @layer base {
+  /*
+   * Standard responsive breakpoints:
+   * sm 640px (large phone), md 768px (tablet portrait),
+   * lg 1024px (tablet landscape/small laptop), xl 1280px (desktop).
+   */
   html {
-    font-size: 17px;
+    font-size: 16px;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
     font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
     font-optical-sizing: auto;
+  }
+
+  @media (min-width: 640px) {
+    html {
+      font-size: 16.5px;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    html {
+      font-size: 17px;
+    }
   }
 
   body {

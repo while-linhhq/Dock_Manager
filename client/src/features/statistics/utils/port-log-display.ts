@@ -1,4 +1,5 @@
 import type { PortLogRead } from '../../../types/api.types';
+import { formatDateTimeVN } from '../../../utils/date-time';
 
 export const PORT_LOG_TABLE_COL_COUNT = 10;
 
@@ -14,11 +15,7 @@ export function fmtDateTime(s: string | null | undefined) {
   if (s == null || s === '') {
     return '—';
   }
-  const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) {
-    return d.toLocaleString('vi-VN');
-  }
-  return s;
+  return formatDateTimeVN(s);
 }
 
 export function fmtNullableStr(s: string | null | undefined) {
