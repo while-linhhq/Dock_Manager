@@ -83,7 +83,7 @@ class OrderRepository:
         if not db_obj:
             return None
         db_obj.status = 'COMPLETED'
-        db_obj.completed_at = datetime.utcnow()
+        db_obj.completed_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(db_obj)
         return db_obj
@@ -96,7 +96,7 @@ class OrderRepository:
         if updated_by:
             db_obj.updated_by = updated_by
         if status == 'COMPLETED':
-            db_obj.completed_at = datetime.utcnow()
+            db_obj.completed_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(db_obj)
         return db_obj

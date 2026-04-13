@@ -9,6 +9,7 @@ from app.schemas.payment import PaymentCreate, PaymentRead
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.order_repository import order_repo
 from app.repositories.payment_repository import payment_repo
+from app.services.detection_invoice_service import backfill_missing_ai_invoices
 from app.services.invoice_service import invoice_service
 
 router = APIRouter()
@@ -50,6 +51,22 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_cu
     if not obj:
         raise HTTPException(status_code=404, detail='Invoice not found')
     return obj
+
+
+@router.post('/backfill-ai')
+def backfill_ai_invoices(
+    limit: int = Query(200, ge=1, le=5000, description='Số detection cũ tối đa cần backfill'),
+    _=Depends(get_current_user),
+):
+    """
+    Backfill hóa đơn AI cho detection cũ chưa có invoice.
+    Dùng cho kiểm tra tính năng sau khi cập nhật logic AI invoice.
+    """
+    result = backfill_missing_ai_invoices(limit=limit)
+    return {
+        'success': True,
+        **result,
+    }
 
 
 @router.post('/', response_model=InvoiceRead, status_code=201)

@@ -53,12 +53,10 @@ class PipelineService:
     def _persist_track_removed(self, db: Session, tb: Any, hist: list[tuple[str, float]]) -> None:
         """Persist finalized track to DB tables: vessel, detection, and port_log."""
         det_id_for_invoice: int | None = None
-        vessel_preexisted = False
         try:
-            ship_id = tb.ship_id or "UNKNOWN"
+            ship_id = (tb.ship_id or "UNKNOWN").strip().upper()
             # 1. Tìm hoặc tạo Vessel
-            vessel = vessel_repo.get_by_ship_id(db, ship_id)
-            vessel_preexisted = vessel is not None
+            vessel = vessel_repo.get_by_ship_id_normalized(db, ship_id)
             if not vessel:
                 vessel = vessel_repo.create(db, VesselCreate(ship_id=ship_id))
             else:
@@ -70,8 +68,12 @@ class PipelineService:
                 DetectionCreate(
                     vessel_id=vessel.id,
                     track_id=tb.track_id,
-                    start_time=datetime.datetime.fromtimestamp(tb.first_seen_ts),
-                    end_time=datetime.datetime.fromtimestamp(tb.last_seen_ts),
+                    start_time=datetime.datetime.fromtimestamp(
+                        tb.first_seen_ts, tz=datetime.timezone.utc
+                    ),
+                    end_time=datetime.datetime.fromtimestamp(
+                        tb.last_seen_ts, tz=datetime.timezone.utc
+                    ),
                     ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
                     confidence=tb.conf,
                 ),
@@ -98,11 +100,15 @@ class PipelineService:
             port_log_repo.create(db, PortLogCreate(
                 seq=next_seq,
                 ships_completed_today=next_seq,
-                logged_at=datetime.datetime.utcnow(),
+                logged_at=datetime.datetime.now(datetime.timezone.utc),
                 track_id=tb.track_id,
                 voted_ship_id=ship_id,
-                first_seen_at=datetime.datetime.fromtimestamp(tb.first_seen_ts),
-                last_seen_at=datetime.datetime.fromtimestamp(tb.last_seen_ts),
+                first_seen_at=datetime.datetime.fromtimestamp(
+                    tb.first_seen_ts, tz=datetime.timezone.utc
+                ),
+                last_seen_at=datetime.datetime.fromtimestamp(
+                    tb.last_seen_ts, tz=datetime.timezone.utc
+                ),
                 confidence=tb.conf,
                 ocr_attempts=len(hist),
                 vote_summary=vote_summary
@@ -115,10 +121,7 @@ class PipelineService:
             try:
                 from app.services.detection_invoice_service import ensure_ai_invoice_for_detection
 
-                ensure_ai_invoice_for_detection(
-                    det_id_for_invoice,
-                    vessel_preexisted=vessel_preexisted,
-                )
+                ensure_ai_invoice_for_detection(det_id_for_invoice)
             except Exception:
                 _log.exception(
                     'AI invoice creation failed for detection_id=%s',
@@ -274,8 +277,12 @@ class PipelineService:
                 "track_id": tb.track_id,
                 "voted_ship_id": voted_id,
                 "confidence": float(tb.conf),
-                "first_seen": datetime.datetime.fromtimestamp(tb.first_seen_ts).isoformat(),
-                "last_seen": datetime.datetime.fromtimestamp(tb.last_seen_ts).isoformat(),
+                "first_seen": datetime.datetime.fromtimestamp(
+                    tb.first_seen_ts, tz=datetime.timezone.utc
+                ).isoformat(),
+                "last_seen": datetime.datetime.fromtimestamp(
+                    tb.last_seen_ts, tz=datetime.timezone.utc
+                ).isoformat(),
                 "ocr_attempts": len(hist),
                 "vote_summary": vote_summary
             })

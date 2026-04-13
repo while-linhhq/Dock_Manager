@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import Payment
+from app.models.vessel import Vessel
 from typing import List, Optional
 
 
@@ -18,6 +19,8 @@ class InvoiceRepository:
             .options(
                 joinedload(Invoice.creator),
                 joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
+                joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
+                joinedload(Invoice.detection),
             )
             .filter(Invoice.id == invoice_id)
         )
@@ -70,6 +73,8 @@ class InvoiceRepository:
         q = db.query(Invoice).options(
             joinedload(Invoice.creator),
             joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
+            joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
+            joinedload(Invoice.detection),
         )
         if deleted_only:
             q = q.filter(Invoice.deleted_at.isnot(None))

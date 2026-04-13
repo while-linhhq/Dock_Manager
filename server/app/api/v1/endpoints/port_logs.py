@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,7 +20,7 @@ def create_port_log(
     _=Depends(get_current_user),
 ):
     payload = data.model_dump(exclude_unset=True)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if not payload.get('track_id'):
         payload['track_id'] = f'mcp_{uuid4().hex}'
     payload.setdefault('seq', 0)

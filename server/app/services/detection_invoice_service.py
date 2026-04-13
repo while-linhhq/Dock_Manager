@@ -9,6 +9,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.models.detection import Detection
+from app.models.invoice import Invoice
 from app.repositories.detection_repository import detection_repo
 from app.repositories.fee_config_repository import fee_config_repo
 from app.repositories.invoice_repository import invoice_repo
@@ -52,14 +54,11 @@ def _fee_unit(fee) -> str:
     return 'per_month'
 
 
-def ensure_ai_invoice_for_detection(detection_id: int, *, vessel_preexisted: bool) -> None:
+def ensure_ai_invoice_for_detection(detection_id: int) -> None:
     """
     Tạo tối đa một hóa đơn AI cho detection_id.
-    Chỉ khi tàu đã tồn tại trước lần detect này (trùng mã), có vessel_type_id và có phí active.
+    Chỉ khi xác định được tàu hợp lệ, có vessel_type_id và có phí active.
     """
-    if not vessel_preexisted:
-        return
-
     db: Session = SessionLocal()
     try:
         det = detection_repo.get(db, detection_id)
@@ -159,3 +158,49 @@ def ensure_ai_invoice_for_detection(detection_id: int, *, vessel_preexisted: boo
         db.rollback()
     finally:
         db.close()
+
+
+def backfill_missing_ai_invoices(limit: int = 200) -> dict:
+    """
+    Tạo hóa đơn AI cho các detection cũ chưa có invoice (phục vụ backfill/test).
+    Chỉ xử lý detection có vessel_id và chưa có invoice chưa xóa.
+    """
+    db: Session = SessionLocal()
+    try:
+        ids = [
+            int(r[0])
+            for r in (
+                db.query(Detection.id)
+                .outerjoin(
+                    Invoice,
+                    (Invoice.detection_id == Detection.id) & (Invoice.deleted_at.is_(None)),
+                )
+                .filter(
+                    Detection.vessel_id.is_not(None),
+                    Invoice.id.is_(None),
+                )
+                .order_by(Detection.created_at.desc(), Detection.id.desc())
+                .limit(max(1, int(limit)))
+                .all()
+            )
+        ]
+    finally:
+        db.close()
+
+    created = 0
+    processed = 0
+    for det_id in ids:
+        processed += 1
+        ensure_ai_invoice_for_detection(det_id)
+        db_check: Session = SessionLocal()
+        try:
+            if invoice_repo.get_by_detection_id(db_check, det_id):
+                created += 1
+        finally:
+            db_check.close()
+
+    return {
+        'processed': processed,
+        'created': created,
+        'skipped': processed - created,
+    }

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session, joinedload
 from app.models.detection import Detection
 from typing import List, Optional
@@ -36,7 +36,7 @@ class DetectionRepository:
         if not db_obj:
             return None
         db_obj.is_accepted = is_accepted
-        db_obj.verified_at = datetime.utcnow()
+        db_obj.verified_at = datetime.now(timezone.utc)
         if verified_by:
             db_obj.verified_by = verified_by
         if not is_accepted and rejection_reason:

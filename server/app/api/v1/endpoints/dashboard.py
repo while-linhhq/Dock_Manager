@@ -7,13 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.stats import DashboardStats, DashboardSummaryRead
+from app.schemas.stats import DashboardStats, DashboardSummaryRead, DashboardSystemOverviewRead
 from app.repositories.vessel_repository import vessel_repo
 from app.repositories.detection_repository import detection_repo
 from app.repositories.order_repository import order_repo
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.camera_repository import camera_repo
 from app.services.dashboard_summary_service import build_dashboard_summary
+from app.services.dashboard_system_service import build_system_overview
 
 router = APIRouter()
 
@@ -25,6 +26,11 @@ def get_dashboard_summary(
     _=Depends(get_current_user),
 ):
     return build_dashboard_summary(db, period)
+
+
+@router.get('/system-overview', response_model=DashboardSystemOverviewRead)
+def get_system_overview(db: Session = Depends(get_db), _=Depends(get_current_user)):
+    return build_system_overview(db)
 
 
 @router.get('/stats', response_model=DashboardStats)

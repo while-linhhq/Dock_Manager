@@ -34,3 +34,20 @@ class DashboardSummaryRead(BaseModel):
     detections_review_unassigned: int
     detection_volume_labels: List[str]
     detection_volume_counts: List[int]
+
+
+class DashboardSystemOverviewRead(BaseModel):
+    registered_vessels_day: int
+    registered_vessels_month: int
+    registered_vessels_year: int
+    total_registered_vessels: int
+    vessels_without_type: int
+    vessels_no_fee: int
+    vessels_billable: int
+    total_vessel_types: int
+    vessel_types_without_active_fee: int
+    active_cameras: int
+    inactive_cameras: int
+    pending_orders: int
+    unpaid_invoices: int
+    ai_invoices: int
