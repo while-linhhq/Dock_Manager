@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -33,5 +33,35 @@ class DetectionRead(DetectionBase):
     verified_at: Optional[datetime] = None
     rejection_reason: Optional[str] = None
     created_at: datetime
+    audit_image_url: Optional[str] = None
+    video_url: Optional[str] = None
 
     model_config = {'from_attributes': True}
+
+    @model_validator(mode='after')
+    def fill_audit_image_url(self):
+        path = (self.audit_image_path or '').strip()
+        updates: dict[str, Optional[str]] = {}
+
+        if path:
+            normalized = path.replace('\\', '/')
+            if normalized.startswith('http://') or normalized.startswith('https://'):
+                updates['audit_image_url'] = normalized
+            else:
+                normalized = normalized.lstrip('./')
+                updates['audit_image_url'] = f'/{normalized}' if normalized.startswith('runs/') else None
+        else:
+            updates['audit_image_url'] = None
+
+        vpath = (self.video_path or '').strip()
+        if vpath:
+            vnormalized = vpath.replace('\\', '/')
+            if vnormalized.startswith('http://') or vnormalized.startswith('https://'):
+                updates['video_url'] = vnormalized
+            else:
+                vnormalized = vnormalized.lstrip('./')
+                updates['video_url'] = f'/{vnormalized}' if vnormalized.startswith('runs/') else None
+        else:
+            updates['video_url'] = None
+
+        return self.model_copy(update=updates)

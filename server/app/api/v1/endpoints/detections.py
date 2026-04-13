@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import date
 from typing import List, Optional
 
 from app.db.session import get_db
@@ -35,10 +36,19 @@ def list_detections(
     skip: int = 0,
     limit: int = 100,
     vessel_id: Optional[int] = None,
+    ship_id: Optional[str] = None,
+    event_date: Optional[date] = None,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    return detection_repo.get_all(db, skip=skip, limit=limit, vessel_id=vessel_id)
+    return detection_repo.get_all(
+        db,
+        skip=skip,
+        limit=limit,
+        vessel_id=vessel_id,
+        ship_id=ship_id,
+        event_date=event_date,
+    )
 
 
 @router.get('/{detection_id}', response_model=DetectionRead)

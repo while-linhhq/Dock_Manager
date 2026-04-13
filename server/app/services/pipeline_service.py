@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -11,6 +12,8 @@ import datetime
 from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.repositories import vessel_repo, detection_repo, order_repo, port_log_repo
+from app.repositories.detection_media_repository import detection_media_repo
+from app.repositories.port_config_repository import port_config_repo
 from app.schemas import VesselCreate, DetectionCreate, PortLogCreate
 from app.core.config import settings
 
@@ -28,6 +31,68 @@ init_windows_cuda_path("pre")
 
 _log = logging.getLogger("app.services.pipeline")
 
+
+def _safe_ship_segment(ship_id: str) -> str:
+    cleaned = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in ship_id.strip().upper())
+    return cleaned or 'UNKNOWN'
+
+
+def _find_latest_track_frame(runs_base: Path, event_dt_utc: datetime.datetime, track_id: str) -> Path | None:
+    day = event_dt_utc.date().isoformat()
+    cap_dir = runs_base / 'detect' / 'cap' / day
+    if not cap_dir.exists():
+        return None
+    candidates = sorted(
+        list(cap_dir.glob(f'*_{track_id}_frame.jpg')) + list(cap_dir.glob(f'*_{track_id}_noocr_frame.jpg')),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _find_latest_video_for_event(runs_base: Path, event_dt_utc: datetime.datetime) -> Path | None:
+    day = event_dt_utc.date().isoformat()
+    videos_dir = runs_base / 'detect' / 'videos' / day
+    if not videos_dir.exists():
+        return None
+    candidates = sorted(videos_dir.glob('*.mp4'), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _copy_snapshot_to_ship_day(
+    runs_base: Path,
+    ship_id: str,
+    event_dt_utc: datetime.datetime,
+    track_id: str,
+    source_frame_path: Path | None,
+) -> str | None:
+    if source_frame_path is None or not source_frame_path.exists():
+        return None
+    day = event_dt_utc.date().isoformat()
+    target_dir = runs_base / 'by-ship' / _safe_ship_segment(ship_id) / day / 'snapshots'
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / f'{track_id}_{source_frame_path.name}'
+    shutil.copy2(source_frame_path, target_file)
+    return str(target_file).replace('\\', '/')
+
+
+def _copy_video_to_ship_day(
+    runs_base: Path,
+    ship_id: str,
+    event_dt_utc: datetime.datetime,
+    track_id: str,
+    source_video_path: Path | None,
+) -> str | None:
+    if source_video_path is None or not source_video_path.exists():
+        return None
+    day = event_dt_utc.date().isoformat()
+    target_dir = runs_base / 'by-ship' / _safe_ship_segment(ship_id) / day / 'videos'
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / f'{track_id}_{source_video_path.name}'
+    if not target_file.exists():
+        shutil.copy2(source_video_path, target_file)
+    return str(target_file).replace('\\', '/')
+
 class PipelineService:
     def __init__(self) -> None:
         self._stop = threading.Event()
@@ -43,8 +108,112 @@ class PipelineService:
         self.ocr_lock = threading.Lock()
         self._runs_base = Path("runs")
         self._detector: Any = None
+        self._detector_signature: tuple[str, str, float] | None = None
         self._boat_tracker: BoatTracker = BoatTracker()
         self._db: Session | None = None
+
+    @staticmethod
+    def _to_bool(raw: str, default: bool) -> bool:
+        value = (raw or '').strip().lower()
+        if value in ('1', 'true', 'yes', 'y', 'on'):
+            return True
+        if value in ('0', 'false', 'no', 'n', 'off'):
+            return False
+        return default
+
+    @staticmethod
+    def _to_int(raw: str, default: int) -> int:
+        try:
+            return int(str(raw).strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _to_float(raw: str, default: float) -> float:
+        try:
+            return float(str(raw).strip())
+        except Exception:
+            return default
+
+    def _load_runtime_config(self) -> dict[str, Any]:
+        db = SessionLocal()
+        try:
+            cfg_rows = port_config_repo.get_all(db)
+            cfg_map = {row.key: row.value for row in cfg_rows}
+        except Exception:
+            _log.exception('Failed to load port_configs, fallback to env settings')
+            cfg_map = {}
+        finally:
+            db.close()
+
+        def _s(key: str, default: str) -> str:
+            value = cfg_map.get(key)
+            return str(value).strip() if value is not None else default
+
+        return {
+            'model_path': _s('model_path', settings.MODEL_PATH),
+            'device': _s('device', settings.DEVICE),
+            'conf': self._to_float(cfg_map.get('conf', ''), float(settings.CONF)),
+            'enable_ocr': self._to_bool(cfg_map.get('enable_ocr', ''), bool(settings.ENABLE_OCR)),
+            'ocr_interval_frames': max(
+                1,
+                self._to_int(cfg_map.get('ocr_interval_frames', ''), int(settings.OCR_INTERVAL_FRAMES)),
+            ),
+            'ocr_label_ttl_sec': self._to_float(
+                cfg_map.get('ocr_label_ttl_sec', ''),
+                float(settings.OCR_LABEL_TTL_SEC),
+            ),
+            'ocr_audit_enable': self._to_bool(
+                cfg_map.get('ocr_audit_enable', ''),
+                bool(settings.OCR_AUDIT_ENABLE),
+            ),
+            'track_min_hits': max(
+                1,
+                self._to_int(cfg_map.get('track_min_hits', ''), int(settings.TRACK_MIN_HITS)),
+            ),
+            'track_max_tentative_misses': max(
+                1,
+                self._to_int(
+                    cfg_map.get('track_max_tentative_misses', ''),
+                    int(settings.TRACK_MAX_TENTATIVE_MISSES),
+                ),
+            ),
+            'track_max_lost_frames': max(
+                1,
+                self._to_int(cfg_map.get('track_max_lost_frames', ''), int(settings.TRACK_MAX_LOST_FRAMES)),
+            ),
+            'track_iou_threshold': self._to_float(
+                cfg_map.get('track_iou_threshold', ''),
+                float(settings.TRACK_IOU_THRESHOLD),
+            ),
+            'track_reid_window_sec': self._to_float(
+                cfg_map.get('track_reid_window_sec', ''),
+                float(settings.TRACK_REID_WINDOW_SEC),
+            ),
+            'track_reid_max_dist': self._to_float(
+                cfg_map.get('track_reid_max_dist', ''),
+                float(settings.TRACK_REID_MAX_DIST),
+            ),
+            'resize_scale': self._to_float(cfg_map.get('resize_scale', ''), float(settings.RESIZE_SCALE)),
+            'save_min_interval_sec': self._to_float(
+                cfg_map.get('save_min_interval_sec', ''),
+                float(settings.SAVE_MIN_INTERVAL_SEC),
+            ),
+            'ocr_audit_save_frames': self._to_bool(
+                cfg_map.get('ocr_audit_save_frames', ''),
+                bool(settings.OCR_AUDIT_SAVE_FRAMES),
+            ),
+            'record_enable': self._to_bool(cfg_map.get('record_enable', ''), bool(settings.RECORD_ENABLE)),
+            'record_max_duration_min': max(
+                1,
+                self._to_int(cfg_map.get('record_max_duration_min', ''), int(settings.RECORD_MAX_DURATION_MIN)),
+            ),
+            'record_no_boat_gap_sec': max(
+                1,
+                self._to_int(cfg_map.get('record_no_boat_gap_sec', ''), int(settings.RECORD_NO_BOAT_GAP_SEC)),
+            ),
+            'record_fps': max(1, self._to_int(cfg_map.get('record_fps', ''), int(settings.RECORD_FPS))),
+        }
 
     @property
     def is_running(self) -> bool:
@@ -55,6 +224,8 @@ class PipelineService:
         det_id_for_invoice: int | None = None
         try:
             ship_id = (tb.ship_id or "UNKNOWN").strip().upper()
+            start_dt_utc = datetime.datetime.fromtimestamp(tb.first_seen_ts, tz=datetime.timezone.utc)
+            end_dt_utc = datetime.datetime.fromtimestamp(tb.last_seen_ts, tz=datetime.timezone.utc)
             # 1. Tìm hoặc tạo Vessel
             vessel = vessel_repo.get_by_ship_id_normalized(db, ship_id)
             if not vessel:
@@ -62,23 +233,58 @@ class PipelineService:
             else:
                 vessel_repo.update_last_seen(db, vessel.id)
 
+            source_frame = _find_latest_track_frame(self._runs_base, end_dt_utc, str(tb.track_id))
+            source_video = _find_latest_video_for_event(self._runs_base, end_dt_utc)
+            snapshot_path = _copy_snapshot_to_ship_day(
+                self._runs_base,
+                ship_id=ship_id,
+                event_dt_utc=end_dt_utc,
+                track_id=str(tb.track_id),
+                source_frame_path=source_frame,
+            )
+            verify_video_path = _copy_video_to_ship_day(
+                self._runs_base,
+                ship_id=ship_id,
+                event_dt_utc=end_dt_utc,
+                track_id=str(tb.track_id),
+                source_video_path=source_video,
+            )
+
             # 2. Lưu Detection record
             det = detection_repo.create(
                 db,
                 DetectionCreate(
                     vessel_id=vessel.id,
                     track_id=tb.track_id,
-                    start_time=datetime.datetime.fromtimestamp(
-                        tb.first_seen_ts, tz=datetime.timezone.utc
-                    ),
-                    end_time=datetime.datetime.fromtimestamp(
-                        tb.last_seen_ts, tz=datetime.timezone.utc
-                    ),
+                    start_time=start_dt_utc,
+                    end_time=end_dt_utc,
+                    video_path=verify_video_path,
+                    audit_image_path=snapshot_path,
                     ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
                     confidence=tb.conf,
                 ),
             )
             det_id_for_invoice = det.id
+            if snapshot_path:
+                detection_media_repo.create(
+                    db,
+                    {
+                        'detection_id': det.id,
+                        'media_type': 'image',
+                        'file_path': snapshot_path,
+                        'file_size': source_frame.stat().st_size if source_frame and source_frame.exists() else None,
+                    },
+                )
+            if verify_video_path:
+                detection_media_repo.create(
+                    db,
+                    {
+                        'detection_id': det.id,
+                        'media_type': 'video',
+                        'file_path': verify_video_path,
+                        'file_size': source_video.stat().st_size if source_video and source_video.exists() else None,
+                    },
+                )
 
             # 3. Tự động hoàn thành đơn hàng nếu có
             pending_order = order_repo.get_pending_by_vessel(db, vessel.id)
@@ -103,12 +309,8 @@ class PipelineService:
                 logged_at=datetime.datetime.now(datetime.timezone.utc),
                 track_id=tb.track_id,
                 voted_ship_id=ship_id,
-                first_seen_at=datetime.datetime.fromtimestamp(
-                    tb.first_seen_ts, tz=datetime.timezone.utc
-                ),
-                last_seen_at=datetime.datetime.fromtimestamp(
-                    tb.last_seen_ts, tz=datetime.timezone.utc
-                ),
+                first_seen_at=start_dt_utc,
+                last_seen_at=end_dt_utc,
                 confidence=tb.conf,
                 ocr_attempts=len(hist),
                 vote_summary=vote_summary
@@ -143,27 +345,34 @@ class PipelineService:
 
         self._stop.clear()
         pipeline_preview.clear()
+        runtime_cfg = self._load_runtime_config()
 
         # Load detector if not loaded
-        if self._detector is None:
+        detector_sig = (
+            runtime_cfg['model_path'],
+            runtime_cfg['device'],
+            float(runtime_cfg['conf']),
+        )
+        if self._detector is None or self._detector_signature != detector_sig:
             # COCO class id 8 = boat
             self._detector, _ = load_yolo_detector(
-                settings.MODEL_PATH, 
-                settings.DEVICE, 
-                settings.CONF, 
-                [8]
+                runtime_cfg['model_path'],
+                runtime_cfg['device'],
+                runtime_cfg['conf'],
+                [8],
             )
+            self._detector_signature = detector_sig
 
         # Use settings for all params
-        ocr_active = enable_ocr if enable_ocr is not None else settings.ENABLE_OCR
-        ocr_interval = settings.OCR_INTERVAL_FRAMES
-        ocr_label_ttl = settings.OCR_LABEL_TTL_SEC
+        ocr_active = enable_ocr if enable_ocr is not None else runtime_cfg['enable_ocr']
+        ocr_interval = runtime_cfg['ocr_interval_frames']
+        ocr_label_ttl = runtime_cfg['ocr_label_ttl_sec']
         
         # Combine DB callback with Audit Logger callback
         db_cb = self._on_track_removed_db
         audit_cb = _build_track_removed_logger(
             str(self._runs_base), 
-            settings.OCR_AUDIT_ENABLE,
+            runtime_cfg['ocr_audit_enable'],
             log_dedup_window_sec=0.0 # Can add to settings if needed
         )
         
@@ -173,12 +382,12 @@ class PipelineService:
                 audit_cb(tb, hist)
 
         self._boat_tracker = BoatTracker(
-            min_hits=settings.TRACK_MIN_HITS,
-            max_tentative_misses=settings.TRACK_MAX_TENTATIVE_MISSES,
-            max_lost_frames=settings.TRACK_MAX_LOST_FRAMES,
-            iou_threshold=settings.TRACK_IOU_THRESHOLD,
-            reid_window_sec=settings.TRACK_REID_WINDOW_SEC,
-            reid_max_centroid_dist=settings.TRACK_REID_MAX_DIST,
+            min_hits=runtime_cfg['track_min_hits'],
+            max_tentative_misses=runtime_cfg['track_max_tentative_misses'],
+            max_lost_frames=runtime_cfg['track_max_lost_frames'],
+            iou_threshold=runtime_cfg['track_iou_threshold'],
+            reid_window_sec=runtime_cfg['track_reid_window_sec'],
+            reid_max_centroid_dist=runtime_cfg['track_reid_max_dist'],
             on_track_removed=combined_on_removed
         )
 
@@ -187,7 +396,7 @@ class PipelineService:
             self._detector, self._boat_tracker, self._frame_queue, self._result_queue,
             self._ocr_queue, self._video_queue, self._stop, ocr_interval, ocr_active,
             ocr_cache=self.ocr_cache, ocr_lock=self.ocr_lock, ocr_label_ttl=ocr_label_ttl,
-            record_overlay_resize_scale=settings.RESIZE_SCALE,
+            record_overlay_resize_scale=runtime_cfg['resize_scale'],
             enable_preview_stream=True,
         )
 
@@ -195,17 +404,17 @@ class PipelineService:
             recognizer = ShipIdRecognizer()
             self._ocr_worker = OcrWorkerThread(
                 recognizer, self._ocr_queue, self.ocr_cache, self.ocr_lock, self._stop,
-                ocr_label_ttl, settings.SAVE_MIN_INTERVAL_SEC, 
+                ocr_label_ttl, runtime_cfg['save_min_interval_sec'],
                 boat_tracker=self._boat_tracker, runs_base=str(self._runs_base),
-                save_ocr_audit_frames=settings.OCR_AUDIT_SAVE_FRAMES
+                save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames']
             )
 
-        if settings.RECORD_ENABLE:
+        if runtime_cfg['record_enable']:
             self._video_worker = VideoRecorderThread(
                 self._video_queue, self._stop,
-                max_duration_sec=settings.RECORD_MAX_DURATION_MIN * 60,
-                gap_sec=settings.RECORD_NO_BOAT_GAP_SEC,
-                record_fps=settings.RECORD_FPS,
+                max_duration_sec=runtime_cfg['record_max_duration_min'] * 60,
+                gap_sec=runtime_cfg['record_no_boat_gap_sec'],
+                record_fps=runtime_cfg['record_fps'],
                 runs_base=str(self._runs_base)
             )
             self._video_worker.start()

@@ -153,8 +153,43 @@ def _ensure_invoices_creation_source() -> None:
         raise
 
 
+def _ensure_detections_audit_image_path() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('detections'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('detections')}
+        if 'audit_image_path' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect detections table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmt = None
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE detections ADD COLUMN IF NOT EXISTS audit_image_path TEXT')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE detections ADD COLUMN audit_image_path TEXT')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add detections.audit_image_path manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        logger.info('schema_patches: added detections.audit_image_path')
+    except Exception as err:
+        logger.error('schema_patches: failed to add detections.audit_image_path: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
     _ensure_orders_total_amount()
     _ensure_invoices_creation_source()
+    _ensure_detections_audit_image_path()
