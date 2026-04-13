@@ -13,6 +13,10 @@ from typing import List, Optional
 
 
 class InvoiceRepository:
+    @staticmethod
+    def _normalize_source(value: Optional[str]) -> str:
+        return (value or '').strip().upper()
+
     def get(self, db: Session, invoice_id: int, include_deleted: bool = False) -> Optional[Invoice]:
         q = (
             db.query(Invoice)
@@ -87,12 +91,23 @@ class InvoiceRepository:
                 q = q.filter(Invoice.payment_status == payment_status)
             q = q.order_by(Invoice.created_at.desc())
         if creation_source:
-            q = q.filter(Invoice.creation_source == creation_source)
+            normalized = self._normalize_source(creation_source)
+            if normalized == 'AI':
+                # Backward-compatible: dữ liệu cũ từng dùng ORDER_AUTO cho hóa đơn tự động.
+                q = q.filter(
+                    or_(
+                        Invoice.creation_source == 'AI',
+                        Invoice.creation_source == 'ORDER_AUTO',
+                    )
+                )
+            else:
+                q = q.filter(Invoice.creation_source == normalized)
         elif exclude_creation_source:
+            normalized_exclude = self._normalize_source(exclude_creation_source)
             q = q.filter(
                 or_(
                     Invoice.creation_source.is_(None),
-                    Invoice.creation_source != exclude_creation_source,
+                    Invoice.creation_source != normalized_exclude,
                 )
             )
         return q.offset(skip).limit(limit).all()

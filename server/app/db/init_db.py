@@ -66,8 +66,8 @@ def _run_seed_data() -> None:
     seed_sql = """
     INSERT INTO roles (role_name, description, permissions) VALUES
         ('admin',    'Full system access',     '{"all": true}'),
-        ('operator', 'Port operations staff',  '{"detections": true, "orders": true, "vessels": true}'),
-        ('viewer',   'Read-only access',       '{"read": true}')
+        ('operator', 'Port operations staff',  '{"menus": ["dashboard", "orders", "revenue", "vessels", "port", "stats", "backup", "profile"]}'),
+        ('viewer',   'Read-only access',       '{"menus": ["dashboard", "stats", "backup", "profile"]}')
     ON CONFLICT (role_name) DO NOTHING;
 
     INSERT INTO vessel_types (type_name, description) VALUES

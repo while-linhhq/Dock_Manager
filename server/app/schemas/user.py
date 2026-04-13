@@ -1,6 +1,15 @@
 from pydantic import BaseModel, EmailStr
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
+
+
+class UserRoleBrief(BaseModel):
+    id: int
+    role_name: str
+    description: Optional[str] = None
+    permissions: Optional[dict[str, Any]] = None
+
+    model_config = {'from_attributes': True}
 
 
 class UserBase(BaseModel):
@@ -29,5 +38,13 @@ class UserRead(UserBase):
     last_login: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    role: Optional[UserRoleBrief] = None
 
     model_config = {'from_attributes': True}
+
+
+class UserSelfUpdate(BaseModel):
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    password: Optional[str] = None

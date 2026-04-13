@@ -1,20 +1,37 @@
 from sqlalchemy.orm import Session
+from sqlalchemy.orm import joinedload
 from app.models.user import User
 from typing import List, Optional
 
 
 class UserRepository:
     def get(self, db: Session, user_id: int) -> Optional[User]:
-        return db.query(User).filter(User.id == user_id).first()
+        return (
+            db.query(User)
+            .options(joinedload(User.role))
+            .filter(User.id == user_id)
+            .first()
+        )
 
     def get_by_username(self, db: Session, username: str) -> Optional[User]:
-        return db.query(User).filter(User.username == username).first()
+        return (
+            db.query(User)
+            .options(joinedload(User.role))
+            .filter(User.username == username)
+            .first()
+        )
 
     def get_by_email(self, db: Session, email: str) -> Optional[User]:
         return db.query(User).filter(User.email == email).first()
 
     def get_all(self, db: Session, skip: int = 0, limit: int = 100) -> List[User]:
-        return db.query(User).offset(skip).limit(limit).all()
+        return (
+            db.query(User)
+            .options(joinedload(User.role))
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
     def create(self, db: Session, username: str, hashed_password: str, **kwargs) -> User:
         db_user = User(username=username, hashed_password=hashed_password, **kwargs)
