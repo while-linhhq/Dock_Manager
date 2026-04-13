@@ -1,5 +1,5 @@
 import { httpClient } from '../../../services/httpClient';
-import type { DetectionRead, CameraRead } from '../../../types/api.types';
+import type { DetectionRead, CameraRead, DetectionMediaRead } from '../../../types/api.types';
 
 export type DetectionVerify = {
   is_accepted: boolean;
@@ -43,6 +43,9 @@ export const portApi = {
   },
   verifyDetection: async (id: string, data: DetectionVerify): Promise<DetectionRead> => {
     return httpClient.post<DetectionRead>(`/detections/${id}/verify`, data);
+  },
+  getDetectionMedia: async (id: string): Promise<DetectionMediaRead[]> => {
+    return httpClient.get<DetectionMediaRead[]>(`/detections/${id}/media`);
   },
   getCameras: async (activeOnly: boolean = false): Promise<CameraRead[]> => {
     return httpClient.get<CameraRead[]>(`/cameras/?active_only=${activeOnly}`);

@@ -52,12 +52,25 @@ export type DetectionRead = {
   track_id?: string | null;
   start_time?: string | null;
   end_time?: string | null;
+  video_path?: string | null;
+  video_url?: string | null;
+  audit_image_path?: string | null;
+  audit_image_url?: string | null;
   created_at: string;
   confidence?: number | null;
   is_accepted?: boolean | null;
   ocr_results?: Array<Record<string, unknown>> | null;
   vessel?: VesselRead;
 }
+
+export type DetectionMediaRead = {
+  id: number;
+  detection_id: number;
+  media_type: 'image' | 'video' | 'thumbnail' | string;
+  file_path: string;
+  file_size?: number | null;
+  created_at: string;
+};
 
 export type OrderRead = {
   id: number | string;
