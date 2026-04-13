@@ -11,6 +11,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   checkAuth: () => Promise<void>;
+  setUserProfile: (user: UserRead) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -54,5 +55,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       authStorage.removeToken();
       set({ user: null, isAuthenticated: false, isLoading: false });
     }
+  },
+  setUserProfile: (user) => {
+    set({ user });
   },
 }));

@@ -2,28 +2,32 @@ import { httpClient } from '../../../services/httpClient';
 import type { UserRead, RoleRead } from '../../../types/api.types';
 
 export type UserCreate = {
+  username: string;
   email: string;
   password: string;
   full_name: string;
-  role_id: string;
+  role_id: number;
+  is_active?: boolean;
 }
 
 export type UserUpdate = {
   email?: string;
-  password?: string;
   full_name?: string;
-  role_id?: string;
+  role_id?: number;
+  phone?: string;
   is_active?: boolean;
 }
 
 export type RoleCreate = {
   role_name: string;
   description?: string;
+  permissions?: Record<string, unknown>;
 }
 
 export type RoleUpdate = {
   role_name?: string;
   description?: string;
+  permissions?: Record<string, unknown>;
 }
 
 export const usersApi = {
@@ -53,5 +57,13 @@ export const usersApi = {
   },
   deleteRole: async (id: string): Promise<void> => {
     return httpClient.delete(`/roles/${id}`);
+  },
+  updateMe: async (data: {
+    email?: string;
+    full_name?: string;
+    phone?: string;
+    password?: string;
+  }): Promise<UserRead> => {
+    return httpClient.put<UserRead>('/users/me', data);
   },
 };

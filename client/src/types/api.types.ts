@@ -1,7 +1,9 @@
 export type UserRead = {
   id: string;
+  username?: string;
   email: string;
   full_name: string;
+  phone?: string | null;
   role_id: string;
   is_active: boolean;
   role?: RoleRead;
@@ -12,6 +14,7 @@ export type RoleRead = {
   role_name?: string;
   name?: string;
   description?: string;
+  permissions?: Record<string, unknown> | null;
 }
 
 export type VesselTypeRead = {

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { UserRead, RoleRead } from '../../../types/api.types';
 import { usersApi } from '../services/usersApi';
-import type { RoleCreate, RoleUpdate } from '../services/usersApi';
+import type { RoleCreate, RoleUpdate, UserCreate, UserUpdate } from '../services/usersApi';
 
 interface UserState {
   users: UserRead[];
@@ -44,9 +44,23 @@ export const useUserStore = create<UserState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       if (id) {
-        await usersApi.updateUser(id, data);
+        const payload: UserUpdate = {
+          email: data.email,
+          full_name: data.full_name,
+          role_id: data.role_id ? Number(data.role_id) : undefined,
+          is_active: data.is_active,
+        };
+        await usersApi.updateUser(id, payload);
       } else {
-        await usersApi.createUser(data);
+        const payload: UserCreate = {
+          username: String(data.username || '').trim(),
+          email: data.email,
+          password: String(data.password || ''),
+          full_name: data.full_name,
+          role_id: Number(data.role_id),
+          is_active: data.is_active,
+        };
+        await usersApi.createUser(payload);
       }
       await get().fetchUsers();
     } catch (err: any) {

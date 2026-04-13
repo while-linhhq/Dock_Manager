@@ -18,18 +18,21 @@ import {
   Moon,
   Menu,
   X,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { formatTimeVN } from '../utils/date-time';
+import { getAccessibleMenus, type MenuKey } from '../utils/rbac';
 
-const navItems = [
-  { path: PATHS.HOME, label: 'Bảng Điều Khiển', icon: LayoutDashboard },
-  { path: '/orders', label: 'Quản Lý Đơn Hàng', icon: ClipboardList },
-  { path: '/revenue', label: 'Quản Lý Thu Nhập', icon: Wallet },
-  { path: '/vessels', label: 'Mã Tàu', icon: Ship },
-  { path: '/port', label: 'Quản Lý Cảng', icon: Anchor },
-  { path: '/stats', label: 'Thống Kê', icon: BarChart3 },
-  { path: '/backup', label: 'Sao Lưu / Lịch Sử', icon: Database },
+const navItems: Array<{ key: MenuKey; path: string; label: string; icon: LucideIcon }> = [
+  { key: 'dashboard', path: PATHS.HOME, label: 'Bảng Điều Khiển', icon: LayoutDashboard },
+  { key: 'orders', path: PATHS.ORDERS, label: 'Quản Lý Đơn Hàng', icon: ClipboardList },
+  { key: 'revenue', path: PATHS.REVENUE, label: 'Quản Lý Thu Nhập', icon: Wallet },
+  { key: 'vessels', path: PATHS.VESSELS, label: 'Mã Tàu', icon: Ship },
+  { key: 'port', path: PATHS.PORT, label: 'Quản Lý Cảng', icon: Anchor },
+  { key: 'stats', path: PATHS.STATS, label: 'Thống Kê', icon: BarChart3 },
+  { key: 'backup', path: PATHS.BACKUP, label: 'Sao Lưu / Lịch Sử', icon: Database },
+  { key: 'users', path: PATHS.USERS, label: 'Quản Lý User', icon: User },
 ];
 
 export const MainLayout: React.FC = () => {
@@ -39,6 +42,8 @@ export const MainLayout: React.FC = () => {
   const { isDarkMode, toggleTheme } = useThemeStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [systemClock, setSystemClock] = useState<Date>(() => new Date());
+  const accessibleMenus = getAccessibleMenus(user);
+  const visibleNavItems = navItems.filter((item) => accessibleMenus.includes(item.key));
 
   useEffect(() => {
     if (isDarkMode) {
@@ -147,7 +152,7 @@ export const MainLayout: React.FC = () => {
         </div>
 
         <nav className="flex-1 overflow-y-auto overscroll-y-contain py-4 sm:py-6 px-3 sm:px-4 space-y-1">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path;
             return (
@@ -263,6 +268,7 @@ export const MainLayout: React.FC = () => {
             </div>
             <button
               type="button"
+              onClick={() => navigate(PATHS.PROFILE)}
               className={cn(
                 'p-2 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center',
                 isDarkMode ? 'hover:bg-white/5 text-gray-500 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-gray-800',

@@ -79,6 +79,16 @@ export const RolesSection: React.FC<RolesSectionProps> = ({
                 <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-1">
                   {role.description || 'Không có mô tả'}
                 </p>
+                <p className="mt-2 text-[10px] text-blue-600 dark:text-blue-400 uppercase tracking-wider">
+                  {(() => {
+                    const perms = (role.permissions || {}) as Record<string, unknown>;
+                    if (perms.all === true) {
+                      return 'Toàn quyền';
+                    }
+                    const menus = Array.isArray(perms.menus) ? perms.menus : [];
+                    return menus.length > 0 ? `Menu: ${menus.join(', ')}` : 'Không có quyền menu';
+                  })()}
+                </p>
               </div>
               <div className="pt-4 border-t border-gray-100 dark:border-white/5 flex justify-end gap-3">
                 <button

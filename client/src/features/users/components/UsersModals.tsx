@@ -35,6 +35,30 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
   roleForm,
   onRoleSubmit,
 }) => {
+  const roleAll = roleForm.watch('permissions.all');
+  const roleMenus = roleForm.watch('permissions.menus') || [];
+  const menuOptions = [
+    { key: 'dashboard', label: 'Dashboard' },
+    { key: 'orders', label: 'Đơn hàng' },
+    { key: 'revenue', label: 'Thu nhập' },
+    { key: 'vessels', label: 'Mã tàu' },
+    { key: 'port', label: 'Quản lý cảng' },
+    { key: 'stats', label: 'Thống kê' },
+    { key: 'backup', label: 'Sao lưu' },
+    { key: 'users', label: 'Người dùng / RBAC' },
+    { key: 'profile', label: 'Hồ sơ cá nhân' },
+  ];
+
+  const toggleMenu = (menuKey: string) => {
+    const current = new Set(roleMenus);
+    if (current.has(menuKey)) {
+      current.delete(menuKey);
+    } else {
+      current.add(menuKey);
+    }
+    roleForm.setValue('permissions.menus', Array.from(current));
+  };
+
   return (
     <>
       <Modal
@@ -49,6 +73,14 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
             {...userForm.register('full_name')}
             error={userForm.formState.errors.full_name?.message}
           />
+          {!editingId && (
+            <Input
+              label="Username"
+              placeholder="VD: nguyenvana"
+              {...userForm.register('username')}
+              error={userForm.formState.errors.username?.message}
+            />
+          )}
           <Input
             label="Email"
             type="email"
@@ -76,7 +108,7 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
               <option value="">Chọn vai trò...</option>
               {roles.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.name}
+                  {r.role_name || r.name || `Role #${r.id}`}
                 </option>
               ))}
             </select>
@@ -137,6 +169,41 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
               className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm font-mono dark:text-white transition-all min-h-[100px]"
               placeholder="Nhập mô tả vai trò..."
             />
+          </div>
+          <div className="space-y-3 rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5">
+            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+              RBAC Menu Access
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={roleAll === true}
+                onChange={(e) => {
+                  roleForm.setValue('permissions.all', e.target.checked);
+                  if (e.target.checked) {
+                    roleForm.setValue('permissions.menus', []);
+                  }
+                }}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600"
+              />
+              <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                Toàn quyền hệ thống
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {menuOptions.map((item) => (
+                <label key={item.key} className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
+                  <input
+                    type="checkbox"
+                    disabled={roleAll === true}
+                    checked={roleMenus.includes(item.key)}
+                    onChange={() => toggleMenu(item.key)}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600"
+                  />
+                  {item.label}
+                </label>
+              ))}
+            </div>
           </div>
           <div className="pt-4 flex space-x-3">
             <Button type="button" variant="outline" onClick={onCloseRole} className="flex-1">

@@ -12,7 +12,9 @@ import { PortPage } from '../pages/PortPage';
 import { StatisticsPage } from '../pages/StatisticsPage';
 import { BackupPage } from '../pages/BackupPage';
 import { UsersPage } from '../pages/UsersPage';
+import { ProfilePage } from '../pages/ProfilePage';
 import { useAuthStore } from '../features/auth/store/authStore';
+import { hasMenuAccess, type MenuKey } from '../utils/rbac';
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -26,11 +28,22 @@ const PublicRoute = ({ children }: { children: React.ReactNode }) => {
   return <>{children}</>;
 };
 
-const Placeholder = ({ title }: { title: string }) => (
-  <div className="p-8 text-white font-bold uppercase tracking-widest">
-    {title} Module
-  </div>
-);
+const RequireMenuAccess = ({
+  menu,
+  children,
+}: {
+  menu: MenuKey;
+  children: React.ReactNode;
+}) => {
+  const user = useAuthStore((state) => state.user);
+  if (!user) {
+    return <>{children}</>;
+  }
+  if (!hasMenuAccess(user, menu)) {
+    return <Navigate to={PATHS.HOME} replace />;
+  }
+  return <>{children}</>;
+};
 
 const router = createBrowserRouter([
   {
@@ -42,14 +55,14 @@ const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <HomePage /> },
-      { path: PATHS.ORDERS, element: <OrdersPage /> },
-      { path: PATHS.REVENUE, element: <RevenuePage /> },
-      { path: PATHS.VESSELS, element: <VesselsPage /> },
-      { path: PATHS.PORT, element: <PortPage /> },
-      { path: PATHS.STATS, element: <StatisticsPage /> },
-      { path: PATHS.BACKUP, element: <BackupPage /> },
-      { path: PATHS.USERS, element: <UsersPage /> },
-      { path: PATHS.PROFILE, element: <Placeholder title="User Profile" /> },
+      { path: PATHS.ORDERS, element: <RequireMenuAccess menu="orders"><OrdersPage /></RequireMenuAccess> },
+      { path: PATHS.REVENUE, element: <RequireMenuAccess menu="revenue"><RevenuePage /></RequireMenuAccess> },
+      { path: PATHS.VESSELS, element: <RequireMenuAccess menu="vessels"><VesselsPage /></RequireMenuAccess> },
+      { path: PATHS.PORT, element: <RequireMenuAccess menu="port"><PortPage /></RequireMenuAccess> },
+      { path: PATHS.STATS, element: <RequireMenuAccess menu="stats"><StatisticsPage /></RequireMenuAccess> },
+      { path: PATHS.BACKUP, element: <RequireMenuAccess menu="backup"><BackupPage /></RequireMenuAccess> },
+      { path: PATHS.USERS, element: <RequireMenuAccess menu="users"><UsersPage /></RequireMenuAccess> },
+      { path: PATHS.PROFILE, element: <RequireMenuAccess menu="profile"><ProfilePage /></RequireMenuAccess> },
     ],
   },
   {

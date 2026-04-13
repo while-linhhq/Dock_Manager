@@ -26,11 +26,16 @@ export const UsersView: React.FC = () => {
 
   const userForm = useForm<UserFormValues>({
     resolver: zodResolver(userSchema),
-    defaultValues: { is_active: true },
+    defaultValues: { is_active: true, username: '' },
   });
 
   const roleForm = useForm<RoleCreate>({
     resolver: zodResolver(roleSchema),
+    defaultValues: {
+      permissions: {
+        menus: [],
+      },
+    },
   });
 
   useEffect(() => {
@@ -45,7 +50,7 @@ export const UsersView: React.FC = () => {
   const filteredUsers = useMemo(() => {
     return users.filter((u) => {
       if (
-        !matchesAnyField(userQ, u.full_name, u.email, u.role?.name, u.role_id)
+        !matchesAnyField(userQ, u.full_name, u.email, u.role?.name, u.role?.role_name, u.role_id)
       ) {
         return false;
       }
@@ -90,7 +95,15 @@ export const UsersView: React.FC = () => {
 
   const onRoleSubmit = async (data: RoleCreate) => {
     try {
-      await upsertRole(editingId, data);
+      const normalized: RoleCreate = {
+        role_name: data.role_name,
+        description: data.description,
+        permissions: {
+          all: data.permissions?.all === true,
+          menus: data.permissions?.all ? [] : data.permissions?.menus ?? [],
+        },
+      };
+      await upsertRole(editingId, normalized);
       setIsRoleModalOpen(false);
       roleForm.reset();
       setEditingId(null);
@@ -115,6 +128,12 @@ export const UsersView: React.FC = () => {
     roleForm.reset({
       role_name: role.role_name || role.name || '',
       description: role.description,
+      permissions: {
+        all: Boolean((role.permissions as Record<string, unknown> | undefined)?.all === true),
+        menus: Array.isArray((role.permissions as Record<string, unknown> | undefined)?.menus)
+          ? ((role.permissions as Record<string, unknown>).menus as string[])
+          : [],
+      },
     });
     setIsRoleModalOpen(true);
   };
@@ -142,7 +161,7 @@ export const UsersView: React.FC = () => {
           userFilterCount={userFilterCount}
           onOpenAddUser={() => {
             setEditingId(null);
-            userForm.reset({ is_active: true });
+            userForm.reset({ is_active: true, username: '' });
             setIsUserModalOpen(true);
           }}
           roles={roles}
@@ -159,7 +178,7 @@ export const UsersView: React.FC = () => {
           roleFilterCount={roleQ.trim() ? 1 : 0}
           onOpenAddRole={() => {
             setEditingId(null);
-            roleForm.reset({ role_name: '', description: '' });
+            roleForm.reset({ role_name: '', description: '', permissions: { menus: [] } });
             setIsRoleModalOpen(true);
           }}
           roles={roles}
