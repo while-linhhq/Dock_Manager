@@ -53,29 +53,106 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       return;
     }
 
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'blob';
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+    let lastMessageAt = Date.now();
 
-    ws.onmessage = (ev: MessageEvent) => {
-      const blob = ev.data as Blob;
-      if (!(blob instanceof Blob) || blob.size === 0) {
-        return;
+    const clearReconnect = () => {
+      if (reconnectTimer != null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
-      const next = URL.createObjectURL(blob);
-      if (previewObjectUrlRef.current) {
-        URL.revokeObjectURL(previewObjectUrlRef.current);
-      }
-      previewObjectUrlRef.current = next;
-      setPipelinePreviewUrl(next);
     };
 
-    return () => {
-      ws.close();
+    const clearWatchdog = () => {
+      if (watchdogTimer != null) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+
+    const revokePreview = () => {
       if (previewObjectUrlRef.current) {
         URL.revokeObjectURL(previewObjectUrlRef.current);
         previewObjectUrlRef.current = null;
       }
       setPipelinePreviewUrl(null);
+    };
+
+    const hardResetSocket = () => {
+      try {
+        ws?.close();
+      } catch {
+        // ignore
+      }
+      ws = null;
+    };
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+      clearReconnect();
+      clearWatchdog();
+      lastMessageAt = Date.now();
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = 'blob';
+
+      ws.onopen = () => {
+        attempt = 0;
+        clearWatchdog();
+        watchdogTimer = setInterval(() => {
+          // If we stop receiving frames for a while, force reconnect.
+          // This recovers from "half-open" WS where the browser thinks it's open but nothing flows.
+          if (Date.now() - lastMessageAt > 10_000) {
+            hardResetSocket();
+          }
+        }, 2000);
+      };
+
+      ws.onmessage = (ev: MessageEvent) => {
+        lastMessageAt = Date.now();
+        const blob = ev.data as Blob;
+        // Server may send text keepalive messages; ignore.
+        if (!(blob instanceof Blob) || blob.size === 0) {
+          return;
+        }
+        const next = URL.createObjectURL(blob);
+        if (previewObjectUrlRef.current) {
+          URL.revokeObjectURL(previewObjectUrlRef.current);
+        }
+        previewObjectUrlRef.current = next;
+        setPipelinePreviewUrl(next);
+      };
+
+      ws.onerror = () => {
+        /* onclose schedules reconnect */
+      };
+
+      ws.onclose = () => {
+        if (cancelled) {
+          return;
+        }
+        clearWatchdog();
+        attempt += 1;
+        if (attempt > 20) {
+          return;
+        }
+        reconnectTimer = setTimeout(connect, Math.min(10_000, 350 * attempt));
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      clearReconnect();
+      clearWatchdog();
+      ws?.close();
+      revokePreview();
     };
   }, [wsActive]);
 

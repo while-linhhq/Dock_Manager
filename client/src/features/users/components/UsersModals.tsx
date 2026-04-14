@@ -124,7 +124,7 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
               htmlFor="user_is_active"
               className="text-[10px] font-bold text-gray-700 dark:text-gray-300 uppercase tracking-widest"
             >
-              Kích Hoạt Tài Khoản
+              Không tạm khóa (cho phép đăng nhập)
             </label>
           </div>
           <div className="pt-4 flex space-x-3">

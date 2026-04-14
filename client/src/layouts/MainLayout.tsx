@@ -21,8 +21,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
+import { RouteErrorBoundary } from '../components/RouteErrorBoundary/RouteErrorBoundary';
 import { formatTimeVN } from '../utils/date-time';
-import { getAccessibleMenus, type MenuKey } from '../utils/rbac';
+import { ALL_MENU_KEYS, getAccessibleMenus, type MenuKey } from '../utils/rbac';
 
 const navItems: Array<{ key: MenuKey; path: string; label: string; icon: LucideIcon }> = [
   { key: 'dashboard', path: PATHS.HOME, label: 'Bảng Điều Khiển', icon: LayoutDashboard },
@@ -38,11 +39,13 @@ const navItems: Array<{ key: MenuKey; path: string; label: string; icon: LucideI
 export const MainLayout: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuthStore();
+  const { user, logout, isAuthenticated } = useAuthStore();
   const { isDarkMode, toggleTheme } = useThemeStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [systemClock, setSystemClock] = useState<Date>(() => new Date());
-  const accessibleMenus = getAccessibleMenus(user);
+  // Sau reload: có token nhưng user chưa fetch — tạm hiện đủ mục để sidebar không trống; RBAC thật khi có user.
+  const accessibleMenus =
+    user != null ? getAccessibleMenus(user) : isAuthenticated ? ALL_MENU_KEYS : [];
   const visibleNavItems = navItems.filter((item) => accessibleMenus.includes(item.key));
 
   useEffect(() => {
@@ -103,6 +106,7 @@ export const MainLayout: React.FC = () => {
     <div
       className={cn(
         'flex min-h-dvh w-full max-w-[100vw] overflow-x-hidden font-sans selection:bg-blue-500/30 transition-colors duration-300 antialiased pt-[env(safe-area-inset-top)]',
+        'lg:h-dvh lg:max-h-dvh lg:overflow-hidden',
         isDarkMode ? 'bg-[#0a0a0b] text-gray-200' : 'bg-gray-50 text-gray-800',
       )}
     >
@@ -118,13 +122,13 @@ export const MainLayout: React.FC = () => {
       {/* Sidebar */}
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 flex w-[min(18rem,calc(100vw-2.5rem))] max-w-[85vw] flex-col border-r shadow-2xl transition-transform duration-200 ease-out lg:static lg:z-0 lg:w-64 lg:max-w-none lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-50 flex h-dvh max-h-dvh w-[min(18rem,calc(100vw-2.5rem))] max-w-[85vw] flex-col overflow-hidden border-r shadow-2xl transition-transform duration-200 ease-out lg:z-30 lg:w-64 lg:max-w-none lg:translate-x-0 lg:shadow-none',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
           isDarkMode ? 'bg-[#121214] border-white/5' : 'bg-white border-gray-200',
         )}
       >
         <div className={cn(
-          'p-4 sm:p-5 lg:p-6 flex items-center justify-between gap-2 border-b transition-colors duration-300',
+          'shrink-0 p-4 sm:p-5 lg:p-6 flex items-center justify-between gap-2 border-b transition-colors duration-300',
           isDarkMode ? "border-white/5" : "border-gray-100"
         )}>
           <div className="flex min-w-0 items-center space-x-3">
@@ -151,7 +155,7 @@ export const MainLayout: React.FC = () => {
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto overscroll-y-contain py-4 sm:py-6 px-3 sm:px-4 space-y-1">
+        <nav className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain py-4 sm:py-6 px-3 sm:px-4 space-y-1">
           {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path;
@@ -179,7 +183,7 @@ export const MainLayout: React.FC = () => {
         </nav>
 
         <div className={cn(
-          'p-3 sm:p-4 border-t space-y-3 sm:space-y-4 transition-colors duration-300 pb-[max(0.75rem,env(safe-area-inset-bottom))]',
+          'shrink-0 p-3 sm:p-4 border-t space-y-3 sm:space-y-4 transition-colors duration-300 pb-[max(0.75rem,env(safe-area-inset-bottom))]',
           isDarkMode ? "border-white/5" : "border-gray-100"
         )}>
           <div className={cn(
@@ -213,7 +217,7 @@ export const MainLayout: React.FC = () => {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <main className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden lg:ml-64 lg:h-full">
         {/* Header */}
         <header className={cn(
           'min-h-14 sm:min-h-16 border-b flex flex-wrap items-center justify-between gap-2 gap-y-3 px-4 sm:px-6 lg:px-8 py-2 sm:py-0 shadow-sm transition-colors duration-300',
@@ -290,7 +294,9 @@ export const MainLayout: React.FC = () => {
               isDarkMode ? "bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" : "bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] bg-size-[16px_16px]"
           )} />
           <div className="relative z-10 mx-auto w-full max-w-[1600px]">
-            <Outlet />
+            <RouteErrorBoundary key={location.pathname}>
+              <Outlet />
+            </RouteErrorBoundary>
           </div>
         </div>
       </main>

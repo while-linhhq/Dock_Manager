@@ -11,6 +11,7 @@ interface UserState {
   fetchUsers: (skip?: number, limit?: number) => Promise<void>;
   fetchRoles: () => Promise<void>;
   upsertUser: (id: string | null, data: any) => Promise<void>;
+  setUserActive: (id: string, is_active: boolean) => Promise<void>;
   deleteUser: (id: string) => Promise<void>;
   createRole: (data: RoleCreate) => Promise<void>;
   upsertRole: (id: string | null, data: RoleCreate | RoleUpdate) => Promise<void>;
@@ -68,11 +69,23 @@ export const useUserStore = create<UserState>((set, get) => ({
       throw err;
     }
   },
+  setUserActive: async (id, is_active) => {
+    set({ isLoading: true, error: null });
+    try {
+      await usersApi.updateUser(id, { is_active });
+      await get().fetchUsers();
+      set({ isLoading: false });
+    } catch (err: any) {
+      set({ error: err.message || 'Failed to update user status', isLoading: false });
+      throw err;
+    }
+  },
   deleteUser: async (id) => {
     set({ isLoading: true, error: null });
     try {
       await usersApi.deleteUser(id);
       await get().fetchUsers();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to delete user', isLoading: false });
       throw err;

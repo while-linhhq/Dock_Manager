@@ -61,12 +61,29 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   const [compareLoading, setCompareLoading] = useState(false);
 
   const mediaOrigin = useMemo(() => {
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
-    try {
-      return new URL(apiBase).origin;
-    } catch {
-      return '';
+    const apiBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+    const proxyTarget = (import.meta.env.VITE_API_PROXY_TARGET || '').trim();
+
+    if (/^https?:\/\//i.test(apiBase)) {
+      try {
+        return new URL(apiBase).origin;
+      } catch {
+        // ignore invalid env and continue fallback chain
+      }
     }
+
+    if (proxyTarget && !/^https?:\/\//i.test(apiBase)) {
+      try {
+        return new URL(proxyTarget).origin;
+      } catch {
+        // ignore invalid env and continue fallback chain
+      }
+    }
+
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return window.location.origin;
+    }
+    return '';
   }, []);
 
   const resolveImageUrl = (det: DetectionRead): string | null => {

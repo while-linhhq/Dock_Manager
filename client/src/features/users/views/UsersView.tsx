@@ -10,6 +10,7 @@ import { UsersMainTabs, type UsersMainTab } from '../components/UsersMainTabs';
 import { UsersListSection } from '../components/UsersListSection';
 import { RolesSection } from '../components/RolesSection';
 import { UsersModals } from '../components/UsersModals';
+import { useAuthStore } from '../../auth/store/authStore';
 
 export const UsersView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<UsersMainTab>('users');
@@ -18,11 +19,22 @@ export const UsersView: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [userQ, setUserQ] = useState('');
   const [userRoleId, setUserRoleId] = useState('');
-  const [userActive, setUserActive] = useState<'all' | 'active' | 'inactive'>('all');
+  const [userActive, setUserActiveFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [roleQ, setRoleQ] = useState('');
 
-  const { users, roles, isLoading, fetchUsers, fetchRoles, upsertUser, upsertRole, deleteRole } =
-    useUserStore();
+  const { user: authUser } = useAuthStore();
+  const {
+    users,
+    roles,
+    isLoading,
+    fetchUsers,
+    fetchRoles,
+    upsertUser,
+    upsertRole,
+    deleteRole,
+    deleteUser,
+    setUserActive,
+  } = useUserStore();
 
   const userForm = useForm<UserFormValues>({
     resolver: zodResolver(userSchema),
@@ -79,7 +91,7 @@ export const UsersView: React.FC = () => {
   const resetUserFilters = () => {
     setUserQ('');
     setUserRoleId('');
-    setUserActive('all');
+    setUserActiveFilter('all');
   };
 
   const onUserSubmit = async (data: UserFormValues) => {
@@ -145,6 +157,47 @@ export const UsersView: React.FC = () => {
     await deleteRole(id);
   };
 
+  const handleLockUser = async (u: UserRead) => {
+    if (
+      !window.confirm(
+        `Tạm khóa "${u.full_name}"? Họ sẽ không đăng nhập được cho đến khi mở khóa.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await setUserActive(String(u.id), false);
+    } catch {
+      /* store error */
+    }
+  };
+
+  const handleUnlockUser = async (u: UserRead) => {
+    if (!window.confirm(`Mở khóa "${u.full_name}" và cho phép đăng nhập lại?`)) {
+      return;
+    }
+    try {
+      await setUserActive(String(u.id), true);
+    } catch {
+      /* store error */
+    }
+  };
+
+  const handleDeleteUser = async (u: UserRead) => {
+    if (
+      !window.confirm(
+        `XÓA VĨNH VIỄN "${u.full_name}" khỏi cơ sở dữ liệu? Hành động không hoàn tác. Dữ liệu tham chiếu (đơn, log…) sẽ giữ user_id = null nếu schema cho phép.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteUser(String(u.id));
+    } catch {
+      /* store error */
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <UsersMainTabs activeTab={activeTab} onTabChange={setActiveTab} />
@@ -156,7 +209,7 @@ export const UsersView: React.FC = () => {
           userRoleId={userRoleId}
           setUserRoleId={setUserRoleId}
           userActive={userActive}
-          setUserActive={setUserActive}
+          setUserActive={setUserActiveFilter}
           resetUserFilters={resetUserFilters}
           userFilterCount={userFilterCount}
           onOpenAddUser={() => {
@@ -169,6 +222,10 @@ export const UsersView: React.FC = () => {
           filteredUsers={filteredUsers}
           isLoading={isLoading}
           onEditUser={handleEditUser}
+          onLockUser={handleLockUser}
+          onUnlockUser={handleUnlockUser}
+          onDeleteUser={handleDeleteUser}
+          currentUserId={authUser?.id ?? null}
         />
       ) : (
         <RolesSection

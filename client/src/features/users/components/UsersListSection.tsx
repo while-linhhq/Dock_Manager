@@ -1,5 +1,14 @@
 import React from 'react';
-import { CheckCircle2, Loader2, MoreVertical, UserPlus, XCircle } from 'lucide-react';
+import {
+  CheckCircle2,
+  Loader2,
+  Lock,
+  LockOpen,
+  Pencil,
+  Trash2,
+  UserPlus,
+  XCircle,
+} from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
@@ -25,6 +34,10 @@ export type UsersListSectionProps = {
   filteredUsers: UserRead[];
   isLoading: boolean;
   onEditUser: (u: UserRead) => void;
+  onLockUser: (u: UserRead) => void;
+  onUnlockUser: (u: UserRead) => void;
+  onDeleteUser: (u: UserRead) => void;
+  currentUserId: string | null;
 };
 
 export const UsersListSection: React.FC<UsersListSectionProps> = ({
@@ -42,7 +55,13 @@ export const UsersListSection: React.FC<UsersListSectionProps> = ({
   filteredUsers,
   isLoading,
   onEditUser,
+  onLockUser,
+  onUnlockUser,
+  onDeleteUser,
+  currentUserId,
 }) => {
+  const isSelf = (u: UserRead) =>
+    currentUserId != null && String(u.id) === String(currentUserId);
   return (
     <div className="space-y-6">
       <TableFilterPanel onReset={resetUserFilters} activeCount={userFilterCount}>
@@ -77,7 +96,7 @@ export const UsersListSection: React.FC<UsersListSectionProps> = ({
           >
             <option value="all">Tất cả</option>
             <option value="active">Đang hoạt động</option>
-            <option value="inactive">Đã vô hiệu</option>
+            <option value="inactive">Tạm khóa</option>
           </select>
         </FilterField>
       </TableFilterPanel>
@@ -158,13 +177,68 @@ export const UsersListSection: React.FC<UsersListSectionProps> = ({
                       </span>
                     </td>
                     <td className={cn(dt.pad, 'text-right')}>
-                      <button
-                        type="button"
-                        onClick={() => onEditUser(u)}
-                        className="p-2 text-gray-400 hover:text-blue-500 transition-all"
-                      >
-                        <MoreVertical className="w-4 h-4" />
-                      </button>
+                      <div className="inline-flex flex-wrap items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onEditUser(u)}
+                          className="p-2 text-gray-400 hover:text-blue-500 transition-all rounded-lg hover:bg-gray-100 dark:hover:bg-white/10"
+                          aria-label="Chỉnh sửa"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        {u.is_active ? (
+                          <button
+                            type="button"
+                            disabled={isSelf(u)}
+                            onClick={() => onLockUser(u)}
+                            className={cn(
+                              'p-2 rounded-lg transition-all',
+                              isSelf(u)
+                                ? 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                                : 'text-gray-400 hover:text-amber-500 hover:bg-amber-500/10',
+                            )}
+                            aria-label="Tạm khóa tài khoản"
+                            title={isSelf(u) ? 'Không thể tạm khóa chính bạn' : 'Tạm khóa (không đăng nhập được)'}
+                          >
+                            <Lock className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isSelf(u)}
+                            onClick={() => onUnlockUser(u)}
+                            className={cn(
+                              'p-2 rounded-lg transition-all',
+                              isSelf(u)
+                                ? 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                                : 'text-gray-400 hover:text-emerald-500 hover:bg-emerald-500/10',
+                            )}
+                            aria-label="Mở khóa tài khoản"
+                            title={isSelf(u) ? 'Không thể mở khóa chính bạn từ đây' : 'Mở khóa (cho phép đăng nhập)'}
+                          >
+                            <LockOpen className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={isSelf(u)}
+                          onClick={() => onDeleteUser(u)}
+                          className={cn(
+                            'p-2 rounded-lg transition-all',
+                            isSelf(u)
+                              ? 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                              : 'text-gray-400 hover:text-red-500 hover:bg-red-500/10',
+                          )}
+                          aria-label="Xóa khỏi hệ thống"
+                          title={
+                            isSelf(u)
+                              ? 'Không thể xóa chính bạn'
+                              : 'Xóa vĩnh viễn khỏi cơ sở dữ liệu'
+                          }
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))

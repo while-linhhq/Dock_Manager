@@ -57,14 +57,18 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   fetchDashboardData: async () => {
     set({ isLoading: true, summaryLoading: true, error: null });
+    const period = get().summaryPeriod;
+    const pipelinePromise = dashboardApi
+      .getPipelineStatus()
+      .catch((): PipelineStatus | null => null);
+
     try {
-      const period = get().summaryPeriod;
       const [stats, systemOverview, summary, recentDetections, pipelineStatus] = await Promise.all([
         dashboardApi.getStats(),
         dashboardApi.getSystemOverview(),
         dashboardApi.getSummary(period),
-        dashboardApi.getRecentDetections(120),
-        dashboardApi.getPipelineStatus(),
+        dashboardApi.getRecentDetections(120).catch(() => [] as DetectionRead[]),
+        pipelinePromise,
       ]);
       set({
         stats,
@@ -77,8 +81,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         summaryLoading: false,
       });
     } catch (err: any) {
+      const pipelineStatus = await pipelinePromise;
       set({
         error: err.message || 'Failed to fetch dashboard data',
+        pipelineStatus,
         isLoading: false,
         summaryLoading: false,
       });

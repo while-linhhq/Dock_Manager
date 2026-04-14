@@ -229,10 +229,14 @@ export type PortLogRead = {
 
 export type AuditLogRead = {
   id: string;
-  user_id: string;
+  user_id?: string | null;
   action: string;
   table_name: string;
   record_id: string;
   created_at: string;
+  entity_type?: string;
+  entity_id?: string | number | null;
+  details?: Record<string, unknown> | null;
+  ip_address?: string | null;
   user?: UserRead;
 }

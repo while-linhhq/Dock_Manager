@@ -11,7 +11,7 @@ export type MenuKey =
   | 'users'
   | 'profile';
 
-const ALL_MENU_KEYS: MenuKey[] = [
+export const ALL_MENU_KEYS: MenuKey[] = [
   'dashboard',
   'orders',
   'revenue',
