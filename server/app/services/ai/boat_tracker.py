@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import threading
 import time
+from uuid import uuid4
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Sequence
@@ -128,15 +129,9 @@ class BoatTracker:
         self._lock = threading.RLock()
 
     def _new_id(self) -> str:
-        """DD-MM-YYYY_HH-MM_<seq trong ngày>, seq reset mỗi ngày (local time)."""
-        now = datetime.datetime.now()
-        d = now.date()
-        if self._id_day != d:
-            self._id_day = d
-            self._daily_seq = 0
-        self._daily_seq += 1
-        prefix = now.strftime("%d-%m-%Y_%H-%M")
-        return f"{prefix}_{self._daily_seq:06d}"
+        """Prefix + UUID for globally-unique track_id (stable across restarts)."""
+        # Keep a short human prefix for logs; UUID ensures uniqueness.
+        return f"trk_{uuid4().hex}"
 
     def _merge_pending_into_track(
         self, pending: PendingRemoved, tid: str, tb: TrackedBoat

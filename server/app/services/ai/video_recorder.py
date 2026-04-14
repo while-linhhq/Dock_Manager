@@ -9,7 +9,11 @@ import cv2
 
 from app.services.ai.boat_tracker import TrackState, TrackedBoat
 
+from app.core.config import settings
 from app.utils.ai.detect_paths import RUNS_DETECT, ensure_dir, timestamp_prefix, videos_dir_for_today
+from app.utils.media.faststart_mp4 import faststart_inplace, has_moov_atom
+from app.utils.media.mp4_codec import get_mp4_video_codec_fourcc
+from app.utils.media.transcode_h264 import transcode_to_h264_faststart
 
 
 def _n_confirmed(tracked_boats: list) -> int:
@@ -56,6 +60,25 @@ class VideoRecorderThread(threading.Thread):
             self._writer.release()
             self._writer = None
             if self._current_path:
+                try:
+                    path = self._current_path
+                    # If MP4 is not browser-friendly (no moov / non-H.264), transcode to H.264 + faststart.
+                    if bool(getattr(settings, 'VIDEO_TRANSCODE_ENABLE', True)):
+                        codec = (get_mp4_video_codec_fourcc(path) or '').strip().lower()
+                        if (not has_moov_atom(path)) or (codec and codec != 'avc1'):
+                            tmp = f'{path}.h264.tmp.mp4'
+                            transcode_to_h264_faststart(
+                                path,
+                                tmp,
+                                preset=str(getattr(settings, 'VIDEO_TRANSCODE_PRESET', 'veryfast') or 'veryfast'),
+                                crf=int(getattr(settings, 'VIDEO_TRANSCODE_CRF', 23) or 23),
+                            )
+                            os.replace(tmp, path)
+
+                    # Make MP4 streamable in browsers (moov atom at front)
+                    faststart_inplace(path)
+                except Exception as e:
+                    print(f"[RECORD] faststart failed: {e}")
                 print(f"[RECORD] Saved: {self._current_path}")
             self._current_path = None
 

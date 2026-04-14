@@ -37,3 +37,5 @@ requests==2.33.1
 scipy==1.15.0
 matplotlib>=3.8.0
 pandas>=2.0.0
+minio
+imageio-ffmpeg

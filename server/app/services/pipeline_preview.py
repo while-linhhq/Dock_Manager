@@ -14,6 +14,19 @@ _last_emit: float = 0.0
 _min_interval_sec = 0.12  # ~8 fps cap for preview bandwidth
 
 
+def set_target_fps(fps: float) -> None:
+    """Set preview JPEG emit rate cap (best-effort)."""
+    global _min_interval_sec
+    try:
+        f = float(fps)
+    except Exception:
+        return
+    if f <= 0:
+        return
+    # Cap interval; allow a little headroom to avoid busy loops.
+    _min_interval_sec = max(0.0, 1.0 / f)
+
+
 def push_bgr_frame(frame: np.ndarray) -> None:
     if frame is None or frame.size == 0:
         return

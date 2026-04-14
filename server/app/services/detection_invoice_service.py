@@ -63,22 +63,32 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
     try:
         det = detection_repo.get(db, detection_id)
         if not det or not det.vessel_id:
+            _log.info('Skip AI invoice detection_id=%s: no detection or vessel_id', detection_id)
             return
 
         vessel = vessel_repo.get(db, det.vessel_id)
         if not vessel:
+            _log.info('Skip AI invoice detection_id=%s: vessel not found id=%s', detection_id, det.vessel_id)
             return
         if is_unknown_ship_id(vessel.ship_id):
+            _log.info('Skip AI invoice detection_id=%s: unknown ship_id=%s', detection_id, vessel.ship_id)
             return
         if vessel.vessel_type_id is None:
+            _log.info('Skip AI invoice detection_id=%s: vessel_type_id missing ship_id=%s', detection_id, vessel.ship_id)
             return
 
         existing = invoice_repo.get_by_detection_id(db, detection_id)
         if existing:
+            _log.info('Skip AI invoice detection_id=%s: invoice already exists id=%s', detection_id, existing.id)
             return
 
         fees = fee_config_repo.get_by_vessel_type(db, vessel.vessel_type_id)
         if not fees:
+            _log.info(
+                'Skip AI invoice detection_id=%s: no active fee config for vessel_type_id=%s',
+                detection_id,
+                vessel.vessel_type_id,
+            )
             return
 
         hours = _berthing_hours(det.start_time, det.end_time)
@@ -113,6 +123,7 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
                 )
 
         if not items:
+            _log.info('Skip AI invoice detection_id=%s: all fee items resolved to none', detection_id)
             return
 
         def _line_sub(it: InvoiceItemCreate) -> Decimal:

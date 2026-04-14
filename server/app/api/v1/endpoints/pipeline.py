@@ -109,13 +109,24 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
 
     await websocket.accept()
     try:
+        last_sent = 0.0
         while True:
             jpeg = pipeline_preview.get_jpeg()
             if jpeg:
                 await websocket.send_bytes(jpeg)
+                last_sent = asyncio.get_event_loop().time()
+            else:
+                # Keep the connection alive even if no new frames yet (proxy/NAT idle timeout).
+                now = asyncio.get_event_loop().time()
+                if now - last_sent > 15.0:
+                    await websocket.send_text('ka')
+                    last_sent = now
             await asyncio.sleep(0.05)
     except WebSocketDisconnect:
         pass
+    except Exception:
+        # Best-effort: avoid crashing the server loop on transient send errors
+        return
 
 @router.post("/test-video")
 async def test_video(req: PipelineTestVideoRequest):

@@ -96,25 +96,27 @@ class YoloWorkerThread(threading.Thread):
                     (annotated_frame, tracked_boats),
                 )
 
+                # Một pipeline overlay cho cả WebSocket preview và ghi video (đồng bộ với frame lưu).
+                overlay_frame = draw_ship_detection_overlay(
+                    annotated_frame.copy(),
+                    tracked_boats,
+                    self._ocr_cache,
+                    self._ocr_lock,
+                    self._ocr_label_ttl,
+                    fps_est,
+                    self._record_overlay_resize_scale,
+                )
+
                 if self._enable_preview_stream:
                     try:
-                        pipeline_preview.push_bgr_frame(annotated_frame)
+                        pipeline_preview.push_bgr_frame(overlay_frame)
                     except Exception:
                         pass
 
                 if self._video_queue is not None:
-                    record_frame = draw_ship_detection_overlay(
-                        annotated_frame.copy(),
-                        tracked_boats,
-                        self._ocr_cache,
-                        self._ocr_lock,
-                        self._ocr_label_ttl,
-                        fps_est,
-                        self._record_overlay_resize_scale,
-                    )
                     put_queue_drop_oldest(
                         self._video_queue,
-                        (record_frame, tracked_boats),
+                        (overlay_frame, tracked_boats),
                     )
 
                 confirmed = [

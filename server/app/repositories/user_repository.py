@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import joinedload
+from sqlalchemy.exc import IntegrityError
 from app.models.user import User
 from typing import List, Optional
 
@@ -52,11 +53,16 @@ class UserRepository:
         return db_user
 
     def delete(self, db: Session, user_id: int) -> bool:
+        """Remove user row. FKs to users use ON DELETE SET NULL where defined."""
         db_user = self.get(db, user_id)
         if not db_user:
             return False
-        db_user.is_active = False
-        db.commit()
+        db.delete(db_user)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise
         return True
 
 

@@ -11,6 +11,7 @@ from app.schemas.detection import DetectionCreate, DetectionRead, DetectionVerif
 from app.schemas.detection_media import DetectionMediaRead
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
+from app.services.storage.minio_service import presign_get, parse_minio_uri
 
 router = APIRouter()
 
@@ -86,4 +87,13 @@ def delete_detection(detection_id: int, db: Session = Depends(get_db), _=Depends
 
 @router.get('/{detection_id}/media', response_model=List[DetectionMediaRead])
 def get_detection_media(detection_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    return detection_media_repo.get_by_detection(db, detection_id)
+    rows = detection_media_repo.get_by_detection(db, detection_id)
+    # If media is stored as minio://bucket/key, convert to a short-lived presigned URL for FE.
+    for row in rows:
+        if parse_minio_uri(getattr(row, 'file_path', '') or '') is not None:
+            try:
+                row.file_path = presign_get(row.file_path, ttl_seconds=600) or row.file_path
+            except Exception:
+                # Keep original value if presign fails; FE will ignore unknown formats.
+                pass
+    return rows

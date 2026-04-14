@@ -8,14 +8,18 @@ import time
 from pathlib import Path
 from typing import Any
 import datetime
+import mimetypes
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.db.session import SessionLocal
+from app.models.detection_media import DetectionMedia
 from app.repositories import vessel_repo, detection_repo, order_repo, port_log_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.repositories.port_config_repository import port_config_repo
 from app.schemas import VesselCreate, DetectionCreate, PortLogCreate
 from app.core.config import settings
+from app.services.storage.minio_service import put_file
 
 from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
 from app.services.ai.boat_tracker import BoatTracker
@@ -26,10 +30,50 @@ from app.services.ai.video_recorder import VideoRecorderThread
 from app.utils.ai.yolo_detector import load_yolo_detector
 from app.services.ai.yolo_worker import YoloWorkerThread
 from app.services import pipeline_preview
+from app.utils.media.faststart_mp4 import has_moov_atom
 
 init_windows_cuda_path("pre")
 
 _log = logging.getLogger("app.services.pipeline")
+
+def _guess_content_type(p: Path) -> str:
+    ct, _ = mimetypes.guess_type(str(p))
+    return ct or 'application/octet-stream'
+
+
+def _make_minio_key(detection_id: int, media_type: str, filename: str) -> str:
+    prefix = str(getattr(settings, 'MINIO_MEDIA_PREFIX', '') or '').strip().strip('/')
+    safe_media = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in (media_type or 'media'))
+    safe_name = ''.join(ch if ch.isalnum() or ch in ('-', '_', '.') else '_' for ch in filename)
+    core = f'detections/{int(detection_id)}/{safe_media}/{safe_name}'
+    return f'{prefix}/{core}' if prefix else core
+
+
+def _maybe_upload_to_minio(*, local_path: str | None, detection_id: int, media_type: str) -> str | None:
+    """
+    Best-effort upload to MinIO and return minio:// URI.
+    Falls back to local path if MinIO is disabled or upload fails.
+    """
+    if not local_path:
+        return None
+    if not bool(getattr(settings, 'MINIO_UPLOAD_ON_DETECT', True)):
+        return None
+    p = Path(str(local_path))
+    if not p.exists():
+        return None
+    bucket = str(getattr(settings, 'MINIO_BUCKET', '') or '').strip() or 'media'
+    key = _make_minio_key(detection_id, media_type, p.name)
+    try:
+        put_file(
+            local_path=str(p),
+            bucket=bucket,
+            object_key=key,
+            content_type=_guess_content_type(p),
+        )
+        return f'minio://{bucket}/{key}'
+    except Exception:
+        _log.exception('MinIO upload failed (media_type=%s, path=%s)', media_type, str(p))
+        return None
 
 
 def _safe_ship_segment(ship_id: str) -> str:
@@ -39,23 +83,46 @@ def _safe_ship_segment(ship_id: str) -> str:
 
 def _find_latest_track_frame(runs_base: Path, event_dt_utc: datetime.datetime, track_id: str) -> Path | None:
     day = event_dt_utc.date().isoformat()
-    cap_dir = runs_base / 'detect' / 'cap' / day
-    if not cap_dir.exists():
-        return None
-    candidates = sorted(
-        list(cap_dir.glob(f'*_{track_id}_frame.jpg')) + list(cap_dir.glob(f'*_{track_id}_noocr_frame.jpg')),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    cap_dirs = [
+        runs_base / 'cap' / day,
+        runs_base / 'detect' / 'cap' / day,  # legacy path
+    ]
+    candidates: list[Path] = []
+    for cap_dir in cap_dirs:
+        if not cap_dir.exists():
+            continue
+        candidates.extend(list(cap_dir.glob(f'*_{track_id}_frame.jpg')))
+        candidates.extend(list(cap_dir.glob(f'*_{track_id}_noocr_frame.jpg')))
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
 
 def _find_latest_video_for_event(runs_base: Path, event_dt_utc: datetime.datetime) -> Path | None:
     day = event_dt_utc.date().isoformat()
-    videos_dir = runs_base / 'detect' / 'videos' / day
-    if not videos_dir.exists():
-        return None
-    candidates = sorted(videos_dir.glob('*.mp4'), key=lambda p: p.stat().st_mtime, reverse=True)
+    videos_dirs = [
+        runs_base / 'videos' / day,
+        runs_base / 'detect' / 'videos' / day,  # legacy path
+    ]
+    candidates: list[Path] = []
+    for videos_dir in videos_dirs:
+        if not videos_dir.exists():
+            continue
+        candidates.extend(list(videos_dir.glob('*.mp4')))
+    # Avoid tiny/incomplete files that can't be played
+    def _is_playable(p: Path) -> bool:
+        try:
+            if not p.exists():
+                return False
+            if p.stat().st_size < 1_000_000:  # 1MB
+                return False
+            if not has_moov_atom(p):
+                return False
+            return True
+        except Exception:
+            return False
+
+    candidates = [p for p in candidates if _is_playable(p)]
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
 
@@ -251,40 +318,90 @@ class PipelineService:
             )
 
             # 2. Lưu Detection record
-            det = detection_repo.create(
-                db,
-                DetectionCreate(
-                    vessel_id=vessel.id,
-                    track_id=tb.track_id,
-                    start_time=start_dt_utc,
-                    end_time=end_dt_utc,
-                    video_path=verify_video_path,
-                    audit_image_path=snapshot_path,
-                    ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
-                    confidence=tb.conf,
-                ),
-            )
+            try:
+                det = detection_repo.create(
+                    db,
+                    DetectionCreate(
+                        vessel_id=vessel.id,
+                        track_id=tb.track_id,
+                        start_time=start_dt_utc,
+                        end_time=end_dt_utc,
+                        video_path=verify_video_path,
+                        audit_image_path=snapshot_path,
+                        ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
+                        confidence=tb.conf,
+                    ),
+                )
+            except IntegrityError:
+                # Defense-in-depth: if track_id collides (e.g., after restart), reuse the existing detection
+                db.rollback()
+                det = detection_repo.get_by_track_id(db, str(tb.track_id))
+                if det is None:
+                    raise
             det_id_for_invoice = det.id
+            # 2b. Attach media rows. Prefer MinIO URIs (presigned at read time) for FE playback.
             if snapshot_path:
-                detection_media_repo.create(
-                    db,
-                    {
-                        'detection_id': det.id,
-                        'media_type': 'image',
-                        'file_path': snapshot_path,
-                        'file_size': source_frame.stat().st_size if source_frame and source_frame.exists() else None,
-                    },
+                minio_uri = _maybe_upload_to_minio(
+                    local_path=snapshot_path,
+                    detection_id=det.id,
+                    media_type='image',
                 )
+                file_path = minio_uri or snapshot_path
+                exists = (
+                    db.query(DetectionMedia)
+                    .filter(
+                        DetectionMedia.detection_id == det.id,
+                        DetectionMedia.media_type == 'image',
+                        DetectionMedia.file_path == file_path,
+                    )
+                    .first()
+                    is not None
+                )
+                if not exists:
+                    try:
+                        size = Path(snapshot_path).stat().st_size
+                    except Exception:
+                        size = None
+                    detection_media_repo.create(
+                        db,
+                        {
+                            'detection_id': det.id,
+                            'media_type': 'image',
+                            'file_path': file_path,
+                            'file_size': size,
+                        },
+                    )
             if verify_video_path:
-                detection_media_repo.create(
-                    db,
-                    {
-                        'detection_id': det.id,
-                        'media_type': 'video',
-                        'file_path': verify_video_path,
-                        'file_size': source_video.stat().st_size if source_video and source_video.exists() else None,
-                    },
+                minio_uri = _maybe_upload_to_minio(
+                    local_path=verify_video_path,
+                    detection_id=det.id,
+                    media_type='video',
                 )
+                file_path = minio_uri or verify_video_path
+                exists = (
+                    db.query(DetectionMedia)
+                    .filter(
+                        DetectionMedia.detection_id == det.id,
+                        DetectionMedia.media_type == 'video',
+                        DetectionMedia.file_path == file_path,
+                    )
+                    .first()
+                    is not None
+                )
+                if not exists:
+                    try:
+                        size = Path(verify_video_path).stat().st_size
+                    except Exception:
+                        size = None
+                    detection_media_repo.create(
+                        db,
+                        {
+                            'detection_id': det.id,
+                            'media_type': 'video',
+                            'file_path': file_path,
+                            'file_size': size,
+                        },
+                    )
 
             # 3. Tự động hoàn thành đơn hàng nếu có
             pending_order = order_repo.get_pending_by_vessel(db, vessel.id)
@@ -391,7 +508,17 @@ class PipelineService:
             on_track_removed=combined_on_removed
         )
 
-        self._reader = FrameReaderThread(source, self._frame_queue, self._stop)
+        # Đồng bộ FPS: dùng record_fps làm nhịp đọc frame → nhịp infer → nhịp record/preview.
+        self._reader = FrameReaderThread(
+            source,
+            self._frame_queue,
+            self._stop,
+            target_fps=runtime_cfg['record_fps'],
+        )
+        try:
+            pipeline_preview.set_target_fps(runtime_cfg['record_fps'])
+        except Exception:
+            pass
         self._yolo_worker = YoloWorkerThread(
             self._detector, self._boat_tracker, self._frame_queue, self._result_queue,
             self._ocr_queue, self._video_queue, self._stop, ocr_interval, ocr_active,

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List
 
 from app.db.session import get_db
@@ -94,8 +95,17 @@ def update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), c
 
 
 @router.delete('/{user_id}', status_code=204)
-def deactivate_user(user_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def delete_user(user_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     if not _is_admin(current_user):
-        raise HTTPException(status_code=403, detail='Only admin can deactivate users')
-    if not user_repo.delete(db, user_id):
+        raise HTTPException(status_code=403, detail='Only admin can delete users')
+    if int(current_user.id) == user_id:
+        raise HTTPException(status_code=400, detail='Cannot delete your own account')
+    try:
+        deleted = user_repo.delete(db, user_id)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail='Cannot delete user: still referenced without ON DELETE rule',
+        ) from None
+    if not deleted:
         raise HTTPException(status_code=404, detail='User not found')

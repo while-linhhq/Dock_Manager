@@ -65,6 +65,25 @@ def draw_ship_detection_overlay(
             for k in list(ocr_cache.keys()):
                 if now - ocr_cache[k]["time"] >= ocr_label_ttl:
                     del ocr_cache[k]
+            for tb in tracked_boats:
+                ck = ocr_cache_key_track(tb.track_id)
+                ent = ocr_cache.get(ck)
+                if not ent:
+                    continue
+                txt = str(ent.get('text') or '').strip()
+                if not txt:
+                    continue
+                b = tb.box
+                y = min(int(b[3]) + 24, display_frame.shape[0] - 6)
+                cv2.putText(
+                    display_frame,
+                    txt,
+                    (int(b[0]), y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 220, 255),
+                    2,
+                )
 
     cv2.putText(
         display_frame,

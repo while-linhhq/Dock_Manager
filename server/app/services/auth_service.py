@@ -26,5 +26,9 @@ class AuthService:
         token = create_access_token(subject=user.id)
         return {'access_token': token, 'token_type': 'bearer'}
 
+    def refresh_access_token(self, *, current_user: User) -> dict:
+        token = create_access_token(subject=current_user.id)
+        return {'access_token': token, 'token_type': 'bearer'}
+
 
 auth_service = AuthService()
