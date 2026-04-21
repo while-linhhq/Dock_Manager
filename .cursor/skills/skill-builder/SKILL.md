@@ -4,8 +4,9 @@ description: >
   Build a production-quality SKILL.md from scratch based on project experience and domain
   knowledge. Use after completing a project or workflow and wanting to capture that expertise
   as a reusable agent skill. Enforces agentskills.io standards while personalizing output to
-  the user's stack, conventions, and communication style. Also use to refactor or upgrade an
-  existing skill that feels incomplete or inconsistent.
+  the user's stack, conventions, and communication style. New skills are authored in English
+  unless the user explicitly requests another language for the skill file. Also use to refactor
+  or upgrade an existing skill that feels incomplete or inconsistent.
   Trigger phrases: "create a skill", "make a new skill", "build a skill from this", "turn this
   into a skill", "save this workflow as a skill", "extract skill from project", "document this
   as a skill", "tạo skill mới", "viết skill từ dự án này".
@@ -27,6 +28,9 @@ validated `SKILL.md` that any agent can discover and follow consistently.
 - A `SKILL.md` file that passes `agentskills validate` with zero errors
 - Optionally, a `references/` file for content that would bloat the main file
 - Always includes a copy of `references/template.md` as a blank starter for future skills
+- **English-only skill files by default** — headings, body, examples, and description prose are
+  written in English unless the user **explicitly** requests another language for the skill
+  artifact (trigger phrases inside quotes may still include non-English strings for discovery)
 
 **When NOT to use this skill:**
 - User wants to edit only a small section of an existing skill → edit directly
@@ -47,7 +51,7 @@ Ask the user for context before writing anything. Extract from prior conversatio
 | What did you keep explaining to the agent manually? | Reveals core value |
 | Who uses this — just you, team, or public? | Affects personalization depth |
 | Any tech stack or tool constraints? | Fills `compatibility` field |
-| Preferred output language (Vietnamese/English)? | Skill body must match |
+| Should this skill file be non-English? (Rare.) | Default is **English** for the entire artifact |
 
 Skip questions already answered. Never ask redundantly.
 
@@ -78,12 +82,14 @@ Agents read ONLY this field to decide whether to activate the skill.
 ```
 [Primary action] [domain/output] [use cases].
 Use when [trigger scenarios].
-Trigger phrases: "[phrase1]", "[phrase2]", "[phrase3]", "[Vietnamese phrase]".
+Trigger phrases: "[phrase1]", "[phrase2]", "[phrase3]", "[optional non-English phrase]".
 ```
 
 **Requirements:**
 - Max 1024 chars
-- Min 3 trigger phrases (include both English and Vietnamese if user is bilingual)
+- Write the **description in English**; include **≥3 trigger phrases** in quotes (English
+  first; add quoted non-English triggers only when they improve discovery for how this user
+  or team actually types requests)
 - Include domain keywords agents can match semantically
 
 ---
@@ -112,6 +118,9 @@ Always include these 7 sections in order:
 
 Embed user-specific context:
 
+- **Language**: **Always** author `SKILL.md` in **English** (title, all `##` sections, steps,
+  tables, examples) unless the user explicitly asked for a different language for the skill
+  file itself
 - **Tech stack**: exact versions if provided (`Next.js 14.2`, `Python 3.12`)
 - **Naming conventions**: camelCase, kebab-case, snake_case — mirror user's codebase
 - **Output format**: match user's preferred style (table vs bullets vs prose)
@@ -173,7 +182,7 @@ description: >
   and standardized error handling. Use when creating new routes, adding request validation,
   or structuring response schemas for a Python backend.
   Trigger phrases: "create endpoint", "add API route", "new FastAPI route",
-  "build REST endpoint", "thêm endpoint mới".
+  "build REST endpoint".
 license: MIT
 metadata:
   author: while-linhhq
@@ -184,7 +193,7 @@ metadata:
 
 **Why this works:**
 - Description answers WHAT + WHEN in 3 sentences
-- 5 trigger phrases including one Vietnamese phrase
+- Four English trigger phrases in quotes (add non-English quoted triggers only when needed)
 - Name is domain-descriptive, not action-descriptive
 - Metadata is properly nested under `metadata:`
 
@@ -262,6 +271,12 @@ Hardcoding API keys, passwords, or private URLs inside SKILL.md.
 Phrases like "Remember to..." or "It's important that..." underperform with agents.
 **Fix:** Use direct imperative: "Always validate input before processing."
 
+### ❌ Authoring the Skill Body in a Non-English Language by Default
+Writing section headings, workflow steps, or examples in Vietnamese (or any non-English
+language) when the user did **not** explicitly request that language for the skill file.
+**Fix:** Keep the full `SKILL.md` artifact in **English**; only put non-English text inside
+quoted trigger phrases in the `description` field when it helps matching real user phrasing.
+
 ---
 
 ## Stop Conditions
@@ -314,7 +329,8 @@ A skill is considered complete and ready to deliver when ALL pass:
 - [ ] Trigger phrases match how the user actually types requests
 - [ ] Tech stack named explicitly if applicable
 - [ ] User's naming conventions reflected in examples
-- [ ] Language of body matches user's language (Vietnamese or English)
+- [ ] Entire skill file is **English** unless the user explicitly requested another language for
+      the artifact (non-English may appear only inside quoted trigger phrases when useful)
 
 ### Deliverable
 - [ ] Packaged correctly (`.md` solo or `.zip` bundled)
@@ -347,6 +363,7 @@ Run through every item before sharing the final file.
 - [ ] No vague instructions ("do it well", "follow best practices", "be careful")
 - [ ] All code and YAML use fenced blocks with language tags
 - [ ] Body is ≤500 lines (count with `wc -l SKILL.md`)
+- [ ] Skill prose is **English** by default (see Purpose / Step 5)
 
 **Validation & Delivery**
 - [ ] `agentskills validate` passes with zero errors

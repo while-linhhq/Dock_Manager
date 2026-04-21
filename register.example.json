@@ -1,7 +1,0 @@
-{
-  "username": "admin",
-  "password": "<set-in-local-register-json>",
-  "email": "admin@example.com",
-  "full_name": "Administrator",
-  "role_id": 1
-}
