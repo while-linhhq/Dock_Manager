@@ -7,21 +7,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
 import time
 from datetime import datetime
+from typing import Callable
 
-import cv2
+logger = logging.getLogger(__name__)
 
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
 from app.utils.ai.detect_paths import (
     RUNS_DETECT,
-    cap_dir_for_today,
-    crops_dir_for_today,
     ensure_dir,
-    ocr_audit_frames_dir_for_today,
     ocr_audit_logs_dir_for_today,
     timestamp_prefix,
 )
@@ -160,6 +159,7 @@ class OcrWorkerThread(threading.Thread):
         runs_base: str = RUNS_DETECT,
         save_ocr_audit_frames: bool = True,
         ocr_miss_save_interval: float | None = None,
+        on_image_captured: Callable[[str | None, str, object, str, bool], None] | None = None,
     ):
         super().__init__(daemon=True)
         self.recognizer = recognizer
@@ -180,8 +180,27 @@ class OcrWorkerThread(threading.Thread):
         self._boat_tracker = boat_tracker
         self._runs_base = runs_base
         self.save_ocr_audit_frames = save_ocr_audit_frames
+        self._on_image_captured = on_image_captured
         self._last_cap_save_ts: dict[str, float] = {}
         self._last_noocr_cap_save_ts: dict[str, float] = {}
+
+    def _capture_image(
+        self,
+        track_id: str | None,
+        media_type: str,
+        image_bgr,
+        filename: str,
+        remember_for_detection: bool,
+    ) -> None:
+        if self._on_image_captured is None:
+            return
+        self._on_image_captured(
+            track_id,
+            media_type,
+            image_bgr,
+            filename,
+            remember_for_detection,
+        )
 
     def run(self):
         try:
@@ -198,10 +217,12 @@ class OcrWorkerThread(threading.Thread):
                 # --- Audit frame: lưu mỗi lần OCR chạy, không phụ thuộc kết quả ---
                 if self.save_ocr_audit_frames:
                     audit_prefix = timestamp_prefix()
-                    audit_dir = ensure_dir(ocr_audit_frames_dir_for_today(self._runs_base))
-                    cv2.imwrite(
-                        os.path.join(audit_dir, f"{audit_prefix}_ocr.jpg"),
+                    self._capture_image(
+                        None,
+                        'ocr-audit',
                         frame,
+                        f"{audit_prefix}_ocr.jpg",
+                        False,
                     )
 
                 updates = []
@@ -248,21 +269,19 @@ class OcrWorkerThread(threading.Thread):
                                 time.monotonic() - last_ts
                             ) >= self.confirmed_save_interval:
                                 save_prefix = timestamp_prefix()
-                                cap_dir = ensure_dir(cap_dir_for_today(self._runs_base))
-                                crop_dir = ensure_dir(crops_dir_for_today(self._runs_base))
-                                cv2.imwrite(
-                                    os.path.join(
-                                        cap_dir,
-                                        f"{save_prefix}_{track_id_str}_frame.jpg",
-                                    ),
+                                self._capture_image(
+                                    track_id_str,
+                                    'image',
                                     frame,
+                                    f"{save_prefix}_{track_id_str}_frame.jpg",
+                                    True,
                                 )
-                                cv2.imwrite(
-                                    os.path.join(
-                                        crop_dir,
-                                        f"{save_prefix}_{track_id_str}_boat.jpg",
-                                    ),
+                                self._capture_image(
+                                    track_id_str,
+                                    'crop',
                                     crop,
+                                    f"{save_prefix}_{track_id_str}_boat.jpg",
+                                    False,
                                 )
                                 self._last_cap_save_ts[track_id_str] = time.monotonic()
 
@@ -272,21 +291,19 @@ class OcrWorkerThread(threading.Thread):
                             time.monotonic() - last_miss
                         ) >= self.ocr_miss_save_interval:
                             save_prefix = timestamp_prefix()
-                            cap_dir = ensure_dir(cap_dir_for_today(self._runs_base))
-                            crop_dir = ensure_dir(crops_dir_for_today(self._runs_base))
-                            cv2.imwrite(
-                                os.path.join(
-                                    cap_dir,
-                                    f"{save_prefix}_{track_id_str}_noocr_frame.jpg",
-                                ),
+                            self._capture_image(
+                                track_id_str,
+                                'image',
                                 frame,
+                                f"{save_prefix}_{track_id_str}_noocr_frame.jpg",
+                                True,
                             )
-                            cv2.imwrite(
-                                os.path.join(
-                                    crop_dir,
-                                    f"{save_prefix}_{track_id_str}_noocr_boat.jpg",
-                                ),
+                            self._capture_image(
+                                track_id_str,
+                                'crop',
                                 crop,
+                                f"{save_prefix}_{track_id_str}_noocr_boat.jpg",
+                                False,
                             )
                             self._last_noocr_cap_save_ts[track_id_str] = time.monotonic()
 
@@ -294,7 +311,7 @@ class OcrWorkerThread(threading.Thread):
                     for ck, entry in updates:
                         self._ocr_cache[ck] = entry
 
-        except Exception as e:
-            print(f"[WARNING] OcrWorkerThread crashed: {e}")
+        except Exception:
+            logger.exception("OcrWorkerThread crashed — pipeline will stop")
         finally:
             self._stop_event.set()

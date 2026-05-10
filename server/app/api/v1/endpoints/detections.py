@@ -16,6 +16,18 @@ from app.services.storage.minio_service import presign_get, parse_minio_uri
 router = APIRouter()
 
 
+def _with_presigned_detection_paths(obj):
+    for attr in ('audit_image_path', 'video_path'):
+        raw = getattr(obj, attr, '') or ''
+        if parse_minio_uri(raw) is None:
+            continue
+        try:
+            setattr(obj, attr, presign_get(raw, ttl_seconds=600) or raw)
+        except Exception:
+            pass
+    return obj
+
+
 @router.post('/', response_model=DetectionRead, status_code=201)
 def create_detection(
     data: DetectionCreate,
@@ -29,7 +41,7 @@ def create_detection(
         payload['track_id'] = tid
     if detection_repo.get_by_track_id(db, tid):
         raise HTTPException(status_code=409, detail='track_id already exists')
-    return detection_repo.create(db, payload)
+    return _with_presigned_detection_paths(detection_repo.create(db, payload))
 
 
 @router.get('/', response_model=List[DetectionRead])
@@ -42,7 +54,7 @@ def list_detections(
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    return detection_repo.get_all(
+    rows = detection_repo.get_all(
         db,
         skip=skip,
         limit=limit,
@@ -50,6 +62,7 @@ def list_detections(
         ship_id=ship_id,
         event_date=event_date,
     )
+    return [_with_presigned_detection_paths(row) for row in rows]
 
 
 @router.get('/{detection_id}', response_model=DetectionRead)
@@ -57,7 +70,7 @@ def get_detection(detection_id: int, db: Session = Depends(get_db), _=Depends(ge
     obj = detection_repo.get(db, detection_id)
     if not obj:
         raise HTTPException(status_code=404, detail='Detection not found')
-    return obj
+    return _with_presigned_detection_paths(obj)
 
 
 @router.post('/{detection_id}/verify', response_model=DetectionRead)
@@ -76,7 +89,7 @@ def verify_detection(
     )
     if not updated:
         raise HTTPException(status_code=404, detail='Detection not found')
-    return updated
+    return _with_presigned_detection_paths(updated)
 
 
 @router.delete('/{detection_id}', status_code=204)

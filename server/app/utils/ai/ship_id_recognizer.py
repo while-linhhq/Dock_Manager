@@ -1,38 +1,53 @@
-import os
-import cv2
+import logging
 import re
-import numpy as np
-# Import paddle inside __init__ or after bootstrap to avoid WinError 127
+
+import cv2
+
 from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
+
+logger = logging.getLogger(__name__)
+
+
+def _gpu_actually_works() -> bool:
+    """Smoke-test cuDNN bằng 1 conv tiny — phát hiện sớm mismatch cuDNN/CUDA
+    (vd. paddle build cu120 + libcudnn.so.9) trước khi PaddleOCR rơi worker."""
+    try:
+        import paddle
+        if paddle.device.cuda.device_count() <= 0:
+            return False
+        paddle.set_device("gpu:0")
+        x = paddle.randn([1, 3, 8, 8])
+        conv = paddle.nn.Conv2D(3, 4, 3)
+        _ = conv(x)
+        return True
+    except Exception as exc:
+        logger.warning("Paddle GPU probe failed (%s) — falling back to CPU OCR", exc)
+        return False
+
 
 class ShipIdRecognizer:
     def __init__(self, lang="en", use_gpu=None, show_log=False):
-        """
-        Khởi tạo PaddleOCR. 
-        - use_gpu: Nếu None, tự động phát hiện.
-        """
-        # Đảm bảo bootstrap chạy trước khi import paddle
+        """Khởi tạo PaddleOCR; auto fallback CPU nếu GPU/cuDNN không sẵn sàng."""
         init_windows_cuda_path("pre")
         import paddle
-        
-        if use_gpu is None:
-            use_gpu = paddle.device.cuda.device_count() > 0
-        
-        if use_gpu:
-            paddle.set_device("gpu:0")
-        else:
-            paddle.set_device("cpu")
 
-        # DLL bootstrap post-import paddle
+        if use_gpu is None:
+            use_gpu = _gpu_actually_works()
+        elif use_gpu:
+            if not _gpu_actually_works():
+                use_gpu = False
+
+        paddle.set_device("gpu:0" if use_gpu else "cpu")
         init_windows_cuda_path("post")
-        
+
         from paddleocr import PaddleOCR
         self.ocr = PaddleOCR(
-            use_angle_cls=True, 
-            lang=lang, 
-            use_gpu=use_gpu, 
-            show_log=show_log
+            use_angle_cls=True,
+            lang=lang,
+            use_gpu=use_gpu,
+            show_log=show_log,
         )
+        logger.info("ShipIdRecognizer initialized (device=%s)", "gpu" if use_gpu else "cpu")
         self.pattern = r"([A-Z50]{2})[-\s]?(\d{4})"
 
     @staticmethod
@@ -68,7 +83,8 @@ class ShipIdRecognizer:
         found_ids = []
         for line in ocr_results:
             # PaddleOCR 2.7 format: [[box], (text, conf)]
-            if not line or len(line) < 2: continue
+            if not line or len(line) < 2:
+                continue
             text, prob = line[1]
             
             clean_text = text.upper().strip().replace(" ", "")

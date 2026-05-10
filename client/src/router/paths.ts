@@ -5,6 +5,7 @@ export const PATHS = {
   REVENUE: '/revenue',
   VESSELS: '/vessels',
   PORT: '/port',
+  CAMERA_FUSION: '/cameras/fusion',
   STATS: '/stats',
   BACKUP: '/backup',
   USERS: '/users',

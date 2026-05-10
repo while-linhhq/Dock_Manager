@@ -1,12 +1,11 @@
 import React from 'react';
-import { Camera, Settings, Cpu, ShieldCheck } from 'lucide-react';
+import { Settings, Cpu, ShieldCheck } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 
-export type PortMainTab = 'detections' | 'cameras' | 'configs' | 'pipeline';
+export type PortMainTab = 'detections' | 'configs' | 'pipeline';
 
 const TABS: { id: PortMainTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'detections', label: 'Nhận Diện', icon: ShieldCheck },
-  { id: 'cameras', label: 'Camera', icon: Camera },
   { id: 'configs', label: 'Cấu Hình', icon: Settings },
   { id: 'pipeline', label: 'AI Pipeline', icon: Cpu },
 ];

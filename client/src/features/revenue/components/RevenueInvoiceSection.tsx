@@ -13,7 +13,7 @@ import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
-import type { InvoiceRead } from '../../../types/api.types';
+import type { InvoiceRead, VesselRead, VesselTypeRead } from '../../../types/api.types';
 import {
   FilterField,
   TableFilterPanel,
@@ -39,6 +39,10 @@ export type RevenueInvoiceSectionProps = {
   setInvQ: (v: string) => void;
   invPayStatus: string;
   setInvPayStatus: (v: string) => void;
+  invShipIdFilter: string;
+  setInvShipIdFilter: (v: string) => void;
+  invVesselTypeFilter: string;
+  setInvVesselTypeFilter: (v: string) => void;
   invDateFrom: string;
   setInvDateFrom: (v: string) => void;
   invDateTo: string;
@@ -49,6 +53,8 @@ export type RevenueInvoiceSectionProps = {
   setInvMaxTotal: (v: string) => void;
   resetInvFilters: () => void;
   invFilterCount: number;
+  vessels: VesselRead[];
+  vesselTypes: VesselTypeRead[];
   onOpenCreateInvoice: () => void;
   onOpenPayment: (inv: InvoiceRead) => void;
   onDeleteInvoice: (id: string | number) => void;
@@ -65,6 +71,10 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   setInvQ,
   invPayStatus,
   setInvPayStatus,
+  invShipIdFilter,
+  setInvShipIdFilter,
+  invVesselTypeFilter,
+  setInvVesselTypeFilter,
   invDateFrom,
   setInvDateFrom,
   invDateTo,
@@ -75,6 +85,8 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   setInvMaxTotal,
   resetInvFilters,
   invFilterCount,
+  vessels,
+  vesselTypes,
   onOpenCreateInvoice,
   onOpenPayment,
   onDeleteInvoice,
@@ -176,6 +188,34 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
               <option value="UNPAID">UNPAID</option>
               <option value="OVERDUE">OVERDUE</option>
               <option value="CANCELLED">CANCELLED</option>
+            </select>
+          </FilterField>
+          <FilterField label="Mã tàu">
+            <select
+              value={invShipIdFilter}
+              onChange={(e) => setInvShipIdFilter(e.target.value)}
+              className={filterControlClass}
+            >
+              <option value="">Tất cả</option>
+              {vessels.map((vessel) => (
+                <option key={vessel.id} value={String(vessel.id)}>
+                  {vessel.ship_id}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+          <FilterField label="Loại tàu">
+            <select
+              value={invVesselTypeFilter}
+              onChange={(e) => setInvVesselTypeFilter(e.target.value)}
+              className={filterControlClass}
+            >
+              <option value="">Tất cả</option>
+              {vesselTypes.map((type) => (
+                <option key={type.id} value={String(type.id)}>
+                  {type.type_name}
+                </option>
+              ))}
             </select>
           </FilterField>
           <FilterField label="Từ ngày (tạo HĐ)">

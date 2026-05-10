@@ -7,6 +7,7 @@ pydantic-settings
 python-dotenv
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==4.0.1
 python-multipart
 # AI / CV
 ultralytics==8.4.33

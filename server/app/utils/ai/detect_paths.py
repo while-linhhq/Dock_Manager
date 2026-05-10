@@ -1,8 +1,8 @@
-"""Đường dẫn lưu detect: {base}/cap|crops|videos|ocr_audit theo ngày (YYYY-MM-DD)."""
+"""Runtime media temp paths: {base}/cap|crops|videos|ocr_audit theo ngày (YYYY-MM-DD)."""
 import os
 from datetime import datetime
 
-RUNS_DETECT = os.path.join("runs", "detect")
+RUNS_DETECT = os.path.join("app", "data-docker", "runtime-media", "detect")
 
 
 def cap_dir_for_today(base: str = RUNS_DETECT) -> str:

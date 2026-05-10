@@ -192,6 +192,41 @@ CREATE TABLE IF NOT EXISTS cameras (
     updated_at  TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS camera_groups (
+    id            SERIAL PRIMARY KEY,
+    name          VARCHAR(120) UNIQUE NOT NULL,
+    description   TEXT,
+    fusion_mode   VARCHAR(20) NOT NULL DEFAULT 'layout',
+    canvas_width  INTEGER NOT NULL DEFAULT 1920,
+    canvas_height INTEGER NOT NULL DEFAULT 1080,
+    stitch_metadata JSONB,
+    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT chk_camera_groups_fusion_mode CHECK (fusion_mode IN ('layout', 'homography', 'panorama'))
+);
+
+CREATE TABLE IF NOT EXISTS camera_group_members (
+    id                 SERIAL PRIMARY KEY,
+    group_id           INTEGER NOT NULL REFERENCES camera_groups(id) ON DELETE CASCADE,
+    camera_id          INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    role               VARCHAR(20) NOT NULL DEFAULT 'tile',
+    priority           INTEGER NOT NULL DEFAULT 0,
+    layout_x           INTEGER NOT NULL DEFAULT 0,
+    layout_y           INTEGER NOT NULL DEFAULT 0,
+    layout_w           INTEGER,
+    layout_h           INTEGER,
+    layout_rotation    REAL NOT NULL DEFAULT 0,
+    homography         JSONB,
+    calibration_points JSONB,
+    enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at         TIMESTAMPTZ DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(group_id, camera_id),
+    CONSTRAINT chk_camera_group_members_role CHECK (role IN ('base', 'overlay', 'tile'))
+);
+
 CREATE TABLE IF NOT EXISTS port_logs (
     id             SERIAL PRIMARY KEY,
     seq            INTEGER,
@@ -245,6 +280,8 @@ CREATE INDEX IF NOT EXISTS idx_invoices_payment_status ON invoices(payment_statu
 CREATE INDEX IF NOT EXISTS idx_port_logs_logged_at    ON port_logs(logged_at);
 CREATE INDEX IF NOT EXISTS idx_port_logs_track_id     ON port_logs(track_id);
 CREATE INDEX IF NOT EXISTS idx_cameras_is_active       ON cameras(is_active);
+CREATE INDEX IF NOT EXISTS ix_camera_group_members_group ON camera_group_members(group_id);
+CREATE INDEX IF NOT EXISTS ix_camera_group_members_camera ON camera_group_members(camera_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id     ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_entity      ON audit_logs(entity_type, entity_id);
 

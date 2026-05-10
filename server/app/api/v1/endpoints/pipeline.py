@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal, get_db
+from app.repositories.camera_group_repository import camera_group_repo
 from app.repositories.camera_repository import camera_repo
 from app.repositories.user_repository import user_repo
 from app.services import pipeline_preview
@@ -19,12 +20,13 @@ router = APIRouter()
 class PipelineStartRequest(BaseModel):
     source: Optional[str] = None
     camera_id: Optional[int] = None
+    camera_group_id: Optional[int] = None
     enable_ocr: bool = True
 
     @model_validator(mode='after')
     def validate_source_or_camera(self) -> 'PipelineStartRequest':
-        if not self.source and self.camera_id is None:
-            raise ValueError('Either source or camera_id is required')
+        if not self.source and self.camera_id is None and self.camera_group_id is None:
+            raise ValueError('Either source, camera_id, or camera_group_id is required')
         return self
 
 
@@ -41,6 +43,21 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
     try:
         resolved_source = req.source
         camera_name = None
+        camera_group_name = None
+
+        if req.camera_group_id is not None:
+            group = camera_group_repo.get(db, req.camera_group_id)
+            if not group:
+                raise HTTPException(status_code=404, detail='Camera group not found')
+            if not group.is_active:
+                raise HTTPException(status_code=400, detail='Camera group is inactive')
+            pipeline_service.start_group(group, req.enable_ocr)
+            camera_group_name = group.name
+            return {
+                "message": "Pipeline started",
+                "camera_group_id": req.camera_group_id,
+                "camera_group_name": camera_group_name,
+            }
 
         if req.camera_id is not None:
             camera = camera_repo.get(db, req.camera_id)

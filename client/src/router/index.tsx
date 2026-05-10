@@ -10,6 +10,8 @@ import { OrdersPage } from '../pages/OrdersPage';
 import { RevenuePage } from '../pages/RevenuePage';
 import { VesselsPage } from '../pages/VesselsPage';
 import { PortPage } from '../pages/PortPage';
+import { CameraFusionPage } from '../pages/CameraFusionPage';
+import { CameraFusionEditorPage } from '../pages/CameraFusionEditorPage';
 import { StatisticsPage } from '../pages/StatisticsPage';
 import { BackupPage } from '../pages/BackupPage';
 import { UsersPage } from '../pages/UsersPage';
@@ -78,6 +80,8 @@ const router = createBrowserRouter([
       { path: PATHS.REVENUE, element: <RequireMenuAccess menu="revenue"><RevenuePage /></RequireMenuAccess> },
       { path: PATHS.VESSELS, element: <RequireMenuAccess menu="vessels"><VesselsPage /></RequireMenuAccess> },
       { path: PATHS.PORT, element: <RequireMenuAccess menu="port"><PortPage /></RequireMenuAccess> },
+      { path: PATHS.CAMERA_FUSION, element: <RequireMenuAccess menu="port"><CameraFusionPage /></RequireMenuAccess> },
+      { path: `${PATHS.CAMERA_FUSION}/:id`, element: <RequireMenuAccess menu="port"><CameraFusionEditorPage /></RequireMenuAccess> },
       { path: PATHS.STATS, element: <RequireMenuAccess menu="stats"><StatisticsPage /></RequireMenuAccess> },
       { path: PATHS.BACKUP, element: <RequireMenuAccess menu="backup"><BackupPage /></RequireMenuAccess> },
       { path: PATHS.USERS, element: <RequireMenuAccess menu="users"><UsersPage /></RequireMenuAccess> },

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from io import BytesIO
 from typing import Optional, Tuple
 
 from app.core.config import settings
@@ -89,6 +90,27 @@ def put_file(
         bucket,
         object_key,
         local_path,
+        content_type=content_type,
+    )
+    return res.etag, getattr(res, 'version_id', None)
+
+
+def put_bytes(
+    *,
+    data: bytes,
+    bucket: str,
+    object_key: str,
+    content_type: str,
+) -> Tuple[str, Optional[str]]:
+    """
+    Upload in-memory bytes and return (etag, version_id).
+    """
+    client = get_minio_client()
+    res = client.put_object(
+        bucket,
+        object_key,
+        BytesIO(data),
+        length=len(data),
         content_type=content_type,
     )
     return res.etag, getattr(res, 'version_id', None)

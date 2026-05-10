@@ -16,13 +16,15 @@ export const OrdersView: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [orderQ, setOrderQ] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('');
+  const [orderShipIdFilter, setOrderShipIdFilter] = useState('');
+  const [orderVesselTypeFilter, setOrderVesselTypeFilter] = useState('');
   const [orderDateFrom, setOrderDateFrom] = useState('');
   const [orderDateTo, setOrderDateTo] = useState('');
   const [orderMinAmt, setOrderMinAmt] = useState('');
   const [orderMaxAmt, setOrderMaxAmt] = useState('');
 
   const { orders, isLoading, fetchOrders, createOrder, updateOrder, deleteOrder } = useOrderStore();
-  const { vessels, fetchVessels } = useVesselStore();
+  const { vessels, vesselTypes, fetchVessels, fetchVesselTypes } = useVesselStore();
 
   const form = useForm<OrderCreate>({
     resolver: zodResolver(orderSchema),
@@ -32,7 +34,8 @@ export const OrdersView: React.FC = () => {
   useEffect(() => {
     fetchOrders();
     fetchVessels();
-  }, [fetchOrders, fetchVessels]);
+    fetchVesselTypes();
+  }, [fetchOrders, fetchVessels, fetchVesselTypes]);
 
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
@@ -53,6 +56,16 @@ export const OrdersView: React.FC = () => {
           return false;
         }
       }
+      const matchedVessel = vessels.find((vessel) => String(vessel.id) === String(order.vessel_id ?? ''));
+      if (orderShipIdFilter && String(order.vessel_id ?? matchedVessel?.id ?? '') !== orderShipIdFilter) {
+        return false;
+      }
+      if (
+        orderVesselTypeFilter &&
+        String(matchedVessel?.vessel_type_id ?? '') !== orderVesselTypeFilter
+      ) {
+        return false;
+      }
       if (!isoInLocalDateRange(order.created_at, orderDateFrom, orderDateTo)) {
         return false;
       }
@@ -65,11 +78,24 @@ export const OrdersView: React.FC = () => {
       }
       return true;
     });
-  }, [orders, orderQ, orderStatusFilter, orderDateFrom, orderDateTo, orderMinAmt, orderMaxAmt]);
+  }, [
+    orders,
+    orderQ,
+    orderStatusFilter,
+    orderShipIdFilter,
+    orderVesselTypeFilter,
+    orderDateFrom,
+    orderDateTo,
+    orderMinAmt,
+    orderMaxAmt,
+    vessels,
+  ]);
 
   const orderFilterCount =
     (orderQ.trim() ? 1 : 0) +
     (orderStatusFilter ? 1 : 0) +
+    (orderShipIdFilter ? 1 : 0) +
+    (orderVesselTypeFilter ? 1 : 0) +
     (orderDateFrom ? 1 : 0) +
     (orderDateTo ? 1 : 0) +
     (orderMinAmt.trim() ? 1 : 0) +
@@ -78,6 +104,8 @@ export const OrdersView: React.FC = () => {
   const resetOrderFilters = () => {
     setOrderQ('');
     setOrderStatusFilter('');
+    setOrderShipIdFilter('');
+    setOrderVesselTypeFilter('');
     setOrderDateFrom('');
     setOrderDateTo('');
     setOrderMinAmt('');
@@ -124,6 +152,10 @@ export const OrdersView: React.FC = () => {
         setOrderQ={setOrderQ}
         orderStatusFilter={orderStatusFilter}
         setOrderStatusFilter={setOrderStatusFilter}
+        orderShipIdFilter={orderShipIdFilter}
+        setOrderShipIdFilter={setOrderShipIdFilter}
+        orderVesselTypeFilter={orderVesselTypeFilter}
+        setOrderVesselTypeFilter={setOrderVesselTypeFilter}
         orderDateFrom={orderDateFrom}
         setOrderDateFrom={setOrderDateFrom}
         orderDateTo={orderDateTo}
@@ -141,6 +173,8 @@ export const OrdersView: React.FC = () => {
         }}
         orders={orders}
         filteredOrders={filteredOrders}
+        vessels={vessels}
+        vesselTypes={vesselTypes}
         isLoading={isLoading}
         onEdit={handleEdit}
         onDelete={handleDelete}

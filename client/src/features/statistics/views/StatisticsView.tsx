@@ -4,14 +4,17 @@ import { isoInLocalDateRange } from '../../../utils/table-filters';
 import { portLogShip, portLogTimeIso } from '../utils/port-log-display';
 import { StatisticsFiltersBar } from '../components/StatisticsFiltersBar';
 import { StatisticsLogsTable } from '../components/StatisticsLogsTable';
+import { useFilterOptions } from '../../../hooks/useFilterOptions';
 
 export const StatisticsView: React.FC = () => {
   const { logs, isLoading, fetchLogs, exportLogs } = useStatisticsStore();
   const [shipId, setShipId] = useState('');
+  const [vesselTypeFilter, setVesselTypeFilter] = useState('');
   const [trackQ, setTrackQ] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [minConf, setMinConf] = useState('');
+  const { vessels, vesselTypes } = useFilterOptions();
 
   useEffect(() => {
     fetchLogs(0, 500);
@@ -22,6 +25,12 @@ export const StatisticsView: React.FC = () => {
       const sid = portLogShip(log);
       if (shipId.trim() && !sid.toLowerCase().includes(shipId.trim().toLowerCase())) {
         return false;
+      }
+      if (vesselTypeFilter) {
+        const matchedVessel = vessels.find((vessel) => vessel.ship_id === sid);
+        if (String(matchedVessel?.vessel_type_id ?? '') !== vesselTypeFilter) {
+          return false;
+        }
       }
       if (trackQ.trim() && !(log.track_id ?? '').toLowerCase().includes(trackQ.trim().toLowerCase())) {
         return false;
@@ -38,10 +47,11 @@ export const StatisticsView: React.FC = () => {
       }
       return true;
     });
-  }, [logs, shipId, trackQ, dateFrom, dateTo, minConf]);
+  }, [logs, shipId, vesselTypeFilter, trackQ, dateFrom, dateTo, minConf, vessels]);
 
   const filterCount =
     (shipId.trim() ? 1 : 0) +
+    (vesselTypeFilter ? 1 : 0) +
     (trackQ.trim() ? 1 : 0) +
     (dateFrom ? 1 : 0) +
     (dateTo ? 1 : 0) +
@@ -49,6 +59,7 @@ export const StatisticsView: React.FC = () => {
 
   const resetFilters = () => {
     setShipId('');
+    setVesselTypeFilter('');
     setTrackQ('');
     setDateFrom('');
     setDateTo('');
@@ -65,6 +76,10 @@ export const StatisticsView: React.FC = () => {
       <StatisticsFiltersBar
         shipId={shipId}
         setShipId={setShipId}
+        vesselTypeFilter={vesselTypeFilter}
+        setVesselTypeFilter={setVesselTypeFilter}
+        vessels={vessels}
+        vesselTypes={vesselTypes}
         trackQ={trackQ}
         setTrackQ={setTrackQ}
         dateFrom={dateFrom}

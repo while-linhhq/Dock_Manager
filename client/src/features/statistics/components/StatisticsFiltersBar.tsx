@@ -6,10 +6,15 @@ import {
   TableFilterPanel,
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
+import type { VesselRead, VesselTypeRead } from '../../../types/api.types';
 
 export type StatisticsFiltersBarProps = {
   shipId: string;
   setShipId: (v: string) => void;
+  vesselTypeFilter: string;
+  setVesselTypeFilter: (v: string) => void;
+  vessels: VesselRead[];
+  vesselTypes: VesselTypeRead[];
   trackQ: string;
   setTrackQ: (v: string) => void;
   dateFrom: string;
@@ -27,6 +32,10 @@ export type StatisticsFiltersBarProps = {
 export const StatisticsFiltersBar: React.FC<StatisticsFiltersBarProps> = ({
   shipId,
   setShipId,
+  vesselTypeFilter,
+  setVesselTypeFilter,
+  vessels,
+  vesselTypes,
   trackQ,
   setTrackQ,
   dateFrom,
@@ -46,14 +55,33 @@ export const StatisticsFiltersBar: React.FC<StatisticsFiltersBarProps> = ({
         <FilterField label="Mã tàu (voted_ship_id)">
           <div className="relative">
             <Ship className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-            <input
-              type="text"
+            <select
               value={shipId}
               onChange={(e) => setShipId(e.target.value)}
-              placeholder="Lọc client + nút tải theo tàu..."
               className={`${filterControlClass} pl-10`}
-            />
+            >
+              <option value="">Tất cả</option>
+              {vessels.map((vessel) => (
+                <option key={vessel.id} value={vessel.ship_id}>
+                  {vessel.ship_id}
+                </option>
+              ))}
+            </select>
           </div>
+        </FilterField>
+        <FilterField label="Loại tàu">
+          <select
+            value={vesselTypeFilter}
+            onChange={(e) => setVesselTypeFilter(e.target.value)}
+            className={filterControlClass}
+          >
+            <option value="">Tất cả</option>
+            {vesselTypes.map((type) => (
+              <option key={type.id} value={String(type.id)}>
+                {type.type_name}
+              </option>
+            ))}
+          </select>
         </FilterField>
         <FilterField label="Track ID (chứa)">
           <input

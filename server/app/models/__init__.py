@@ -14,6 +14,7 @@ from app.models.port_log import PortLog
 from app.models.audit_log import AuditLog
 from app.models.export_log import ExportLog
 from app.models.camera import Camera
+from app.models.camera_group import CameraGroup, CameraGroupMember
 
 __all__ = [
     'Role',
@@ -32,4 +33,6 @@ __all__ = [
     'AuditLog',
     'ExportLog',
     'Camera',
+    'CameraGroup',
+    'CameraGroupMember',
 ]

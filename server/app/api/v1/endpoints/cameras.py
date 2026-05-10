@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+import cv2
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -6,6 +7,7 @@ from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.camera import CameraCreate, CameraUpdate, CameraRead
 from app.repositories.camera_repository import camera_repo
+from app.services.ai.multi_frame_reader import capture_snapshot
 
 router = APIRouter()
 
@@ -16,6 +18,20 @@ def list_cameras(active_only: bool = False, db: Session = Depends(get_db), _=Dep
     if active_only:
         return camera_repo.get_active(db)
     return camera_repo.get_all(db)
+
+
+@router.get('/{camera_id}/snapshot')
+def get_camera_snapshot(camera_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    obj = camera_repo.get(db, camera_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail='Camera not found')
+    frame = capture_snapshot(obj.rtsp_url)
+    if frame is None:
+        raise HTTPException(status_code=503, detail='Could not capture camera frame')
+    ok, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    if not ok:
+        raise HTTPException(status_code=500, detail='Failed to encode JPEG')
+    return Response(content=encoded.tobytes(), media_type='image/jpeg')
 
 
 @router.get('/{camera_id}', response_model=CameraRead)

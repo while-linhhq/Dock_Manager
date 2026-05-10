@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import time
+from typing import Callable
 
 import cv2
 
@@ -39,6 +40,7 @@ class VideoRecorderThread(threading.Thread):
         gap_sec: float,
         record_fps: float,
         runs_base: str = RUNS_DETECT,
+        on_video_saved: Callable[[str], None] | None = None,
     ):
         super().__init__(daemon=True)
         self._video_queue = video_queue
@@ -48,6 +50,7 @@ class VideoRecorderThread(threading.Thread):
         self._gap_sec = float(gap_sec)
         self._record_fps = max(1.0, float(record_fps))
         self._runs_base = runs_base
+        self._on_video_saved = on_video_saved
 
         self._writer: cv2.VideoWriter | None = None
         self._current_path: str | None = None
@@ -79,6 +82,11 @@ class VideoRecorderThread(threading.Thread):
                     faststart_inplace(path)
                 except Exception as e:
                     print(f"[RECORD] faststart failed: {e}")
+                if self._on_video_saved is not None:
+                    try:
+                        self._on_video_saved(path)
+                    except Exception as e:
+                        print(f"[RECORD] MinIO upload callback failed: {e}")
                 print(f"[RECORD] Saved: {self._current_path}")
             self._current_path = None
 

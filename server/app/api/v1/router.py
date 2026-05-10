@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     exports,
     audit_logs,
     pipeline,
+    camera_groups,
 )
 
 
@@ -31,6 +32,7 @@ api_router.include_router(orders.router,       prefix='/orders',        tags=['o
 api_router.include_router(fee_configs.router,  prefix='/fee-configs',   tags=['fee-configs'])
 api_router.include_router(invoices.router,     prefix='/invoices',      tags=['invoices'])
 api_router.include_router(cameras.router,      prefix='/cameras',       tags=['cameras'])
+api_router.include_router(camera_groups.router, prefix='/camera-groups', tags=['camera-groups'])
 api_router.include_router(port_configs.router, prefix='/port-configs',  tags=['port-configs'])
 api_router.include_router(port_logs.router,    prefix='/port-logs',     tags=['port-logs'])
 api_router.include_router(dashboard.router,    prefix='/dashboard',     tags=['dashboard'])

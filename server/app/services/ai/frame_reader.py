@@ -1,28 +1,19 @@
 """Đọc RTSP / webcam, đẩy frame vào queue."""
-import os
+
 import queue
 import threading
 import time
 
 import cv2
 
+try:
+    cv2.setLogLevel(2)
+except Exception:
+    pass
+
 
 def open_rtsp(rtsp_url: str) -> cv2.VideoCapture:
-    # Allow override via env; default to TCP + reasonable timeouts/buffers for stability.
-    # NOTE: These options help transport stability but cannot fully fix a corrupt HEVC stream.
-    if not os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"):
-        options = (
-            "rtsp_flags;prefer_tcp"
-            "|rtsp_transport;tcp"
-            "|stimeout;20000000"
-            "|buffer_size;10240000"
-            "|max_delay;500000"
-            "|analyzeduration;10000000"
-            "|probesize;10000000"
-        )
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = options
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-    return cap
+    return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
 
 
 class FrameReaderThread(threading.Thread):
@@ -67,13 +58,6 @@ class FrameReaderThread(threading.Thread):
 
             next_emit = time.monotonic()
             while not self._stop_event.is_set():
-                if self._target_interval is not None:
-                    now = time.monotonic()
-                    if now < next_emit:
-                        time.sleep(min(0.02, next_emit - now))
-                        continue
-                    # schedule next slot before read to stabilize pacing
-                    next_emit = now + self._target_interval
                 ok, frame = self._cap.read()
                 if not ok or frame is None:
                     if isinstance(self.rtsp_url, str):
@@ -85,6 +69,12 @@ class FrameReaderThread(threading.Thread):
                             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         continue
                     break
+
+                now = time.monotonic()
+                if self._target_interval is not None and now < next_emit:
+                    continue
+                if self._target_interval is not None:
+                    next_emit = now + self._target_interval
 
                 try:
                     self._frame_queue.put_nowait(frame.copy())

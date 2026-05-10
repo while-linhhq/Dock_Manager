@@ -1,0 +1,1 @@
+INSERT INTO "users" ("id", "username", "hashed_password", "email", "full_name", "phone", "role_id", "is_active", "last_login", "created_at", "updated_at") VALUES (1, 'admin', '$2b$12$5Jq/y7wyejdKJq90X0PWTuPbhnWIre4Gjlxrs6xpINzo4elpyVn0m', 'admin@gmail.com', 'Admin', 'ad', 1, 't', NULL, '2026-04-10 14:05:09.094522+00', '2026-04-13 17:22:14.717187+00');

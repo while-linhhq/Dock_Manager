@@ -8,6 +8,7 @@ import type { FeeConfigRead } from '../../../types/api.types';
 import type { InvoiceCreate, PaymentCreate, FeeConfigCreate } from '../services/revenueApi';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
 import { normalizeFeeBillingUnit } from '../../../utils/fee-billing-unit';
+import { useFilterOptions } from '../../../hooks/useFilterOptions';
 import { invoiceSchema, paymentSchema, feeSchema, type FeeFormValues } from '../revenue-schemas';
 import { feeConfigVesselTypeLabel } from '../utils/revenue-fee-helpers';
 import { RevenueMainTabs, type RevenueMainTab } from '../components/RevenueMainTabs';
@@ -24,6 +25,8 @@ export const RevenueView: React.FC = () => {
   const [editingFeeId, setEditingFeeId] = useState<string | number | null>(null);
   const [invQ, setInvQ] = useState('');
   const [invPayStatus, setInvPayStatus] = useState('');
+  const [invShipIdFilter, setInvShipIdFilter] = useState('');
+  const [invVesselTypeFilter, setInvVesselTypeFilter] = useState('');
   const [invDateFrom, setInvDateFrom] = useState('');
   const [invDateTo, setInvDateTo] = useState('');
   const [invMinTotal, setInvMinTotal] = useState('');
@@ -51,6 +54,7 @@ export const RevenueView: React.FC = () => {
   } = useRevenueStore();
 
   const { vesselTypes, fetchVesselTypes } = useVesselStore();
+  const { vessels: filterVessels, vesselTypes: filterVesselTypes } = useFilterOptions();
   const { orders, fetchOrders } = useOrderStore();
 
   const invoiceForm = useForm<InvoiceCreate>({
@@ -129,6 +133,16 @@ export const RevenueView: React.FC = () => {
       ) {
         return false;
       }
+      const matchedVessel = filterVessels.find((vessel) => String(vessel.id) === String(inv.vessel_id ?? ''));
+      if (invShipIdFilter && String(inv.vessel_id ?? matchedVessel?.id ?? '') !== invShipIdFilter) {
+        return false;
+      }
+      if (
+        invVesselTypeFilter &&
+        String(matchedVessel?.vessel_type_id ?? '') !== invVesselTypeFilter
+      ) {
+        return false;
+      }
       if (!isoInLocalDateRange(inv.created_at, invDateFrom, invDateTo)) {
         return false;
       }
@@ -141,7 +155,18 @@ export const RevenueView: React.FC = () => {
       }
       return true;
     });
-  }, [invoices, invQ, invPayStatus, invDateFrom, invDateTo, invMinTotal, invMaxTotal]);
+  }, [
+    invoices,
+    invQ,
+    invPayStatus,
+    invShipIdFilter,
+    invVesselTypeFilter,
+    invDateFrom,
+    invDateTo,
+    invMinTotal,
+    invMaxTotal,
+    filterVessels,
+  ]);
 
   const filteredFeeConfigs = useMemo(() => {
     return feeConfigs.filter((fee) => {
@@ -170,6 +195,8 @@ export const RevenueView: React.FC = () => {
   const invFilterCount =
     (invQ.trim() ? 1 : 0) +
     (invPayStatus ? 1 : 0) +
+    (invShipIdFilter ? 1 : 0) +
+    (invVesselTypeFilter ? 1 : 0) +
     (invDateFrom ? 1 : 0) +
     (invDateTo ? 1 : 0) +
     (invMinTotal.trim() ? 1 : 0) +
@@ -185,6 +212,8 @@ export const RevenueView: React.FC = () => {
   const resetInvFilters = () => {
     setInvQ('');
     setInvPayStatus('');
+    setInvShipIdFilter('');
+    setInvVesselTypeFilter('');
     setInvDateFrom('');
     setInvDateTo('');
     setInvMinTotal('');
@@ -326,6 +355,10 @@ export const RevenueView: React.FC = () => {
           setInvQ={setInvQ}
           invPayStatus={invPayStatus}
           setInvPayStatus={setInvPayStatus}
+          invShipIdFilter={invShipIdFilter}
+          setInvShipIdFilter={setInvShipIdFilter}
+          invVesselTypeFilter={invVesselTypeFilter}
+          setInvVesselTypeFilter={setInvVesselTypeFilter}
           invDateFrom={invDateFrom}
           setInvDateFrom={setInvDateFrom}
           invDateTo={invDateTo}
@@ -336,6 +369,8 @@ export const RevenueView: React.FC = () => {
           setInvMaxTotal={setInvMaxTotal}
           resetInvFilters={resetInvFilters}
           invFilterCount={invFilterCount}
+          vessels={filterVessels}
+          vesselTypes={filterVesselTypes}
           onOpenCreateInvoice={() => setIsInvoiceModalOpen(true)}
           onOpenPayment={(inv) => {
             setSelectedInvoiceId(inv.id);

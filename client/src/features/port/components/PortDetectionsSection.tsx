@@ -5,7 +5,7 @@ import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
-import type { DetectionMediaRead, DetectionRead } from '../../../types/api.types';
+import type { DetectionMediaRead, DetectionRead, VesselRead, VesselTypeRead } from '../../../types/api.types';
 import { portApi } from '../services/portApi';
 import {
   FilterField,
@@ -18,6 +18,10 @@ export type PortDetectionsSectionProps = {
   setDetQ: (v: string) => void;
   detAccepted: 'all' | 'yes' | 'no';
   setDetAccepted: (v: 'all' | 'yes' | 'no') => void;
+  detShipIdFilter: string;
+  setDetShipIdFilter: (v: string) => void;
+  detVesselTypeFilter: string;
+  setDetVesselTypeFilter: (v: string) => void;
   detDateFrom: string;
   setDetDateFrom: (v: string) => void;
   detDateTo: string;
@@ -30,6 +34,8 @@ export type PortDetectionsSectionProps = {
   isLoading: boolean;
   detections: DetectionRead[];
   filteredDetections: DetectionRead[];
+  vessels: VesselRead[];
+  vesselTypes: VesselTypeRead[];
   onVerify: (id: string, data: { is_accepted: boolean }) => void;
   onDeleteDetection: (id: string) => void;
 };
@@ -39,6 +45,10 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   setDetQ,
   detAccepted,
   setDetAccepted,
+  detShipIdFilter,
+  setDetShipIdFilter,
+  detVesselTypeFilter,
+  setDetVesselTypeFilter,
   detDateFrom,
   setDetDateFrom,
   detDateTo,
@@ -51,6 +61,8 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   isLoading,
   detections,
   filteredDetections,
+  vessels,
+  vesselTypes,
   onVerify,
   onDeleteDetection,
 }) => {
@@ -174,6 +186,34 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
             <option value="all">Tất cả</option>
             <option value="yes">Đã xác nhận</option>
             <option value="no">Chờ duyệt</option>
+          </select>
+        </FilterField>
+        <FilterField label="Mã tàu">
+          <select
+            value={detShipIdFilter}
+            onChange={(e) => setDetShipIdFilter(e.target.value)}
+            className={filterControlClass}
+          >
+            <option value="">Tất cả</option>
+            {vessels.map((vessel) => (
+              <option key={vessel.id} value={String(vessel.id)}>
+                {vessel.ship_id}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Loại tàu">
+          <select
+            value={detVesselTypeFilter}
+            onChange={(e) => setDetVesselTypeFilter(e.target.value)}
+            className={filterControlClass}
+          >
+            <option value="">Tất cả</option>
+            {vesselTypes.map((type) => (
+              <option key={type.id} value={String(type.id)}>
+                {type.type_name}
+              </option>
+            ))}
           </select>
         </FilterField>
         <FilterField label="Từ ngày (sự kiện)">

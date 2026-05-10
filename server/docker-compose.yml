@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./app/data-docker/postgres:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -29,7 +29,7 @@ services:
       - "9100:9000"
       - "9101:9001"
     volumes:
-      - minio_data:/data
+      - ./app/data-docker/minio:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -76,7 +76,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
-volumes:
-  postgres_data:
-  minio_data:

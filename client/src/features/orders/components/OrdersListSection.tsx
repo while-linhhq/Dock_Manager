@@ -12,7 +12,7 @@ import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
-import type { OrderRead } from '../../../types/api.types';
+import type { OrderRead, VesselRead, VesselTypeRead } from '../../../types/api.types';
 import {
   FilterField,
   TableFilterPanel,
@@ -30,6 +30,10 @@ export type OrdersListSectionProps = {
   setOrderQ: (v: string) => void;
   orderStatusFilter: string;
   setOrderStatusFilter: (v: string) => void;
+  orderShipIdFilter: string;
+  setOrderShipIdFilter: (v: string) => void;
+  orderVesselTypeFilter: string;
+  setOrderVesselTypeFilter: (v: string) => void;
   orderDateFrom: string;
   setOrderDateFrom: (v: string) => void;
   orderDateTo: string;
@@ -43,6 +47,8 @@ export type OrdersListSectionProps = {
   onOpenCreate: () => void;
   orders: OrderRead[];
   filteredOrders: OrderRead[];
+  vessels: VesselRead[];
+  vesselTypes: VesselTypeRead[];
   isLoading: boolean;
   onEdit: (order: OrderRead) => void;
   onDelete: (id: string) => void;
@@ -53,6 +59,10 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
   setOrderQ,
   orderStatusFilter,
   setOrderStatusFilter,
+  orderShipIdFilter,
+  setOrderShipIdFilter,
+  orderVesselTypeFilter,
+  setOrderVesselTypeFilter,
   orderDateFrom,
   setOrderDateFrom,
   orderDateTo,
@@ -66,6 +76,8 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
   onOpenCreate,
   orders,
   filteredOrders,
+  vessels,
+  vesselTypes,
   isLoading,
   onEdit,
   onDelete,
@@ -92,6 +104,34 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
             {Object.entries(statusLabels).map(([val, label]) => (
               <option key={val} value={val}>
                 {label}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Mã tàu">
+          <select
+            value={orderShipIdFilter}
+            onChange={(e) => setOrderShipIdFilter(e.target.value)}
+            className={filterControlClass}
+          >
+            <option value="">Tất cả</option>
+            {vessels.map((vessel) => (
+              <option key={vessel.id} value={String(vessel.id)}>
+                {vessel.ship_id}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Loại tàu">
+          <select
+            value={orderVesselTypeFilter}
+            onChange={(e) => setOrderVesselTypeFilter(e.target.value)}
+            className={filterControlClass}
+          >
+            <option value="">Tất cả</option>
+            {vesselTypes.map((type) => (
+              <option key={type.id} value={String(type.id)}>
+                {type.type_name}
               </option>
             ))}
           </select>

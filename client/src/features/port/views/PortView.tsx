@@ -5,11 +5,10 @@ import { usePortStore } from '../store/portStore';
 import type { CameraCreate, PortConfigCreate, PipelineStartRequest, PortConfigRead } from '../services/portApi';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
-import type { CameraRead } from '../../../types/api.types';
+import { useFilterOptions } from '../../../hooks/useFilterOptions';
 import { cameraSchema, configSchema, pipelineSchema } from '../port-schemas';
 import { PortMainTabs, type PortMainTab } from '../components/PortMainTabs';
 import { PortDetectionsSection } from '../components/PortDetectionsSection';
-import { PortCamerasSection } from '../components/PortCamerasSection';
 import { PortConfigsSection } from '../components/PortConfigsSection';
 import { PortPipelineSection } from '../components/PortPipelineSection';
 import { PortModals } from '../components/PortModals';
@@ -26,11 +25,11 @@ export const PortView: React.FC = () => {
   const [pipelineTabEnableOcr, setPipelineTabEnableOcr] = useState(true);
   const [detQ, setDetQ] = useState('');
   const [detAccepted, setDetAccepted] = useState<'all' | 'yes' | 'no'>('all');
+  const [detShipIdFilter, setDetShipIdFilter] = useState('');
+  const [detVesselTypeFilter, setDetVesselTypeFilter] = useState('');
   const [detDateFrom, setDetDateFrom] = useState('');
   const [detDateTo, setDetDateTo] = useState('');
   const [detMinConfPct, setDetMinConfPct] = useState('');
-  const [camQ, setCamQ] = useState('');
-  const [camActive, setCamActive] = useState<'all' | 'on' | 'off'>('all');
   const [cfgKeyQ, setCfgKeyQ] = useState('');
   const [cfgValQ, setCfgValQ] = useState('');
 
@@ -44,13 +43,13 @@ export const PortView: React.FC = () => {
     fetchConfigs,
     verifyDetection,
     upsertCamera,
-    deleteCamera,
     upsertConfig,
     deleteConfig,
     deleteDetection,
     startPipeline,
     stopPipeline,
   } = usePortStore();
+  const { vessels: filterVessels, vesselTypes: filterVesselTypes } = useFilterOptions();
 
   const cameraForm = useForm<CameraCreate>({
     resolver: zodResolver(cameraSchema),
@@ -68,7 +67,7 @@ export const PortView: React.FC = () => {
 
   useEffect(() => {
     if (activeTab === 'detections') fetchDetections();
-    if (activeTab === 'cameras' || activeTab === 'pipeline') fetchCameras();
+    if (activeTab === 'pipeline') fetchCameras();
     if (activeTab === 'configs') fetchConfigs();
   }, [activeTab, fetchDetections, fetchCameras, fetchConfigs]);
 
@@ -78,7 +77,8 @@ export const PortView: React.FC = () => {
     }
     const cam = cameras.find((c) => String(c.id) === pipelineTabCameraId);
     if (!cam || !cam.is_active) {
-      setPipelineTabCameraId('');
+      const timer = window.setTimeout(() => setPipelineTabCameraId(''), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [cameras, pipelineTabCameraId]);
 
@@ -88,7 +88,8 @@ export const PortView: React.FC = () => {
     }
     const cam = cameras.find((c) => String(c.id) === selectedCameraId);
     if (cam && !cam.is_active) {
-      setSelectedCameraId('');
+      const timer = window.setTimeout(() => setSelectedCameraId(''), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [cameras, selectedCameraId]);
 
@@ -113,6 +114,16 @@ export const PortView: React.FC = () => {
       if (detAccepted === 'no' && det.is_accepted === true) {
         return false;
       }
+      const matchedVessel = filterVessels.find((vessel) => String(vessel.id) === String(det.vessel_id ?? ''));
+      if (detShipIdFilter && String(det.vessel_id ?? matchedVessel?.id ?? '') !== detShipIdFilter) {
+        return false;
+      }
+      if (
+        detVesselTypeFilter &&
+        String(det.vessel?.vessel_type_id ?? matchedVessel?.vessel_type_id ?? '') !== detVesselTypeFilter
+      ) {
+        return false;
+      }
       if (!isoInLocalDateRange(iso ?? det.created_at, detDateFrom, detDateTo)) {
         return false;
       }
@@ -125,22 +136,17 @@ export const PortView: React.FC = () => {
       }
       return true;
     });
-  }, [detections, detQ, detAccepted, detDateFrom, detDateTo, detMinConfPct]);
-
-  const filteredCameras = useMemo(() => {
-    return cameras.filter((cam) => {
-      if (!matchesAnyField(camQ, cam.camera_name, cam.name, cam.rtsp_url)) {
-        return false;
-      }
-      if (camActive === 'on' && !cam.is_active) {
-        return false;
-      }
-      if (camActive === 'off' && cam.is_active) {
-        return false;
-      }
-      return true;
-    });
-  }, [cameras, camQ, camActive]);
+  }, [
+    detections,
+    detQ,
+    detAccepted,
+    detShipIdFilter,
+    detVesselTypeFilter,
+    detDateFrom,
+    detDateTo,
+    detMinConfPct,
+    filterVessels,
+  ]);
 
   const filteredConfigs = useMemo(() => {
     return configs.filter((cfg) => {
@@ -157,25 +163,22 @@ export const PortView: React.FC = () => {
   const detFilterCount =
     (detQ.trim() ? 1 : 0) +
     (detAccepted !== 'all' ? 1 : 0) +
+    (detShipIdFilter ? 1 : 0) +
+    (detVesselTypeFilter ? 1 : 0) +
     (detDateFrom ? 1 : 0) +
     (detDateTo ? 1 : 0) +
     (detMinConfPct.trim() ? 1 : 0);
-
-  const camFilterCount = (camQ.trim() ? 1 : 0) + (camActive !== 'all' ? 1 : 0);
 
   const cfgFilterCount = (cfgKeyQ.trim() ? 1 : 0) + (cfgValQ.trim() ? 1 : 0);
 
   const resetDetFilters = () => {
     setDetQ('');
     setDetAccepted('all');
+    setDetShipIdFilter('');
+    setDetVesselTypeFilter('');
     setDetDateFrom('');
     setDetDateTo('');
     setDetMinConfPct('');
-  };
-
-  const resetCamFilters = () => {
-    setCamQ('');
-    setCamActive('all');
   };
 
   const resetCfgFilters = () => {
@@ -230,39 +233,6 @@ export const PortView: React.FC = () => {
     }
   };
 
-  const handleEditCamera = (cam: CameraRead) => {
-    setEditingId(String(cam.id));
-    cameraForm.reset({
-      name: cam.camera_name || cam.name || '',
-      rtsp_url: cam.rtsp_url,
-      is_active: cam.is_active,
-    });
-    setIsCameraModalOpen(true);
-  };
-
-  const handleDeleteCamera = async (cam: CameraRead) => {
-    const label = cam.camera_name || cam.name || `Camera ${cam.id}`;
-    if (!window.confirm(`Xóa vĩnh viễn camera «${label}»? Hành động không hoàn tác.`)) {
-      return;
-    }
-    try {
-      if (editingId != null && String(editingId) === String(cam.id)) {
-        setIsCameraModalOpen(false);
-        setEditingId(null);
-        cameraForm.reset({ is_active: true });
-      }
-      if (String(selectedCameraId) === String(cam.id)) {
-        setSelectedCameraId('');
-      }
-      if (String(pipelineTabCameraId) === String(cam.id)) {
-        setPipelineTabCameraId('');
-      }
-      await deleteCamera(cam.id);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
   const handleEditConfig = (cfg: PortConfigRead) => {
     setEditingConfigKey(cfg.key);
     configForm.reset({
@@ -297,6 +267,10 @@ export const PortView: React.FC = () => {
           setDetQ={setDetQ}
           detAccepted={detAccepted}
           setDetAccepted={setDetAccepted}
+          detShipIdFilter={detShipIdFilter}
+          setDetShipIdFilter={setDetShipIdFilter}
+          detVesselTypeFilter={detVesselTypeFilter}
+          setDetVesselTypeFilter={setDetVesselTypeFilter}
           detDateFrom={detDateFrom}
           setDetDateFrom={setDetDateFrom}
           detDateTo={detDateTo}
@@ -309,29 +283,10 @@ export const PortView: React.FC = () => {
           isLoading={isLoading}
           detections={detections}
           filteredDetections={filteredDetections}
+          vessels={filterVessels}
+          vesselTypes={filterVesselTypes}
           onVerify={(id, data) => verifyDetection(id, data)}
           onDeleteDetection={handleDeleteDetection}
-        />
-      )}
-
-      {activeTab === 'cameras' && (
-        <PortCamerasSection
-          camQ={camQ}
-          setCamQ={setCamQ}
-          camActive={camActive}
-          setCamActive={setCamActive}
-          resetCamFilters={resetCamFilters}
-          camFilterCount={camFilterCount}
-          onOpenAddCamera={() => {
-            setEditingId(null);
-            cameraForm.reset({ is_active: true });
-            setIsCameraModalOpen(true);
-          }}
-          filteredCameras={filteredCameras}
-          cameras={cameras}
-          isLoading={isLoading}
-          onEditCamera={handleEditCamera}
-          onDeleteCamera={handleDeleteCamera}
         />
       )}
 

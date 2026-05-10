@@ -1,0 +1,1 @@
+INSERT INTO "orders" ("id", "order_number", "vessel_id", "description", "status", "notes", "created_by", "updated_by", "created_at", "completed_at", "updated_at", "total_amount") VALUES (24, 'ORD-20260414065534-E66384', 26, '', 'COMPLETED', NULL, 1, NULL, '2026-04-14 06:55:34.402139+00', '2026-04-14 11:15:03.02369+00', '2026-04-14 11:15:02.996864+00', '10000.00');

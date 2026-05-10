@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from jose import jwt
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -163,7 +162,6 @@ async def audit_http_requests(request: Request, call_next):
 
 # Force reload of api_router to ensure all routes are captured
 app.include_router(api_router, prefix="/api/v1")
-app.mount("/runs", StaticFiles(directory="runs", check_dir=False), name="runs")
 
 @app.get("/")
 async def root():

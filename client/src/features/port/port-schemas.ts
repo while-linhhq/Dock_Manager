@@ -14,5 +14,6 @@ export const configSchema = z.object({
 
 export const pipelineSchema = z.object({
   source: z.string().optional(),
+  camera_group_id: z.number().optional(),
   enable_ocr: z.boolean().default(true),
 });

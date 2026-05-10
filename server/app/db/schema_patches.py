@@ -187,9 +187,156 @@ def _ensure_detections_audit_image_path() -> None:
         raise
 
 
+def _ensure_camera_groups() -> None:
+    try:
+        inspector = inspect(engine)
+        if inspector.has_table('camera_groups') and inspector.has_table('camera_group_members'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect camera_groups tables: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect != 'postgresql':
+        logger.warning(
+            'schema_patches: unknown dialect %s — create camera_groups tables manually',
+            dialect,
+        )
+        return
+
+    stmts = [
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS camera_groups (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(120) UNIQUE NOT NULL,
+                description TEXT,
+                fusion_mode VARCHAR(20) NOT NULL DEFAULT 'layout',
+                canvas_width INTEGER NOT NULL DEFAULT 1920,
+                canvas_height INTEGER NOT NULL DEFAULT 1080,
+                stitch_metadata JSONB,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                CONSTRAINT chk_camera_groups_fusion_mode
+                    CHECK (fusion_mode IN ('layout', 'homography', 'panorama'))
+            )
+            """
+        ),
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS camera_group_members (
+                id SERIAL PRIMARY KEY,
+                group_id INTEGER NOT NULL REFERENCES camera_groups(id) ON DELETE CASCADE,
+                camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+                role VARCHAR(20) NOT NULL DEFAULT 'tile',
+                priority INTEGER NOT NULL DEFAULT 0,
+                layout_x INTEGER NOT NULL DEFAULT 0,
+                layout_y INTEGER NOT NULL DEFAULT 0,
+                layout_w INTEGER,
+                layout_h INTEGER,
+                layout_rotation REAL NOT NULL DEFAULT 0,
+                homography JSONB,
+                calibration_points JSONB,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(group_id, camera_id),
+                CONSTRAINT chk_camera_group_members_role
+                    CHECK (role IN ('base', 'overlay', 'tile'))
+            )
+            """
+        ),
+        text(
+            'CREATE INDEX IF NOT EXISTS ix_camera_group_members_group '
+            'ON camera_group_members(group_id)'
+        ),
+        text(
+            'CREATE INDEX IF NOT EXISTS ix_camera_group_members_camera '
+            'ON camera_group_members(camera_id)'
+        ),
+    ]
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        logger.info('schema_patches: ensured camera_groups tables')
+    except Exception as err:
+        logger.error('schema_patches: failed to ensure camera_groups tables: %s', err)
+        raise
+
+
+def _ensure_camera_groups_stitch_metadata() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('camera_groups'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('camera_groups')}
+        if 'stitch_metadata' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect camera_groups table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE camera_groups ADD COLUMN IF NOT EXISTS stitch_metadata JSONB')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE camera_groups ADD COLUMN stitch_metadata JSON')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add camera_groups.stitch_metadata manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        logger.info('schema_patches: added camera_groups.stitch_metadata')
+    except Exception as err:
+        logger.error('schema_patches: failed to add camera_groups.stitch_metadata: %s', err)
+        raise
+
+
+def _ensure_camera_groups_panorama_mode() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('camera_groups'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect camera_groups table: %s', err)
+        return
+
+    if engine.dialect.name != 'postgresql':
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text('ALTER TABLE camera_groups DROP CONSTRAINT IF EXISTS chk_camera_groups_fusion_mode'))
+            conn.execute(
+                text(
+                    """
+                    ALTER TABLE camera_groups
+                    ADD CONSTRAINT chk_camera_groups_fusion_mode
+                    CHECK (fusion_mode IN ('layout', 'homography', 'panorama'))
+                    """
+                )
+            )
+        logger.info('schema_patches: ensured camera_groups panorama fusion_mode')
+    except Exception as err:
+        logger.error('schema_patches: failed to update camera_groups fusion_mode constraint: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
     _ensure_orders_total_amount()
     _ensure_invoices_creation_source()
     _ensure_detections_audit_image_path()
+    _ensure_camera_groups()
+    _ensure_camera_groups_stitch_metadata()
+    _ensure_camera_groups_panorama_mode()

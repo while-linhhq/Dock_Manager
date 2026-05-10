@@ -32,6 +32,7 @@ export type PortConfigCreate = {
 export type PipelineStartRequest = {
   source?: string;
   camera_id?: number;
+  camera_group_id?: number;
   enable_ocr?: boolean;
 }
 
@@ -76,7 +77,14 @@ export const portApi = {
   },
   startPipeline: async (
     data: PipelineStartRequest,
-  ): Promise<{ message: string; source: string; camera_id?: number; camera_name?: string }> => {
+  ): Promise<{
+    message: string;
+    source?: string;
+    camera_id?: number;
+    camera_name?: string;
+    camera_group_id?: number;
+    camera_group_name?: string;
+  }> => {
     return httpClient.post('/pipeline/start', data);
   },
   stopPipeline: async (): Promise<{ message: string }> => {

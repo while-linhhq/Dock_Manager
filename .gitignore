@@ -13,3 +13,12 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Local Docker-mounted data (PostgreSQL/MinIO/runtime media)
+server/app/data-docker/
+
+# Local DB export blobs (images/videos under sql dumps — do not version)
+server/app/db/sqlCommand/detections/
+
+# Local cuDNN 8 symlinks for paddlepaddle-gpu 2.6.x (host-specific)
+server/.cudnn8/
