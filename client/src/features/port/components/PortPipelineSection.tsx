@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { UseFormReturn } from 'react-hook-form';
 import { Cpu, Loader2, Play, Square } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
@@ -36,6 +36,10 @@ export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
   const [sourceMode, setSourceMode] = useState<'camera' | 'group'>('camera');
   const [cameraGroups, setCameraGroups] = useState<CameraGroup[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState('');
+  const selectedGroup = useMemo(
+    () => cameraGroups.find((group) => String(group.id) === selectedGroupId),
+    [cameraGroups, selectedGroupId],
+  );
 
   useEffect(() => {
     cameraGroupsApi.list(true).then(setCameraGroups).catch(console.error);
@@ -100,18 +104,28 @@ export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
             {sourceMode === 'group' ? 'Camera Group' : 'Camera'}
           </label>
           {sourceMode === 'group' ? (
-            <select
-              value={selectedGroupId}
-              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm dark:border-white/10 dark:bg-[#121214] dark:text-white"
-              onChange={(e) => setSelectedGroupId(e.target.value)}
-            >
-              <option value="">-- Chọn camera group --</option>
-              {cameraGroups.map((group) => (
-                <option key={group.id} value={String(group.id)}>
-                  {group.name} ({group.members.length} cameras)
-                </option>
-              ))}
-            </select>
+            <>
+              <select
+                value={selectedGroupId}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm dark:border-white/10 dark:bg-[#121214] dark:text-white"
+                onChange={(e) => setSelectedGroupId(e.target.value)}
+              >
+                <option value="">-- Chọn camera group --</option>
+                {cameraGroups.map((group) => (
+                  <option key={group.id} value={String(group.id)}>
+                    {group.name} ({group.members.length} cameras)
+                  </option>
+                ))}
+              </select>
+              {selectedGroup ? (
+                <p className="mt-2 rounded-xl bg-blue-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-blue-600 dark:bg-blue-950/30 dark:text-blue-300">
+                  Mode:{' '}
+                  {selectedGroup.pipeline_mode === 'fused'
+                    ? 'Frame ghép thủ công từ layout canvas'
+                    : 'Camera rời rạc đa luồng + Re-ID'}
+                </p>
+              ) : null}
+            </>
           ) : (
             <select
               value={pipelineTabCameraId}

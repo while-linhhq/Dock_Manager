@@ -26,6 +26,10 @@ export const MemberList: React.FC<{
         layout_w: 640,
         layout_h: 360,
         layout_rotation: 0,
+        crop_top: 0,
+        crop_bottom: 0,
+        crop_left: 0,
+        crop_right: 0,
         enabled: true,
       },
     ]);
@@ -85,6 +89,9 @@ export const MemberList: React.FC<{
                 Xóa
               </button>
             </div>
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">
+              Layout
+            </p>
             <div className="grid grid-cols-3 gap-2">
               {[
                 ['X', 'layout_x'],
@@ -102,6 +109,32 @@ export const MemberList: React.FC<{
                     value={Number((member as unknown as Record<string, number | undefined>)[key] ?? 0)}
                     onChange={(event) =>
                       updateMember(member.camera_id, { [key]: Number(event.target.value) } as Partial<CameraGroupMember>)
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="mb-2 mt-3 text-[10px] font-bold uppercase tracking-widest text-gray-400">
+              Crop px
+            </p>
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                ['Top', 'crop_top'],
+                ['Bottom', 'crop_bottom'],
+                ['Left', 'crop_left'],
+                ['Right', 'crop_right'],
+              ].map(([label, key]) => (
+                <label key={key} className="text-[10px] uppercase tracking-widest text-gray-500">
+                  {label}
+                  <input
+                    type="number"
+                    min={0}
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-black dark:text-white"
+                    value={Number((member as unknown as Record<string, number | undefined>)[key] ?? 0)}
+                    onChange={(event) =>
+                      updateMember(member.camera_id, {
+                        [key]: Math.max(0, Number(event.target.value)),
+                      } as Partial<CameraGroupMember>)
                     }
                   />
                 </label>

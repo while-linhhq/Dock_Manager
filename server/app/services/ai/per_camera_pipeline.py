@@ -15,7 +15,6 @@ from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
-from app.services.ai.local_stitcher import LocalStitcher
 from app.services.ai.motion_classifier import MotionClassifier
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.utils.ai.overlay import draw_ship_detection_overlay
@@ -59,7 +58,6 @@ class PerCameraPipeline(threading.Thread):
         detector_lock: threading.Lock,
         reid_manager: CrossCameraReIdManager,
         embedding_extractor: EmbeddingExtractor,
-        local_stitcher: LocalStitcher | None,
         video_queue: queue.Queue | None,
         stop_event: threading.Event,
         ocr_cache: dict,
@@ -73,7 +71,6 @@ class PerCameraPipeline(threading.Thread):
         self._detector_lock = detector_lock
         self._reid_manager = reid_manager
         self._embedding_extractor = embedding_extractor
-        self._local_stitcher = local_stitcher
         self._video_queue = video_queue
         self._stop_event = stop_event
         self._ocr_cache = ocr_cache
@@ -163,10 +160,6 @@ class PerCameraPipeline(threading.Thread):
         self._tracker.flush_shutdown_logs()
 
     def _process_frame(self, raw_frame: np.ndarray, fps_est: float) -> None:
-        camera_id = int(self.config.camera_id)
-        if self._local_stitcher is not None:
-            self._local_stitcher.set_latest_frame(camera_id, raw_frame)
-
         processed = preprocess_frame_clahe(raw_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
@@ -244,20 +237,6 @@ class PerCameraPipeline(threading.Thread):
             return
 
         items = [(track.track_id, track.box.copy()) for track in confirmed]
-        for track in confirmed:
-            side = _edge_side(track.box, frame.shape[1], self.config.edge_zone_ratio)
-            if side and self._local_stitcher is not None:
-                stitched = self._local_stitcher.stitch_for_track(
-                    int(self.config.camera_id),
-                    track.box,
-                    side,
-                )
-                if stitched is not None and stitched.size > 0:
-                    h, w = stitched.shape[:2]
-                    put_queue_drop_oldest(
-                        self._ocr_queue,
-                        (stitched, [(track.track_id, np.array([0, 0, w, h], dtype=np.float32))]),
-                    )
         put_queue_drop_oldest(self._ocr_queue, (frame.copy(), items))
 
     def _on_ocr_result(self, track_id: str, ship_id: str, confidence: float) -> None:

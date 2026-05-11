@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import base64
 import queue
 import threading
 import time
-import zlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,7 +24,10 @@ class FusionMember:
     layout_w: int | None = None
     layout_h: int | None = None
     layout_rotation: float = 0
-    homography: list[list[float]] | None = None
+    crop_top: int = 0
+    crop_bottom: int = 0
+    crop_left: int = 0
+    crop_right: int = 0
     enabled: bool = True
 
 
@@ -36,7 +37,10 @@ class FusionConfig:
     canvas_width: int
     canvas_height: int
     members: list[FusionMember]
-    stitch_metadata: dict[str, Any] | None = None
+
+
+DEFAULT_FUSED_MAX_WIDTH = 1280
+DEFAULT_FUSED_MAX_HEIGHT = 720
 
 
 def _paste_with_mask(canvas: np.ndarray, image: np.ndarray, x: int, y: int) -> None:
@@ -64,22 +68,12 @@ class FrameFuser:
             [member for member in config.members if member.enabled],
             key=lambda member: member.priority,
         )
-        metadata = config.stitch_metadata or {}
-        self._exposure_gains = _parse_exposure_gains(metadata.get('exposure_gains'))
-        self._stored_blend_weights = _decode_blend_weights(
-            metadata.get('blend_weights'),
-            metadata.get('blend_weights_shape'),
-            config.canvas_width,
-            config.canvas_height,
-        )
 
     def fuse(self, frames: dict[int, TimedFrame]) -> np.ndarray:
         canvas = np.zeros(
             (self._config.canvas_height, self._config.canvas_width, 3),
             dtype=np.uint8,
         )
-        if self._config.fusion_mode in {'homography', 'panorama'}:
-            return self._fuse_homography(canvas, frames)
         return self._fuse_layout(canvas, frames)
 
     def _fuse_layout(self, canvas: np.ndarray, frames: dict[int, TimedFrame]) -> np.ndarray:
@@ -91,43 +85,10 @@ class FrameFuser:
             width = member.layout_w or frame.shape[1]
             height = member.layout_h or frame.shape[0]
             resized = cv2.resize(frame, (int(width), int(height)))
-            rotated = _rotate_bound(resized, member.layout_rotation)
+            cropped = _crop_frame(resized, member)
+            rotated = _rotate_bound(cropped, member.layout_rotation)
             _paste_with_mask(canvas, rotated, member.layout_x, member.layout_y)
         return canvas
-
-    def _fuse_homography(self, canvas: np.ndarray, frames: dict[int, TimedFrame]) -> np.ndarray:
-        warped_items: list[tuple[int, np.ndarray, np.ndarray]] = []
-        missing_homography: dict[int, TimedFrame] = {}
-        canvas_size = (self._config.canvas_width, self._config.canvas_height)
-
-        for member in self._members:
-            timed_frame = frames.get(member.camera_id)
-            if timed_frame is None:
-                continue
-            if not member.homography:
-                missing_homography[member.camera_id] = timed_frame
-                continue
-
-            matrix = np.array(member.homography, dtype=np.float32)
-            frame = _apply_exposure_gain(timed_frame.frame, self._exposure_gains.get(member.camera_id, 1.0))
-            warped = cv2.warpPerspective(frame, matrix, canvas_size)
-            mask = np.any(warped > 0, axis=2).astype(np.uint8)
-            if int(mask.sum()) == 0:
-                continue
-            warped_items.append((member.camera_id, warped, mask))
-
-        if warped_items:
-            canvas = _feather_blend(
-                warped_items,
-                self._stored_blend_weights,
-                self._config.canvas_width,
-                self._config.canvas_height,
-            )
-
-        if missing_homography:
-            canvas = self._fuse_layout(canvas, missing_homography)
-        return canvas
-
 
 class FrameFusionWorker(threading.Thread):
     def __init__(
@@ -171,89 +132,6 @@ class FrameFusionWorker(threading.Thread):
                     pass
 
 
-def _parse_exposure_gains(raw: Any) -> dict[int, float]:
-    if not isinstance(raw, dict):
-        return {}
-    gains: dict[int, float] = {}
-    for camera_id, value in raw.items():
-        try:
-            gains[int(camera_id)] = float(np.clip(float(value), 0.5, 1.8))
-        except Exception:
-            continue
-    return gains
-
-
-def _decode_blend_weights(
-    raw_weights: Any,
-    raw_shape: Any,
-    canvas_width: int,
-    canvas_height: int,
-) -> dict[int, np.ndarray]:
-    if not isinstance(raw_weights, dict) or not isinstance(raw_shape, (list, tuple)) or len(raw_shape) != 2:
-        return {}
-    try:
-        height = int(raw_shape[0])
-        width = int(raw_shape[1])
-    except Exception:
-        return {}
-    if height <= 0 or width <= 0:
-        return {}
-
-    weights: dict[int, np.ndarray] = {}
-    for camera_id, encoded in raw_weights.items():
-        if not isinstance(encoded, str):
-            continue
-        try:
-            payload = zlib.decompress(base64.b64decode(encoded.encode('ascii')))
-            arr = np.frombuffer(payload, dtype=np.uint8).reshape((height, width)).astype(np.float32) / 255.0
-            if width != canvas_width or height != canvas_height:
-                arr = cv2.resize(arr, (canvas_width, canvas_height), interpolation=cv2.INTER_LINEAR)
-            weights[int(camera_id)] = arr.astype(np.float32)
-        except Exception:
-            continue
-    return weights
-
-
-def _apply_exposure_gain(frame: np.ndarray, gain: float) -> np.ndarray:
-    if abs(gain - 1.0) < 1e-3:
-        return frame
-    adjusted = frame.astype(np.float32) * float(gain)
-    return np.clip(adjusted, 0, 255).astype(np.uint8)
-
-
-def _weight_from_mask(mask: np.ndarray) -> np.ndarray:
-    dist = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
-    max_value = float(dist.max())
-    if max_value <= 0:
-        return mask.astype(np.float32)
-    return (dist / max_value).astype(np.float32)
-
-
-def _feather_blend(
-    warped_items: list[tuple[int, np.ndarray, np.ndarray]],
-    stored_weights: dict[int, np.ndarray],
-    canvas_width: int,
-    canvas_height: int,
-) -> np.ndarray:
-    accum = np.zeros((canvas_height, canvas_width, 3), dtype=np.float32)
-    weight_sum = np.zeros((canvas_height, canvas_width), dtype=np.float32)
-
-    for camera_id, warped, mask in warped_items:
-        weight = stored_weights.get(camera_id)
-        if weight is None:
-            weight = _weight_from_mask(mask)
-        else:
-            weight = cv2.resize(weight, (canvas_width, canvas_height), interpolation=cv2.INTER_LINEAR)
-            weight = weight.astype(np.float32) * mask.astype(np.float32)
-        accum += warped.astype(np.float32) * weight[..., None]
-        weight_sum += weight
-
-    valid = weight_sum > 1e-6
-    output = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
-    output[valid] = np.clip(accum[valid] / weight_sum[valid, None], 0, 255).astype(np.uint8)
-    return output
-
-
 def _rotate_bound(image: np.ndarray, angle: float) -> np.ndarray:
     if abs(float(angle)) < 0.01:
         return image
@@ -269,12 +147,73 @@ def _rotate_bound(image: np.ndarray, angle: float) -> np.ndarray:
     return cv2.warpAffine(image, matrix, (new_width, new_height))
 
 
-def build_fusion_config_from_group(group: Any) -> FusionConfig:
+def _crop_frame(frame: np.ndarray, member: FusionMember) -> np.ndarray:
+    height, width = frame.shape[:2]
+    left = min(max(0, int(member.crop_left or 0)), max(0, width - 1))
+    right = min(max(0, int(member.crop_right or 0)), max(0, width - left - 1))
+    top = min(max(0, int(member.crop_top or 0)), max(0, height - 1))
+    bottom = min(max(0, int(member.crop_bottom or 0)), max(0, height - top - 1))
+    cropped = frame[top:height - bottom, left:width - right]
+    return cropped if cropped.size > 0 else frame
+
+
+def scaled_fusion_config(
+    config: FusionConfig,
+    max_width: int = DEFAULT_FUSED_MAX_WIDTH,
+    max_height: int = DEFAULT_FUSED_MAX_HEIGHT,
+) -> FusionConfig:
+    scale = resolve_fusion_scale(config.canvas_width, config.canvas_height, max_width, max_height)
+    if abs(scale - 1.0) < 1e-6:
+        return config
     return FusionConfig(
+        fusion_mode=config.fusion_mode,
+        canvas_width=max(1, int(round(config.canvas_width * scale))),
+        canvas_height=max(1, int(round(config.canvas_height * scale))),
+        members=[
+            FusionMember(
+                camera_id=member.camera_id,
+                role=member.role,
+                priority=member.priority,
+                layout_x=int(round(member.layout_x * scale)),
+                layout_y=int(round(member.layout_y * scale)),
+                layout_w=max(1, int(round(member.layout_w * scale))) if member.layout_w else None,
+                layout_h=max(1, int(round(member.layout_h * scale))) if member.layout_h else None,
+                layout_rotation=member.layout_rotation,
+                crop_top=member.crop_top,
+                crop_bottom=member.crop_bottom,
+                crop_left=member.crop_left,
+                crop_right=member.crop_right,
+                enabled=member.enabled,
+            )
+            for member in config.members
+        ],
+    )
+
+
+def resolve_fusion_scale(
+    canvas_width: int,
+    canvas_height: int,
+    max_width: int = DEFAULT_FUSED_MAX_WIDTH,
+    max_height: int = DEFAULT_FUSED_MAX_HEIGHT,
+) -> float:
+    if canvas_width <= 0 or canvas_height <= 0:
+        return 1.0
+    return min(
+        1.0,
+        max(1, int(max_width)) / float(canvas_width),
+        max(1, int(max_height)) / float(canvas_height),
+    )
+
+
+def build_fusion_config_from_group(
+    group: Any,
+    max_width: int | None = None,
+    max_height: int | None = None,
+) -> FusionConfig:
+    config = FusionConfig(
         fusion_mode=str(group.fusion_mode or 'layout'),
         canvas_width=int(group.canvas_width or 1920),
         canvas_height=int(group.canvas_height or 1080),
-        stitch_metadata=getattr(group, 'stitch_metadata', None),
         members=[
             FusionMember(
                 camera_id=int(member.camera_id),
@@ -285,9 +224,15 @@ def build_fusion_config_from_group(group: Any) -> FusionConfig:
                 layout_w=member.layout_w,
                 layout_h=member.layout_h,
                 layout_rotation=float(member.layout_rotation or 0),
-                homography=member.homography,
+                crop_top=int(getattr(member, 'crop_top', 0) or 0),
+                crop_bottom=int(getattr(member, 'crop_bottom', 0) or 0),
+                crop_left=int(getattr(member, 'crop_left', 0) or 0),
+                crop_right=int(getattr(member, 'crop_right', 0) or 0),
                 enabled=bool(member.enabled),
             )
             for member in group.members
         ],
     )
+    if max_width is None or max_height is None:
+        return config
+    return scaled_fusion_config(config, max_width=max_width, max_height=max_height)

@@ -212,15 +212,17 @@ def _ensure_camera_groups() -> None:
                 name VARCHAR(120) UNIQUE NOT NULL,
                 description TEXT,
                 fusion_mode VARCHAR(20) NOT NULL DEFAULT 'layout',
+                pipeline_mode VARCHAR(20) NOT NULL DEFAULT 'hybrid',
                 canvas_width INTEGER NOT NULL DEFAULT 1920,
                 canvas_height INTEGER NOT NULL DEFAULT 1080,
-                stitch_metadata JSONB,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
                 CONSTRAINT chk_camera_groups_fusion_mode
-                    CHECK (fusion_mode IN ('layout', 'homography', 'panorama'))
+                    CHECK (fusion_mode IN ('layout')),
+                CONSTRAINT chk_camera_groups_pipeline_mode
+                    CHECK (pipeline_mode IN ('hybrid', 'fused'))
             )
             """
         ),
@@ -237,8 +239,10 @@ def _ensure_camera_groups() -> None:
                 layout_w INTEGER,
                 layout_h INTEGER,
                 layout_rotation REAL NOT NULL DEFAULT 0,
-                homography JSONB,
-                calibration_points JSONB,
+                crop_top INTEGER NOT NULL DEFAULT 0,
+                crop_bottom INTEGER NOT NULL DEFAULT 0,
+                crop_left INTEGER NOT NULL DEFAULT 0,
+                crop_right INTEGER NOT NULL DEFAULT 0,
                 enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -268,66 +272,82 @@ def _ensure_camera_groups() -> None:
         raise
 
 
-def _ensure_camera_groups_stitch_metadata() -> None:
+def _ensure_camera_groups_layout_pipeline() -> None:
     try:
         inspector = inspect(engine)
         if not inspector.has_table('camera_groups'):
             return
-        cols = {c['name'] for c in inspector.get_columns('camera_groups')}
-        if 'stitch_metadata' in cols:
-            return
+        group_cols = {c['name'] for c in inspector.get_columns('camera_groups')}
+        member_cols = (
+            {c['name'] for c in inspector.get_columns('camera_group_members')}
+            if inspector.has_table('camera_group_members')
+            else set()
+        )
     except Exception as err:
         logger.warning('schema_patches: could not inspect camera_groups table: %s', err)
         return
 
     dialect = engine.dialect.name
     if dialect == 'postgresql':
-        stmt = text('ALTER TABLE camera_groups ADD COLUMN IF NOT EXISTS stitch_metadata JSONB')
+        stmts = [
+            text("ALTER TABLE camera_groups ADD COLUMN IF NOT EXISTS pipeline_mode VARCHAR(20) NOT NULL DEFAULT 'hybrid'"),
+            text("UPDATE camera_groups SET fusion_mode = 'layout' WHERE fusion_mode <> 'layout'"),
+            text('ALTER TABLE camera_groups DROP CONSTRAINT IF EXISTS chk_camera_groups_fusion_mode'),
+            text(
+                """
+                ALTER TABLE camera_groups
+                ADD CONSTRAINT chk_camera_groups_fusion_mode
+                CHECK (fusion_mode IN ('layout'))
+                """
+            ),
+            text('ALTER TABLE camera_groups DROP CONSTRAINT IF EXISTS chk_camera_groups_pipeline_mode'),
+            text(
+                """
+                ALTER TABLE camera_groups
+                ADD CONSTRAINT chk_camera_groups_pipeline_mode
+                CHECK (pipeline_mode IN ('hybrid', 'fused'))
+                """
+            ),
+        ]
+        if 'stitch_metadata' in group_cols:
+            stmts.append(text('ALTER TABLE camera_groups DROP COLUMN IF EXISTS stitch_metadata'))
+        if 'homography' in member_cols:
+            stmts.append(text('ALTER TABLE camera_group_members DROP COLUMN IF EXISTS homography'))
+        if 'calibration_points' in member_cols:
+            stmts.append(text('ALTER TABLE camera_group_members DROP COLUMN IF EXISTS calibration_points'))
+        for column_name in ('crop_top', 'crop_bottom', 'crop_left', 'crop_right'):
+            if column_name not in member_cols:
+                stmts.append(
+                    text(
+                        f'ALTER TABLE camera_group_members '
+                        f'ADD COLUMN IF NOT EXISTS {column_name} INTEGER NOT NULL DEFAULT 0'
+                    )
+                )
     elif dialect == 'sqlite':
-        stmt = text('ALTER TABLE camera_groups ADD COLUMN stitch_metadata JSON')
+        stmts = []
+        if 'pipeline_mode' not in group_cols:
+            stmts.append(text("ALTER TABLE camera_groups ADD COLUMN pipeline_mode VARCHAR(20) NOT NULL DEFAULT 'hybrid'"))
+        for column_name in ('crop_top', 'crop_bottom', 'crop_left', 'crop_right'):
+            if column_name not in member_cols:
+                stmts.append(
+                    text(f'ALTER TABLE camera_group_members ADD COLUMN {column_name} INTEGER NOT NULL DEFAULT 0')
+                )
+        if not stmts:
+            return
     else:
         logger.warning(
-            'schema_patches: unknown dialect %s — add camera_groups.stitch_metadata manually',
+            'schema_patches: unknown dialect %s — update camera_groups layout pipeline columns manually',
             dialect,
         )
         return
 
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
-        logger.info('schema_patches: added camera_groups.stitch_metadata')
+            for stmt in stmts:
+                conn.execute(stmt)
+        logger.info('schema_patches: ensured camera_groups layout pipeline schema')
     except Exception as err:
-        logger.error('schema_patches: failed to add camera_groups.stitch_metadata: %s', err)
-        raise
-
-
-def _ensure_camera_groups_panorama_mode() -> None:
-    try:
-        inspector = inspect(engine)
-        if not inspector.has_table('camera_groups'):
-            return
-    except Exception as err:
-        logger.warning('schema_patches: could not inspect camera_groups table: %s', err)
-        return
-
-    if engine.dialect.name != 'postgresql':
-        return
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(text('ALTER TABLE camera_groups DROP CONSTRAINT IF EXISTS chk_camera_groups_fusion_mode'))
-            conn.execute(
-                text(
-                    """
-                    ALTER TABLE camera_groups
-                    ADD CONSTRAINT chk_camera_groups_fusion_mode
-                    CHECK (fusion_mode IN ('layout', 'homography', 'panorama'))
-                    """
-                )
-            )
-        logger.info('schema_patches: ensured camera_groups panorama fusion_mode')
-    except Exception as err:
-        logger.error('schema_patches: failed to update camera_groups fusion_mode constraint: %s', err)
+        logger.error('schema_patches: failed to ensure camera_groups layout pipeline schema: %s', err)
         raise
 
 
@@ -338,5 +358,4 @@ def apply_schema_patches() -> None:
     _ensure_invoices_creation_source()
     _ensure_detections_audit_image_path()
     _ensure_camera_groups()
-    _ensure_camera_groups_stitch_metadata()
-    _ensure_camera_groups_panorama_mode()
+    _ensure_camera_groups_layout_pipeline()

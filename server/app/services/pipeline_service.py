@@ -27,7 +27,6 @@ from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.frame_fusion import FrameFuser, FrameFusionWorker, build_fusion_config_from_group
 from app.services.ai.frame_synchronizer import FrameSynchronizer
-from app.services.ai.local_stitcher import LocalStitcher
 from app.services.ai.multi_frame_reader import CameraSource, LatestFrameBuffer, MultiFrameReaderThread
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
@@ -224,7 +223,6 @@ class PipelineService:
                 0,
                 self._to_int(cfg_map.get('sync_tolerance_ms', ''), 400),
             ),
-            'pipeline_mode': _s('pipeline_mode', settings.PIPELINE_MODE).lower(),
             'reid_embedding_model_path': _s(
                 'reid_embedding_model_path',
                 settings.REID_EMBEDDING_MODEL_PATH,
@@ -253,11 +251,18 @@ class PipelineService:
                 2,
                 self._to_int(cfg_map.get('clahe_tile_size', ''), int(settings.CLAHE_TILE_SIZE)),
             ),
-            'local_stitch_overlap_px': max(
-                32,
+            'fused_frame_max_width': max(
+                320,
                 self._to_int(
-                    cfg_map.get('local_stitch_overlap_px', ''),
-                    int(settings.LOCAL_STITCH_OVERLAP_PX),
+                    cfg_map.get('fused_frame_max_width', ''),
+                    int(settings.FUSED_FRAME_MAX_WIDTH),
+                ),
+            ),
+            'fused_frame_max_height': max(
+                180,
+                self._to_int(
+                    cfg_map.get('fused_frame_max_height', ''),
+                    int(settings.FUSED_FRAME_MAX_HEIGHT),
                 ),
             ),
         }
@@ -582,18 +587,7 @@ class PipelineService:
 
     @staticmethod
     def _resolve_group_camera_order(group: Any, enabled_members: list[Any]) -> list[int]:
-        enabled_ids = {int(member.camera_id) for member in enabled_members}
-        metadata = getattr(group, 'stitch_metadata', None) or {}
-        raw_order = metadata.get('camera_order') if isinstance(metadata, dict) else None
         ordered: list[int] = []
-        if isinstance(raw_order, list):
-            for camera_id in raw_order:
-                try:
-                    camera_key = int(camera_id)
-                except Exception:
-                    continue
-                if camera_key in enabled_ids and camera_key not in ordered:
-                    ordered.append(camera_key)
         for member in sorted(enabled_members, key=lambda item: int(getattr(item, 'priority', 0) or 0)):
             camera_key = int(member.camera_id)
             if camera_key not in ordered:
@@ -611,10 +605,6 @@ class PipelineService:
         camera_order = self._resolve_group_camera_order(group, enabled_members)
         members_by_camera_id = {int(member.camera_id): member for member in enabled_members}
         ordered_members = [members_by_camera_id[camera_id] for camera_id in camera_order]
-        homographies = {
-            int(member.camera_id): getattr(member, 'homography', None)
-            for member in ordered_members
-        }
         self._reid_manager = CrossCameraReIdManager(
             camera_order=camera_order,
             visual_threshold=runtime_cfg['reid_visual_threshold'],
@@ -626,11 +616,6 @@ class PipelineService:
         embedding_extractor = EmbeddingExtractor(
             model_path=runtime_cfg['reid_embedding_model_path'] or None,
             device=runtime_cfg['device'],
-        )
-        local_stitcher = LocalStitcher(
-            camera_order,
-            homographies,
-            overlap_px=runtime_cfg['local_stitch_overlap_px'],
         )
 
         try:
@@ -680,7 +665,6 @@ class PipelineService:
                     detector_lock=self._detector_lock,
                     reid_manager=self._reid_manager,
                     embedding_extractor=embedding_extractor,
-                    local_stitcher=local_stitcher,
                     video_queue=self._video_queue,
                     stop_event=self._stop,
                     ocr_cache=self.ocr_cache,
@@ -739,7 +723,11 @@ class PipelineService:
         def combined_on_removed(tb, hist):
             self._on_track_removed_db(tb, hist)
 
-        if runtime_cfg['pipeline_mode'] == 'hybrid':
+        pipeline_mode = str(getattr(group, 'pipeline_mode', 'hybrid') or 'hybrid').lower()
+        if pipeline_mode not in {'hybrid', 'fused'}:
+            pipeline_mode = 'hybrid'
+
+        if pipeline_mode == 'hybrid':
             self._start_group_hybrid(
                 group,
                 enabled_members,
@@ -783,7 +771,13 @@ class PipelineService:
         )
         self._fusion_worker = FrameFusionWorker(
             synchronizer,
-            FrameFuser(build_fusion_config_from_group(group)),
+            FrameFuser(
+                build_fusion_config_from_group(
+                    group,
+                    max_width=runtime_cfg['fused_frame_max_width'],
+                    max_height=runtime_cfg['fused_frame_max_height'],
+                )
+            ),
             self._frame_queue,
             self._stop,
             target_fps=runtime_cfg['record_fps'],

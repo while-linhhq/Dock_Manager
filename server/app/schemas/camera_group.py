@@ -7,10 +7,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.camera import CameraRead
 
-FusionMode = Literal['layout', 'homography', 'panorama']
+FusionMode = Literal['layout']
+PipelineMode = Literal['hybrid', 'fused']
 MemberRole = Literal['base', 'overlay', 'tile']
-PointPair = dict[str, list[float]]
-Homography = list[list[float]]
 
 
 class CameraGroupMemberBase(BaseModel):
@@ -22,8 +21,10 @@ class CameraGroupMemberBase(BaseModel):
     layout_w: int | None = None
     layout_h: int | None = None
     layout_rotation: float = 0
-    homography: Homography | None = None
-    calibration_points: list[PointPair] | None = None
+    crop_top: int = 0
+    crop_bottom: int = 0
+    crop_left: int = 0
+    crop_right: int = 0
     enabled: bool = True
 
     @field_validator('layout_w', 'layout_h')
@@ -31,6 +32,13 @@ class CameraGroupMemberBase(BaseModel):
     def validate_positive_size(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
             raise ValueError('layout_w/layout_h must be positive')
+        return value
+
+    @field_validator('crop_top', 'crop_bottom', 'crop_left', 'crop_right')
+    @classmethod
+    def validate_non_negative_crop(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError('crop values must be non-negative')
         return value
 
 
@@ -46,8 +54,10 @@ class CameraGroupMemberUpdate(BaseModel):
     layout_w: int | None = None
     layout_h: int | None = None
     layout_rotation: float | None = None
-    homography: Homography | None = None
-    calibration_points: list[PointPair] | None = None
+    crop_top: int | None = None
+    crop_bottom: int | None = None
+    crop_left: int | None = None
+    crop_right: int | None = None
     enabled: bool | None = None
 
 
@@ -65,9 +75,9 @@ class CameraGroupBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = None
     fusion_mode: FusionMode = 'layout'
+    pipeline_mode: PipelineMode = 'hybrid'
     canvas_width: int = Field(default=1920, gt=0)
     canvas_height: int = Field(default=1080, gt=0)
-    stitch_metadata: dict | None = None
     is_active: bool = True
 
 
@@ -79,9 +89,9 @@ class CameraGroupUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = None
     fusion_mode: FusionMode | None = None
+    pipeline_mode: PipelineMode | None = None
     canvas_width: int | None = Field(default=None, gt=0)
     canvas_height: int | None = Field(default=None, gt=0)
-    stitch_metadata: dict | None = None
     is_active: bool | None = None
     members: list[CameraGroupMemberCreate] | None = None
 
@@ -96,62 +106,8 @@ class CameraGroupRead(CameraGroupBase):
     model_config = {'from_attributes': True}
 
 
-class CalibrationPointPair(BaseModel):
-    src: tuple[float, float]
-    dst: tuple[float, float]
-    label: str | None = None
-
-
-class CalibrationComputeRequest(BaseModel):
-    points: list[CalibrationPointPair] = Field(min_length=4)
-
-
-class CalibrationComputeResponse(BaseModel):
-    homography: Homography
-    inliers: int
-
-
-class AutoCalibrateRequest(BaseModel):
-    camera_order: list[int] | None = None
-    reference_camera_id: int | None = None
-
-
-class PairMatchStat(BaseModel):
-    source_camera_id: int
-    target_camera_id: int
-    matches: int
-    inliers: int
-    confidence: float
-
-
-class AutoCalibrateResponse(BaseModel):
-    reference_camera_id: int
-    canvas_width: int
-    canvas_height: int
-    pair_stats: list[PairMatchStat]
-    unmatched_camera_ids: list[int] = Field(default_factory=list)
-    stitch_metadata: dict | None = None
-
-
-class ManualPairPointSet(BaseModel):
-    source_camera_id: int
-    target_camera_id: int
-    points: list[CalibrationPointPair] = Field(min_length=4)
-
-
-class ManualPairCalibrationRequest(BaseModel):
-    camera_order: list[int] = Field(min_length=2)
-    reference_camera_id: int | None = None
-    pairs: list[ManualPairPointSet] = Field(min_length=1)
-
-
-class ManualPairCalibrationResponse(AutoCalibrateResponse):
-    pass
-
-
 class FusedPreviewRequest(BaseModel):
     fusion_mode: FusionMode = 'layout'
     canvas_width: int = Field(default=1920, gt=0)
     canvas_height: int = Field(default=1080, gt=0)
     members: list[CameraGroupMemberCreate] = Field(min_length=1)
-    stitch_metadata: dict | None = None

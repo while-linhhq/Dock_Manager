@@ -7,11 +7,10 @@ import { PATHS } from '../../../router/paths';
 import type { CameraRead } from '../../../types/api.types';
 import { cameraGroupsApi } from '../services/camera-groups-api';
 import { useFusionEditorStore } from '../store/fusion-editor-store';
-import type { CameraGroupMember, FusionMode, StitchMetadata } from '../types/fusion.types';
+import type { CameraGroupMember, PipelineMode } from '../types/fusion.types';
 import { FusionCanvas } from '../components/FusionCanvas';
 import { MemberList } from '../components/MemberList';
 import { BeFusedPreview } from '../components/BeFusedPreview';
-import { CalibrationPanel } from '../components/CalibrationPanel';
 
 export const FusionGroupEditorView: React.FC = () => {
   const { id } = useParams();
@@ -20,14 +19,13 @@ export const FusionGroupEditorView: React.FC = () => {
   const [cameras, setCameras] = useState<CameraRead[]>([]);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [fusionMode, setFusionMode] = useState<FusionMode>('layout');
+  const [pipelineMode, setPipelineMode] = useState<PipelineMode>('hybrid');
   const [canvasWidth, setCanvasWidth] = useState(1920);
   const [canvasHeight, setCanvasHeight] = useState(1080);
   const [isActive, setIsActive] = useState(true);
   const [members, setMembers] = useState<CameraGroupMember[]>([]);
-  const [stitchMetadata, setStitchMetadata] = useState<StitchMetadata | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const { selectedMemberCameraId, setSelectedMemberCameraId, mode, setMode } = useFusionEditorStore();
+  const { selectedMemberCameraId, setSelectedMemberCameraId } = useFusionEditorStore();
 
   useEffect(() => {
     portApi.getCameras(false).then(setCameras).catch(console.error);
@@ -42,21 +40,37 @@ export const FusionGroupEditorView: React.FC = () => {
       .then((group) => {
         setName(group.name);
         setDescription(group.description ?? '');
-        setFusionMode(group.fusion_mode);
+        setPipelineMode(group.pipeline_mode ?? 'hybrid');
         setCanvasWidth(group.canvas_width);
         setCanvasHeight(group.canvas_height);
         setIsActive(group.is_active);
         setMembers(group.members);
-        setStitchMetadata(group.stitch_metadata ?? null);
         setSelectedMemberCameraId(group.members[0]?.camera_id ?? null);
       })
       .catch(console.error);
   }, [id, isNew, setSelectedMemberCameraId]);
 
-  const selectedMember = useMemo(
-    () => members.find((member) => member.camera_id === selectedMemberCameraId),
-    [members, selectedMemberCameraId],
+  const orderedMembers = useMemo(
+    () => [...members].sort((left, right) => left.priority - right.priority),
+    [members],
   );
+
+  const moveMember = (cameraId: number, direction: -1 | 1) => {
+    const currentIndex = orderedMembers.findIndex((member) => member.camera_id === cameraId);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= orderedMembers.length) {
+      return;
+    }
+    const nextOrdered = [...orderedMembers];
+    [nextOrdered[currentIndex], nextOrdered[nextIndex]] = [nextOrdered[nextIndex], nextOrdered[currentIndex]];
+    const priorities = new Map(nextOrdered.map((member, index) => [member.camera_id, index]));
+    setMembers((current) =>
+      current.map((member) => ({
+        ...member,
+        priority: priorities.get(member.camera_id) ?? member.priority,
+      })),
+    );
+  };
 
   const save = async () => {
     setIsSaving(true);
@@ -64,7 +78,8 @@ export const FusionGroupEditorView: React.FC = () => {
       const payload = {
         name: name.trim() || 'Untitled Fusion Group',
         description: description.trim() || null,
-        fusion_mode: fusionMode,
+        fusion_mode: 'layout' as const,
+        pipeline_mode: pipelineMode,
         canvas_width: canvasWidth,
         canvas_height: canvasHeight,
         is_active: isActive,
@@ -112,12 +127,11 @@ export const FusionGroupEditorView: React.FC = () => {
           />
           <select
             className="rounded-xl border border-gray-200 px-3 py-2 text-sm dark:border-white/10 dark:bg-black dark:text-white"
-            value={fusionMode}
-            onChange={(event) => setFusionMode(event.target.value as FusionMode)}
+            value={pipelineMode}
+            onChange={(event) => setPipelineMode(event.target.value as PipelineMode)}
           >
-            <option value="layout">Layout</option>
-            <option value="homography">Homography</option>
-            <option value="panorama">Panorama</option>
+            <option value="hybrid">Camera rời rạc (đa luồng)</option>
+            <option value="fused">Frame ghép thủ công</option>
           </select>
           <input
             type="number"
@@ -143,15 +157,6 @@ export const FusionGroupEditorView: React.FC = () => {
           </label>
         </div>
 
-        <div className="flex gap-2">
-          <Button variant={mode === 'layout' ? 'primary' : 'outline'} onClick={() => setMode('layout')}>
-            Layout
-          </Button>
-          <Button variant={mode === 'calibrate' ? 'primary' : 'outline'} onClick={() => setMode('calibrate')}>
-            Calibration
-          </Button>
-        </div>
-
         <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
           <MemberList
             cameras={cameras}
@@ -169,26 +174,11 @@ export const FusionGroupEditorView: React.FC = () => {
               onSelect={setSelectedMemberCameraId}
               onMembersChange={setMembers}
             />
-            {mode === 'calibrate' ? (
-              <CalibrationPanel
-                groupId={isNew ? null : Number(id)}
-                member={selectedMember}
-                members={members}
-                onMembersChange={setMembers}
-                onCanvasChange={(width, height) => {
-                  setCanvasWidth(width);
-                  setCanvasHeight(height);
-                  setFusionMode('panorama');
-                }}
-                onStitchMetadataChange={setStitchMetadata}
-              />
-            ) : null}
+            <CameraOrderPanel members={orderedMembers} onMove={moveMember} />
             <BeFusedPreview
-              fusionMode={fusionMode}
               canvasWidth={canvasWidth}
               canvasHeight={canvasHeight}
               members={members}
-              stitchMetadata={stitchMetadata}
             />
           </div>
         </div>
@@ -196,3 +186,49 @@ export const FusionGroupEditorView: React.FC = () => {
     </div>
   );
 };
+
+const CameraOrderPanel: React.FC<{
+  members: CameraGroupMember[];
+  onMove: (cameraId: number, direction: -1 | 1) => void;
+}> = ({ members, onMove }) => (
+  <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-white/10 dark:bg-[#121214]">
+    <div className="mb-4">
+      <p className="text-xs font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+        Thứ tự camera trái sang phải
+      </p>
+      <p className="text-xs text-gray-500">
+        Dùng cho Re-ID giữa camera rời rạc và thứ tự hiển thị trên layout canvas.
+      </p>
+    </div>
+    <div className="grid gap-2">
+      {members.map((member, index) => (
+        <div
+          key={member.camera_id}
+          className="flex items-center justify-between gap-3 rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-white/5"
+        >
+          <span className="font-semibold text-gray-700 dark:text-gray-200">
+            {index + 1}. {member.camera?.camera_name ?? `Camera ${member.camera_id}`}
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="rounded-lg border border-gray-200 px-2 py-1 text-gray-600 disabled:opacity-40 dark:border-white/10 dark:text-gray-300"
+              disabled={index === 0}
+              onClick={() => onMove(member.camera_id, -1)}
+            >
+              Up
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-gray-200 px-2 py-1 text-gray-600 disabled:opacity-40 dark:border-white/10 dark:text-gray-300"
+              disabled={index === members.length - 1}
+              onClick={() => onMove(member.camera_id, 1)}
+            >
+              Down
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);

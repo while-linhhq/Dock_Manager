@@ -5,14 +5,13 @@ import time
 from dataclasses import dataclass
 
 import cv2
-import numpy as np
 
 from app.schemas.camera_group import FusedPreviewRequest
-from app.services.ai.frame_fusion import FrameFuser, FusionConfig, FusionMember
+from app.services.ai.frame_fusion import FrameFuser, FusionConfig, FusionMember, scaled_fusion_config
 from app.services.editor_preview import editor_preview_manager
 
-PREVIEW_MAX_WIDTH = 1600
-PREVIEW_MAX_HEIGHT = 900
+PREVIEW_MAX_WIDTH = 1280
+PREVIEW_MAX_HEIGHT = 720
 
 
 @dataclass(frozen=True)
@@ -107,56 +106,37 @@ class FusedPreviewWorker(threading.Thread):
                 self._jpeg_ready.notify_all()
 
 
-def _resolve_preview_scale(canvas_width: int, canvas_height: int) -> float:
-    if canvas_width <= 0 or canvas_height <= 0:
-        return 1.0
-    return min(
-        1.0,
-        PREVIEW_MAX_WIDTH / float(canvas_width),
-        PREVIEW_MAX_HEIGHT / float(canvas_height),
-    )
-
-
-def _scale_homography(homography: list[list[float]] | None, scale: float) -> list[list[float]] | None:
-    if homography is None or abs(scale - 1.0) < 1e-6:
-        return homography
-    scale_matrix = np.array(
-        [
-            [scale, 0.0, 0.0],
-            [0.0, scale, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-    matrix = np.array(homography, dtype=np.float64)
-    return (scale_matrix @ matrix).astype(float).tolist()
-
-
 def _build_preview_fuser(data: FusedPreviewRequest) -> _PreviewFuser:
-    scale = _resolve_preview_scale(data.canvas_width, data.canvas_height)
-    canvas_width = max(1, int(round(data.canvas_width * scale)))
-    canvas_height = max(1, int(round(data.canvas_height * scale)))
-    fuser = FrameFuser(
-        FusionConfig(
-            fusion_mode=data.fusion_mode,
-            canvas_width=canvas_width,
-            canvas_height=canvas_height,
-            stitch_metadata=data.stitch_metadata,
-            members=[
-                FusionMember(
-                    camera_id=member.camera_id,
-                    role=member.role,
-                    priority=member.priority,
-                    layout_x=int(round(member.layout_x * scale)),
-                    layout_y=int(round(member.layout_y * scale)),
-                    layout_w=max(1, int(round(member.layout_w * scale))) if member.layout_w else None,
-                    layout_h=max(1, int(round(member.layout_h * scale))) if member.layout_h else None,
-                    layout_rotation=member.layout_rotation,
-                    homography=_scale_homography(member.homography, scale),
-                    enabled=member.enabled,
-                )
-                for member in data.members
-            ],
-        )
+    base_config = FusionConfig(
+        fusion_mode=data.fusion_mode,
+        canvas_width=data.canvas_width,
+        canvas_height=data.canvas_height,
+        members=[
+            FusionMember(
+                camera_id=member.camera_id,
+                role=member.role,
+                priority=member.priority,
+                layout_x=member.layout_x,
+                layout_y=member.layout_y,
+                layout_w=member.layout_w,
+                layout_h=member.layout_h,
+                layout_rotation=member.layout_rotation,
+                crop_top=member.crop_top,
+                crop_bottom=member.crop_bottom,
+                crop_left=member.crop_left,
+                crop_right=member.crop_right,
+                enabled=member.enabled,
+            )
+            for member in data.members
+        ],
     )
-    return _PreviewFuser(fuser=fuser, scale=scale)
+    scaled_config = scaled_fusion_config(
+        base_config,
+        max_width=PREVIEW_MAX_WIDTH,
+        max_height=PREVIEW_MAX_HEIGHT,
+    )
+    scale = scaled_config.canvas_width / max(1, data.canvas_width)
+    return _PreviewFuser(
+        fuser=FrameFuser(scaled_config),
+        scale=scale,
+    )

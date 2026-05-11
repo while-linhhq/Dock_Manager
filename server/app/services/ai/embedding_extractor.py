@@ -25,7 +25,7 @@ class EmbeddingExtractor:
         device: str = 'cpu',
         image_size: int = 224,
     ) -> None:
-        self._device = device
+        self._device = _normalize_torch_device(device)
         self._image_size = max(64, int(image_size))
         self._model: Any | None = None
         self._preprocess: Any | None = None
@@ -124,3 +124,21 @@ def cosine_similarity(left: np.ndarray | None, right: np.ndarray | None) -> floa
     if left_vector.shape != right_vector.shape:
         return 0.0
     return float(np.clip(np.dot(left_vector, right_vector), -1.0, 1.0))
+
+
+def _normalize_torch_device(device: str | int | None) -> str:
+    raw = str(device or 'cpu').strip().lower()
+    if raw in {'', 'none'}:
+        return 'cpu'
+    if raw.isdigit():
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return f'cuda:{raw}'
+        except Exception:
+            pass
+        return 'cpu'
+    if raw == 'cuda':
+        return 'cuda:0'
+    return raw

@@ -1,5 +1,4 @@
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -13,9 +12,9 @@ class CameraGroup(Base):
     name = Column(String(120), unique=True, nullable=False)
     description = Column(Text, nullable=True)
     fusion_mode = Column(String(20), nullable=False, default='layout')
+    pipeline_mode = Column(String(20), nullable=False, default='hybrid')
     canvas_width = Column(Integer, nullable=False, default=1920)
     canvas_height = Column(Integer, nullable=False, default=1080)
-    stitch_metadata = Column(JSONB, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -43,8 +42,10 @@ class CameraGroupMember(Base):
     layout_w = Column(Integer, nullable=True)
     layout_h = Column(Integer, nullable=True)
     layout_rotation = Column(Float, nullable=False, default=0)
-    homography = Column(JSONB, nullable=True)
-    calibration_points = Column(JSONB, nullable=True)
+    crop_top = Column(Integer, nullable=False, default=0)
+    crop_bottom = Column(Integer, nullable=False, default=0)
+    crop_left = Column(Integer, nullable=False, default=0)
+    crop_right = Column(Integer, nullable=False, default=0)
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

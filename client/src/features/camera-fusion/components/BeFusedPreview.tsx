@@ -1,37 +1,40 @@
 import React, { useMemo } from 'react';
 import { Loader2, Server } from 'lucide-react';
 import { useFusedPreviewStream } from '../hooks/useFusedPreviewStream';
-import type { CameraGroupMember, FusionMode, StitchMetadata } from '../types/fusion.types';
+import type { CameraGroupMember } from '../types/fusion.types';
 
 export const BeFusedPreview: React.FC<{
-  fusionMode: FusionMode;
   canvasWidth: number;
   canvasHeight: number;
   members: CameraGroupMember[];
-  stitchMetadata?: StitchMetadata | null;
-}> = ({ fusionMode, canvasWidth, canvasHeight, members, stitchMetadata }) => {
+}> = ({ canvasWidth, canvasHeight, members }) => {
   const streamKey = useMemo(
     () =>
       JSON.stringify({
-        fusionMode,
         canvasWidth,
         canvasHeight,
-        homographies: members.map((member) => ({
+        layout: members.map((member) => ({
           cameraId: member.camera_id,
           enabled: member.enabled,
-          homography: member.homography ?? null,
+          x: member.layout_x,
+          y: member.layout_y,
+          w: member.layout_w,
+          h: member.layout_h,
+          rotation: member.layout_rotation,
+          cropTop: member.crop_top,
+          cropBottom: member.crop_bottom,
+          cropLeft: member.crop_left,
+          cropRight: member.crop_right,
         })),
-        stitchMetadataVersion: stitchMetadata?.auto_calibrated_at ?? stitchMetadata?.manual_calibrated_at ?? null,
       }),
-    [canvasHeight, canvasWidth, fusionMode, members, stitchMetadata],
+    [canvasHeight, canvasWidth, members],
   );
   const { url, isConnected, error, receivedFps, renderFps } = useFusedPreviewStream(
     {
-      fusion_mode: fusionMode,
+      fusion_mode: 'layout',
       canvas_width: canvasWidth,
       canvas_height: canvasHeight,
       members,
-      stitch_metadata: stitchMetadata ?? null,
     },
     streamKey,
   );

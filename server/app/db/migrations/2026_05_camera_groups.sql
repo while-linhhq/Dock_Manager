@@ -3,14 +3,15 @@ CREATE TABLE IF NOT EXISTS camera_groups (
     name          VARCHAR(120) UNIQUE NOT NULL,
     description   TEXT,
     fusion_mode   VARCHAR(20) NOT NULL DEFAULT 'layout',
+    pipeline_mode VARCHAR(20) NOT NULL DEFAULT 'hybrid',
     canvas_width  INTEGER NOT NULL DEFAULT 1920,
     canvas_height INTEGER NOT NULL DEFAULT 1080,
-    stitch_metadata JSONB,
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,
     created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at    TIMESTAMPTZ DEFAULT NOW(),
     updated_at    TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT chk_camera_groups_fusion_mode CHECK (fusion_mode IN ('layout', 'homography', 'panorama'))
+    CONSTRAINT chk_camera_groups_fusion_mode CHECK (fusion_mode IN ('layout')),
+    CONSTRAINT chk_camera_groups_pipeline_mode CHECK (pipeline_mode IN ('hybrid', 'fused'))
 );
 
 CREATE TABLE IF NOT EXISTS camera_group_members (
@@ -24,8 +25,10 @@ CREATE TABLE IF NOT EXISTS camera_group_members (
     layout_w           INTEGER,
     layout_h           INTEGER,
     layout_rotation    REAL NOT NULL DEFAULT 0,
-    homography         JSONB,
-    calibration_points JSONB,
+    crop_top           INTEGER NOT NULL DEFAULT 0,
+    crop_bottom        INTEGER NOT NULL DEFAULT 0,
+    crop_left          INTEGER NOT NULL DEFAULT 0,
+    crop_right         INTEGER NOT NULL DEFAULT 0,
     enabled            BOOLEAN NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMPTZ DEFAULT NOW(),
     updated_at         TIMESTAMPTZ DEFAULT NOW(),

@@ -1,14 +1,6 @@
 import { httpClient } from '../../../services/httpClient';
 import { authStorage } from '../../../services/authStorage';
-import type {
-  AutoCalibrateRequest,
-  AutoCalibrateResponse,
-  CameraGroup,
-  CameraGroupPayload,
-  CalibrationPointPair,
-  ManualPairCalibrationRequest,
-  ManualPairCalibrationResponse,
-} from '../types/fusion.types';
+import type { CameraGroup, CameraGroupPayload } from '../types/fusion.types';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -40,31 +32,6 @@ export const cameraGroupsApi = {
     httpClient.patch<CameraGroup>(`/camera-groups/${id}`, payload),
   delete: (id: string | number): Promise<void> =>
     httpClient.delete<void>(`/camera-groups/${id}`),
-  calibrate: (
-    groupId: string | number,
-    cameraId: string | number,
-    points: CalibrationPointPair[],
-  ): Promise<{ homography: number[][]; inliers: number }> =>
-    httpClient.post(`/camera-groups/${groupId}/members/${cameraId}/calibrate`, { points }),
-  autoCalibrate: (
-    groupId: string | number,
-    payload: AutoCalibrateRequest,
-  ): Promise<AutoCalibrateResponse> =>
-    httpClient.post(`/camera-groups/${groupId}/auto-calibrate`, {
-      reference_camera_id: payload.referenceCameraId ?? null,
-      camera_order: payload.cameraOrder,
-    }),
-  manualPairChain: (
-    groupId: string | number,
-    payload: ManualPairCalibrationRequest,
-  ): Promise<ManualPairCalibrationResponse> =>
-    httpClient.post(`/camera-groups/${groupId}/manual-pair-chain`, payload),
-  manualRefine: (
-    groupId: string | number,
-    cameraId: string | number,
-    points: CalibrationPointPair[],
-  ): Promise<{ homography: number[][]; inliers: number }> =>
-    httpClient.post(`/camera-groups/${groupId}/members/${cameraId}/manual-refine`, { points }),
   snapshot: (cameraId: string | number): Promise<Blob> =>
     fetchBlob(`/cameras/${cameraId}/snapshot`),
   previewFused: (payload: Omit<CameraGroupPayload, 'name' | 'description' | 'is_active'>): Promise<Blob> =>

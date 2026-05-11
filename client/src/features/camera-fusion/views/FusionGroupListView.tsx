@@ -35,7 +35,7 @@ export const FusionGroupListView: React.FC<{ compact?: boolean }> = ({ compact =
                 Group Camera
               </h2>
               <p className="text-xs text-gray-500">
-                Cấu hình fused frame ở BE cho multi-camera detection.
+                Cấu hình layout canvas và kiểu xử lý cho multi-camera detection.
               </p>
             </div>
           ) : (
@@ -44,7 +44,7 @@ export const FusionGroupListView: React.FC<{ compact?: boolean }> = ({ compact =
                 Camera Fusion Groups
               </h1>
               <p className="text-sm text-gray-500">
-                Cấu hình fused frame ở BE cho multi-camera detection.
+                Cấu hình layout canvas và kiểu xử lý cho multi-camera detection.
               </p>
             </div>
           )}
@@ -65,7 +65,8 @@ export const FusionGroupListView: React.FC<{ compact?: boolean }> = ({ compact =
                 <div>
                   <h2 className="font-bold text-gray-900 dark:text-white">{group.name}</h2>
                   <p className="text-xs uppercase tracking-widest text-gray-500">
-                    {group.fusion_mode} · {group.canvas_width}x{group.canvas_height}
+                    {group.pipeline_mode === 'fused' ? 'Frame ghép thủ công' : 'Camera rời rạc'} ·{' '}
+                    {group.canvas_width}x{group.canvas_height}
                   </p>
                 </div>
                 <span className={group.is_active ? 'text-xs text-emerald-500' : 'text-xs text-gray-400'}>
