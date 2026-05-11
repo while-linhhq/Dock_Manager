@@ -12,6 +12,12 @@ export type CameraCreate = {
   is_active?: boolean;
 }
 
+type CameraApiPayload = {
+  camera_name: string;
+  rtsp_url: string;
+  is_active?: boolean;
+}
+
 export type PortConfigRead = {
   key: string;
   value: string;
@@ -36,6 +42,14 @@ export type PipelineStartRequest = {
   enable_ocr?: boolean;
 }
 
+function toCameraApiPayload(data: CameraCreate | Partial<CameraCreate>): Partial<CameraApiPayload> {
+  return {
+    ...(data.name != null ? { camera_name: data.name } : {}),
+    ...(data.rtsp_url != null ? { rtsp_url: data.rtsp_url } : {}),
+    ...(data.is_active != null ? { is_active: data.is_active } : {}),
+  };
+}
+
 export const portApi = {
   getDetections: async (skip: number = 0, limit: number = 100, vesselId?: string): Promise<DetectionRead[]> => {
     const params = new URLSearchParams({ skip: skip.toString(), limit: limit.toString() });
@@ -52,10 +66,10 @@ export const portApi = {
     return httpClient.get<CameraRead[]>(`/cameras/?active_only=${activeOnly}`);
   },
   createCamera: async (data: CameraCreate): Promise<CameraRead> => {
-    return httpClient.post<CameraRead>('/cameras/', data);
+    return httpClient.post<CameraRead>('/cameras/', toCameraApiPayload(data));
   },
   updateCamera: async (id: string, data: Partial<CameraCreate>): Promise<CameraRead> => {
-    return httpClient.put<CameraRead>(`/cameras/${id}`, data);
+    return httpClient.put<CameraRead>(`/cameras/${id}`, toCameraApiPayload(data));
   },
   deleteCamera: async (id: string | number): Promise<void> => {
     await httpClient.delete(`/cameras/${id}`);

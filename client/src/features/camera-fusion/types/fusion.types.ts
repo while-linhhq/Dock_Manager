@@ -27,6 +27,21 @@ export type CameraGroupMember = {
   enabled: boolean;
 };
 
+export type StitchMetadata = {
+  reference_camera_id?: number;
+  camera_order?: number[];
+  pair_stats?: PairMatchStat[];
+  manual_pairs?: ManualPairPointSet[];
+  unmatched_camera_ids?: number[];
+  auto_calibrated_at?: string;
+  manual_calibrated_at?: string;
+  blend_mode?: string;
+  blend_weights_shape?: [number, number];
+  blend_weights?: Record<string, string>;
+  exposure_gains?: Record<string, number>;
+  [key: string]: unknown;
+};
+
 export type CameraGroup = {
   id: number;
   name: string;
@@ -34,15 +49,7 @@ export type CameraGroup = {
   fusion_mode: FusionMode;
   canvas_width: number;
   canvas_height: number;
-  stitch_metadata?: {
-    reference_camera_id?: number;
-    camera_order?: number[];
-    pair_stats?: PairMatchStat[];
-    manual_pairs?: ManualPairPointSet[];
-    unmatched_camera_ids?: number[];
-    auto_calibrated_at?: string;
-    manual_calibrated_at?: string;
-  } | null;
+  stitch_metadata?: StitchMetadata | null;
   is_active: boolean;
   created_by?: number | null;
   created_at: string;
@@ -64,6 +71,7 @@ export type AutoCalibrateResponse = {
   canvas_height: number;
   pair_stats: PairMatchStat[];
   unmatched_camera_ids: number[];
+  stitch_metadata?: StitchMetadata | null;
 };
 
 export type AutoCalibrateRequest = {

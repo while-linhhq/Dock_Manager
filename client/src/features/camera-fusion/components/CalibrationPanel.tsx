@@ -5,6 +5,7 @@ import type {
   CalibrationPointPair,
   CameraGroupMember,
   PairMatchStat,
+  StitchMetadata,
 } from '../types/fusion.types';
 
 const getPairKey = (sourceCameraId: number, targetCameraId: number) =>
@@ -16,7 +17,8 @@ export const CalibrationPanel: React.FC<{
   members: CameraGroupMember[];
   onMembersChange: (members: CameraGroupMember[]) => void;
   onCanvasChange?: (width: number, height: number) => void;
-}> = ({ groupId, members, onMembersChange, onCanvasChange }) => {
+  onStitchMetadataChange?: (metadata: StitchMetadata | null) => void;
+}> = ({ groupId, members, onMembersChange, onCanvasChange, onStitchMetadataChange }) => {
   const enabledMembers = useMemo(
     () => members.filter((item) => item.enabled),
     [members],
@@ -171,6 +173,8 @@ export const CalibrationPanel: React.FC<{
       const group = await cameraGroupsApi.get(groupId);
       onMembersChange(group.members);
       onCanvasChange?.(result.canvas_width, result.canvas_height);
+      onStitchMetadataChange?.(group.stitch_metadata ?? result.stitch_metadata ?? null);
+      onStitchMetadataChange?.(group.stitch_metadata ?? result.stitch_metadata ?? null);
       setReferenceCameraId(result.reference_camera_id);
       setMessage(
         `Auto calibrated panorama: ${result.canvas_width}x${result.canvas_height}, reference camera ${result.reference_camera_id}.`,

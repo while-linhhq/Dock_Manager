@@ -67,6 +67,11 @@ class TrackedBoat:
     first_seen_ts: float
     last_seen_ts: float
     ship_id: str | None = None
+    camera_id: int | None = None
+    velocity: tuple[float, float] | None = None
+    embedding: np.ndarray | None = None
+    motion_state: str | None = None
+    last_known_ship_id: str | None = None
     ever_confirmed: bool = False
 
     def copy_public(self) -> TrackedBoat:
@@ -81,6 +86,11 @@ class TrackedBoat:
             first_seen_ts=self.first_seen_ts,
             last_seen_ts=self.last_seen_ts,
             ship_id=self.ship_id,
+            camera_id=self.camera_id,
+            velocity=self.velocity,
+            embedding=self.embedding.copy() if self.embedding is not None else None,
+            motion_state=self.motion_state,
+            last_known_ship_id=self.last_known_ship_id,
             ever_confirmed=self.ever_confirmed,
         )
 
@@ -112,6 +122,7 @@ class BoatTracker:
         on_track_removed: Callable[[TrackedBoat, list[tuple[str, float]]], None] | None = None,
         reid_window_sec: float = 120.0,
         reid_max_centroid_dist: float = 150.0,
+        camera_id: int | None = None,
     ):
         self.min_hits = max(1, int(min_hits))
         self.max_tentative_misses = max(1, int(max_tentative_misses))
@@ -120,6 +131,7 @@ class BoatTracker:
         self._on_track_removed = on_track_removed
         self.reid_window_sec = float(reid_window_sec)
         self.reid_max_centroid_dist = float(reid_max_centroid_dist)
+        self.camera_id = int(camera_id) if camera_id is not None else None
 
         self._tracks: dict[str, TrackedBoat] = {}
         self._ocr_history: dict[str, list[tuple[str, float]]] = {}
@@ -169,6 +181,25 @@ class BoatTracker:
             self._pending_removed.pop(i)
             break
 
+    def _update_track_detection(
+        self,
+        tb: TrackedBoat,
+        box: np.ndarray,
+        conf: float,
+        now: float,
+    ) -> None:
+        previous_centroid = _centroid_xyxy(tb.box)
+        new_box = np.asarray(box, dtype=np.float32).copy()
+        new_centroid = _centroid_xyxy(new_box)
+        elapsed = max(1e-6, now - tb.last_seen_ts)
+        tb.velocity = (
+            (new_centroid[0] - previous_centroid[0]) / elapsed,
+            (new_centroid[1] - previous_centroid[1]) / elapsed,
+        )
+        tb.box = new_box
+        tb.conf = float(conf)
+        tb.last_seen_ts = now
+
     def _flush_expired_pending(self, now: float) -> None:
         if not self._pending_removed:
             return
@@ -193,6 +224,7 @@ class BoatTracker:
             tb = self._tracks.get(track_id)
             if tb is not None and best is not None:
                 tb.ship_id = best
+                tb.last_known_ship_id = best
             if tb is not None and self.reid_window_sec > 0:
                 self._try_shipid_reid(track_id, tb, now)
 
@@ -253,7 +285,7 @@ class BoatTracker:
             if n_t > 0 and n_d > 0:
                 cost = self._build_cost_matrix(track_ids, boxes)
                 r, c = linear_sum_assignment(cost)
-                for ri, ci in zip(r, c):
+                for ri, ci in zip(r, c, strict=False):
                     if cost[ri, ci] < self._BIG - 1.0:
                         matched_track_idx.add(ri)
                         matched_det_idx.add(ci)
@@ -261,11 +293,9 @@ class BoatTracker:
                         tb = self._tracks[tid]
                         b = boxes[ci]
                         cf = confs[ci]
-                        tb.box = np.asarray(b, dtype=np.float32).copy()
-                        tb.conf = float(cf)
+                        self._update_track_detection(tb, b, cf, now)
                         tb.hits += 1
                         tb.misses = 0
-                        tb.last_seen_ts = now
                         if tb.state == TrackState.TENTATIVE:
                             if tb.hits >= self.min_hits:
                                 tb.state = TrackState.CONFIRMED
@@ -290,6 +320,7 @@ class BoatTracker:
                     first_seen_ts=now,
                     last_seen_ts=now,
                     ship_id=None,
+                    camera_id=self.camera_id,
                 )
 
             for i in range(n_t):
@@ -384,6 +415,28 @@ class BoatTracker:
             tb = self._tracks.get(track_id)
             if tb is not None:
                 tb.ship_id = ship_id
+                if ship_id:
+                    tb.last_known_ship_id = ship_id
+
+    def update_track_metadata(
+        self,
+        track_id: str,
+        *,
+        embedding: np.ndarray | None = None,
+        motion_state: str | None = None,
+        ship_id: str | None = None,
+    ) -> None:
+        with self._lock:
+            tb = self._tracks.get(track_id)
+            if tb is None:
+                return
+            if embedding is not None:
+                tb.embedding = np.asarray(embedding, dtype=np.float32).copy()
+            if motion_state is not None:
+                tb.motion_state = motion_state
+            if ship_id:
+                tb.ship_id = ship_id
+                tb.last_known_ship_id = ship_id
 
     def flush_shutdown_logs(self) -> None:
         """

@@ -1,0 +1,28 @@
+project:
+  seed: 42
+  device: "0"
+
+yolo:
+  # Empty means: use --model, then web/database port_configs.model_path,
+  # then MODEL_PATH env/settings fallback.
+  base_model: ""
+  data_yaml: fine-tune/yolo/data.yaml
+  epochs: 100
+  imgsz: 960
+  batch: 8
+  workers: 4
+  project: fine-tune/runs/yolo
+  name: boat-detector
+
+reid:
+  architecture: resnet18
+  image_size: 224
+  epochs: 50
+  batch: 32
+  lr: 0.0003
+  margin: 0.3
+  embedding_dim: 512
+  data_dir: fine-tune/reid/data
+  output_dir: fine-tune/runs/reid
+  checkpoint: fine-tune/runs/reid/best.pt
+  onnx_output: server/app/models/reid_ship_embedding.onnx

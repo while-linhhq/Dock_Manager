@@ -7,7 +7,7 @@ import { PATHS } from '../../../router/paths';
 import type { CameraRead } from '../../../types/api.types';
 import { cameraGroupsApi } from '../services/camera-groups-api';
 import { useFusionEditorStore } from '../store/fusion-editor-store';
-import type { CameraGroupMember, FusionMode } from '../types/fusion.types';
+import type { CameraGroupMember, FusionMode, StitchMetadata } from '../types/fusion.types';
 import { FusionCanvas } from '../components/FusionCanvas';
 import { MemberList } from '../components/MemberList';
 import { BeFusedPreview } from '../components/BeFusedPreview';
@@ -25,6 +25,7 @@ export const FusionGroupEditorView: React.FC = () => {
   const [canvasHeight, setCanvasHeight] = useState(1080);
   const [isActive, setIsActive] = useState(true);
   const [members, setMembers] = useState<CameraGroupMember[]>([]);
+  const [stitchMetadata, setStitchMetadata] = useState<StitchMetadata | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const { selectedMemberCameraId, setSelectedMemberCameraId, mode, setMode } = useFusionEditorStore();
 
@@ -46,6 +47,7 @@ export const FusionGroupEditorView: React.FC = () => {
         setCanvasHeight(group.canvas_height);
         setIsActive(group.is_active);
         setMembers(group.members);
+        setStitchMetadata(group.stitch_metadata ?? null);
         setSelectedMemberCameraId(group.members[0]?.camera_id ?? null);
       })
       .catch(console.error);
@@ -178,6 +180,7 @@ export const FusionGroupEditorView: React.FC = () => {
                   setCanvasHeight(height);
                   setFusionMode('panorama');
                 }}
+                onStitchMetadataChange={setStitchMetadata}
               />
             ) : null}
             <BeFusedPreview
@@ -185,6 +188,7 @@ export const FusionGroupEditorView: React.FC = () => {
               canvasWidth={canvasWidth}
               canvasHeight={canvasHeight}
               members={members}
+              stitchMetadata={stitchMetadata}
             />
           </div>
         </div>

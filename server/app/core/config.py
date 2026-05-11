@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     # Re-ID & Dedup logic
     TRACK_REID_WINDOW_SEC: float = 120.0
     TRACK_REID_MAX_DIST: float = 150.0
+    PIPELINE_MODE: Literal['hybrid', 'fused'] = 'hybrid'
+    REID_EMBEDDING_MODEL_PATH: str = ""
+    REID_VISUAL_THRESHOLD: float = 0.6
+    REID_HANDOFF_WINDOW_SEC: float = 30.0
+    PRIMARY_ZONE_RATIO: float = 0.8
+    EDGE_ZONE_RATIO: float = 0.1
+    CLAHE_CLIP_LIMIT: float = 3.0
+    CLAHE_TILE_SIZE: int = 8
+    LOCAL_STITCH_OVERLAP_PX: int = 320
     
     # OCR / Paddle configuration
     OCR_INTERVAL_FRAMES: int = 10

@@ -40,7 +40,7 @@ from app.services.calibration_service import (
 )
 from app.services.editor_preview import editor_preview_manager
 from app.services.fused_preview_worker import FusedPreviewWorker
-from app.services.panorama_stitch_service import auto_stitch
+from app.services.panorama_stitch_service import auto_stitch, compute_blend_metadata
 
 router = APIRouter()
 
@@ -236,6 +236,7 @@ def auto_calibrate_group(
         'pair_stats': [stat.__dict__ for stat in result.pair_stats],
         'unmatched_camera_ids': result.unmatched_camera_ids,
         'auto_calibrated_at': datetime.now(timezone.utc).isoformat(),
+        **result.stitch_metadata,
     }
     db.commit()
 
@@ -245,6 +246,7 @@ def auto_calibrate_group(
         canvas_height=result.canvas_height,
         pair_stats=[PairMatchStat(**stat.__dict__) for stat in result.pair_stats],
         unmatched_camera_ids=result.unmatched_camera_ids,
+        stitch_metadata=group.stitch_metadata,
     )
 
 
@@ -340,6 +342,13 @@ def manual_pair_chain_group(
     group.canvas_width = canvas_width
     group.canvas_height = canvas_height
     group.fusion_mode = 'panorama'
+    blend_metadata = compute_blend_metadata(
+        frames,
+        final_homographies,
+        canvas_width,
+        canvas_height,
+        reference_camera_id,
+    )
     group.stitch_metadata = {
         'reference_camera_id': reference_camera_id,
         'camera_order': camera_order,
@@ -347,6 +356,7 @@ def manual_pair_chain_group(
         'manual_pairs': manual_pairs,
         'unmatched_camera_ids': sorted(set(camera_order) - set(homographies.keys())),
         'manual_calibrated_at': datetime.now(timezone.utc).isoformat(),
+        **blend_metadata,
     }
     db.commit()
 
@@ -356,6 +366,7 @@ def manual_pair_chain_group(
         canvas_height=canvas_height,
         pair_stats=pair_stats,
         unmatched_camera_ids=group.stitch_metadata['unmatched_camera_ids'],
+        stitch_metadata=group.stitch_metadata,
     )
 
 
@@ -459,6 +470,7 @@ def preview_fused(
             fusion_mode=data.fusion_mode,
             canvas_width=data.canvas_width,
             canvas_height=data.canvas_height,
+            stitch_metadata=data.stitch_metadata,
             members=[
                 FusionMember(
                     camera_id=member.camera_id,
@@ -651,6 +663,7 @@ def _build_preview_fuser(data: FusedPreviewRequest) -> FrameFuser:
             fusion_mode=data.fusion_mode,
             canvas_width=data.canvas_width,
             canvas_height=data.canvas_height,
+            stitch_metadata=data.stitch_metadata,
             members=[
                 FusionMember(
                     camera_id=member.camera_id,

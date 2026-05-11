@@ -130,6 +130,7 @@ class AutoCalibrateResponse(BaseModel):
     canvas_height: int
     pair_stats: list[PairMatchStat]
     unmatched_camera_ids: list[int] = Field(default_factory=list)
+    stitch_metadata: dict | None = None
 
 
 class ManualPairPointSet(BaseModel):
@@ -153,3 +154,4 @@ class FusedPreviewRequest(BaseModel):
     canvas_width: int = Field(default=1920, gt=0)
     canvas_height: int = Field(default=1080, gt=0)
     members: list[CameraGroupMemberCreate] = Field(min_length=1)
+    stitch_metadata: dict | None = None

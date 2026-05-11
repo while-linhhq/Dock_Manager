@@ -22,11 +22,15 @@ from app.services.storage.minio_service import put_bytes, put_file
 
 from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
 from app.services.ai.boat_tracker import BoatTracker
+from app.services.ai.cross_camera_reid import CrossCameraReIdManager
+from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.frame_fusion import FrameFuser, FrameFusionWorker, build_fusion_config_from_group
 from app.services.ai.frame_synchronizer import FrameSynchronizer
+from app.services.ai.local_stitcher import LocalStitcher
 from app.services.ai.multi_frame_reader import CameraSource, LatestFrameBuffer, MultiFrameReaderThread
 from app.services.ai.ocr_worker import OcrWorkerThread
+from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 from app.services.ai.video_recorder import VideoRecorderThread
 from app.utils.ai.yolo_detector import load_yolo_detector
@@ -91,6 +95,8 @@ class PipelineService:
         self._yolo_worker: YoloWorkerThread | None = None
         self._ocr_worker: OcrWorkerThread | None = None
         self._video_worker: VideoRecorderThread | None = None
+        self._per_camera_pipelines: list[PerCameraPipeline] = []
+        self._reid_manager: CrossCameraReIdManager | None = None
         self._frame_queue: queue.Queue = queue.Queue(maxsize=5)
         self._result_queue: queue.Queue = queue.Queue(maxsize=10)
         self._ocr_queue: queue.Queue = queue.Queue(maxsize=10)
@@ -102,6 +108,7 @@ class PipelineService:
         self._video_media: list[MediaInfo] = []
         self._media_lock = threading.Lock()
         self._detector: Any = None
+        self._detector_lock = threading.Lock()
         self._detector_signature: tuple[str, str, float] | None = None
         self._boat_tracker: BoatTracker = BoatTracker()
         self._db: Session | None = None
@@ -217,13 +224,50 @@ class PipelineService:
                 0,
                 self._to_int(cfg_map.get('sync_tolerance_ms', ''), 400),
             ),
+            'pipeline_mode': _s('pipeline_mode', settings.PIPELINE_MODE).lower(),
+            'reid_embedding_model_path': _s(
+                'reid_embedding_model_path',
+                settings.REID_EMBEDDING_MODEL_PATH,
+            ),
+            'reid_visual_threshold': self._to_float(
+                cfg_map.get('reid_visual_threshold', ''),
+                float(settings.REID_VISUAL_THRESHOLD),
+            ),
+            'reid_handoff_window_sec': self._to_float(
+                cfg_map.get('reid_handoff_window_sec', ''),
+                float(settings.REID_HANDOFF_WINDOW_SEC),
+            ),
+            'primary_zone_ratio': self._to_float(
+                cfg_map.get('primary_zone_ratio', ''),
+                float(settings.PRIMARY_ZONE_RATIO),
+            ),
+            'edge_zone_ratio': self._to_float(
+                cfg_map.get('edge_zone_ratio', ''),
+                float(settings.EDGE_ZONE_RATIO),
+            ),
+            'clahe_clip_limit': self._to_float(
+                cfg_map.get('clahe_clip_limit', ''),
+                float(settings.CLAHE_CLIP_LIMIT),
+            ),
+            'clahe_tile_size': max(
+                2,
+                self._to_int(cfg_map.get('clahe_tile_size', ''), int(settings.CLAHE_TILE_SIZE)),
+            ),
+            'local_stitch_overlap_px': max(
+                32,
+                self._to_int(
+                    cfg_map.get('local_stitch_overlap_px', ''),
+                    int(settings.LOCAL_STITCH_OVERLAP_PX),
+                ),
+            ),
         }
 
     @property
     def is_running(self) -> bool:
         single_running = self._reader is not None and self._reader.is_alive()
         fusion_running = self._fusion_worker is not None and self._fusion_worker.is_alive()
-        return single_running or fusion_running
+        hybrid_running = any(pipeline.is_alive() for pipeline in self._per_camera_pipelines)
+        return single_running or fusion_running or hybrid_running
 
     def _upload_captured_image(
         self,
@@ -536,6 +580,126 @@ class PipelineService:
             
         _log.info(f"Pipeline started with source: {source}")
 
+    @staticmethod
+    def _resolve_group_camera_order(group: Any, enabled_members: list[Any]) -> list[int]:
+        enabled_ids = {int(member.camera_id) for member in enabled_members}
+        metadata = getattr(group, 'stitch_metadata', None) or {}
+        raw_order = metadata.get('camera_order') if isinstance(metadata, dict) else None
+        ordered: list[int] = []
+        if isinstance(raw_order, list):
+            for camera_id in raw_order:
+                try:
+                    camera_key = int(camera_id)
+                except Exception:
+                    continue
+                if camera_key in enabled_ids and camera_key not in ordered:
+                    ordered.append(camera_key)
+        for member in sorted(enabled_members, key=lambda item: int(getattr(item, 'priority', 0) or 0)):
+            camera_key = int(member.camera_id)
+            if camera_key not in ordered:
+                ordered.append(camera_key)
+        return ordered
+
+    def _start_group_hybrid(
+        self,
+        group: Any,
+        enabled_members: list[Any],
+        runtime_cfg: dict[str, Any],
+        ocr_active: bool,
+        combined_on_removed,
+    ) -> None:
+        camera_order = self._resolve_group_camera_order(group, enabled_members)
+        members_by_camera_id = {int(member.camera_id): member for member in enabled_members}
+        ordered_members = [members_by_camera_id[camera_id] for camera_id in camera_order]
+        homographies = {
+            int(member.camera_id): getattr(member, 'homography', None)
+            for member in ordered_members
+        }
+        self._reid_manager = CrossCameraReIdManager(
+            camera_order=camera_order,
+            visual_threshold=runtime_cfg['reid_visual_threshold'],
+            handoff_window_sec=runtime_cfg['reid_handoff_window_sec'],
+            primary_zone_ratio=runtime_cfg['primary_zone_ratio'],
+            edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
+            on_global_track_removed=combined_on_removed,
+        )
+        embedding_extractor = EmbeddingExtractor(
+            model_path=runtime_cfg['reid_embedding_model_path'] or None,
+            device=runtime_cfg['device'],
+        )
+        local_stitcher = LocalStitcher(
+            camera_order,
+            homographies,
+            overlap_px=runtime_cfg['local_stitch_overlap_px'],
+        )
+
+        try:
+            pipeline_preview.set_target_fps(runtime_cfg['record_fps'])
+        except Exception:
+            pass
+
+        if runtime_cfg['record_enable']:
+            self._video_worker = VideoRecorderThread(
+                self._video_queue,
+                self._stop,
+                max_duration_sec=runtime_cfg['record_max_duration_min'] * 60,
+                gap_sec=runtime_cfg['record_no_boat_gap_sec'],
+                record_fps=runtime_cfg['record_fps'],
+                runs_base=str(self._runtime_media_base / 'detect'),
+                on_video_saved=self._upload_recorded_video,
+            )
+            self._video_worker.start()
+
+        self._per_camera_pipelines = []
+        for index, member in enumerate(ordered_members):
+            pipeline_config = PerCameraPipelineConfig(
+                camera_id=int(member.camera_id),
+                source=member.camera.rtsp_url,
+                record_fps=runtime_cfg['record_fps'],
+                enable_ocr=ocr_active,
+                ocr_interval_frames=runtime_cfg['ocr_interval_frames'],
+                ocr_label_ttl_sec=runtime_cfg['ocr_label_ttl_sec'],
+                save_min_interval_sec=runtime_cfg['save_min_interval_sec'],
+                ocr_audit_save_frames=runtime_cfg['ocr_audit_save_frames'],
+                resize_scale=runtime_cfg['resize_scale'],
+                track_min_hits=runtime_cfg['track_min_hits'],
+                track_max_tentative_misses=runtime_cfg['track_max_tentative_misses'],
+                track_max_lost_frames=runtime_cfg['track_max_lost_frames'],
+                track_iou_threshold=runtime_cfg['track_iou_threshold'],
+                track_reid_window_sec=runtime_cfg['track_reid_window_sec'],
+                track_reid_max_dist=runtime_cfg['track_reid_max_dist'],
+                clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
+                clahe_tile_size=runtime_cfg['clahe_tile_size'],
+                edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
+                enable_preview_stream=index == 0,
+            )
+            self._per_camera_pipelines.append(
+                PerCameraPipeline(
+                    config=pipeline_config,
+                    detector=self._detector,
+                    detector_lock=self._detector_lock,
+                    reid_manager=self._reid_manager,
+                    embedding_extractor=embedding_extractor,
+                    local_stitcher=local_stitcher,
+                    video_queue=self._video_queue,
+                    stop_event=self._stop,
+                    ocr_cache=self.ocr_cache,
+                    ocr_lock=self.ocr_lock,
+                    runs_base=str(self._runtime_media_base / 'detect'),
+                    on_image_captured=self._upload_captured_image,
+                )
+            )
+
+        for pipeline in self._per_camera_pipelines:
+            pipeline.start()
+
+        _log.info(
+            'Hybrid pipeline started with camera_group_id=%s camera_order=%s embedding_backend=%s',
+            group.id,
+            camera_order,
+            embedding_extractor.backend,
+        )
+
     def start_group(self, group: Any, enable_ocr: bool | None = None) -> None:
         if self.is_running:
             _log.warning('Pipeline is already running')
@@ -574,6 +738,16 @@ class PipelineService:
 
         def combined_on_removed(tb, hist):
             self._on_track_removed_db(tb, hist)
+
+        if runtime_cfg['pipeline_mode'] == 'hybrid':
+            self._start_group_hybrid(
+                group,
+                enabled_members,
+                runtime_cfg,
+                ocr_active,
+                combined_on_removed,
+            )
+            return
 
         self._boat_tracker = BoatTracker(
             min_hits=runtime_cfg['track_min_hits'],
@@ -691,14 +865,22 @@ class PipelineService:
             self._ocr_worker.join(timeout=2.0)
         if self._video_worker:
             self._video_worker.join(timeout=2.0)
+        for pipeline in self._per_camera_pipelines:
+            pipeline.join(timeout=2.0)
         
         # Final flush
+        for pipeline in self._per_camera_pipelines:
+            pipeline.flush_shutdown_logs()
+        if self._reid_manager is not None:
+            self._reid_manager.flush_all()
         if self._boat_tracker:
             self._boat_tracker.flush_shutdown_logs()
             
         self._reader = self._yolo_worker = self._ocr_worker = self._video_worker = None
         self._fusion_worker = None
         self._multi_readers = []
+        self._per_camera_pipelines = []
+        self._reid_manager = None
         pipeline_preview.clear()
         _log.info("Pipeline stopped")
 

@@ -15,8 +15,6 @@ import time
 from datetime import datetime
 from typing import Callable
 
-logger = logging.getLogger(__name__)
-
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
 from app.utils.ai.detect_paths import (
     RUNS_DETECT,
@@ -26,6 +24,8 @@ from app.utils.ai.detect_paths import (
 )
 from app.utils.ai.pipeline_utils import clamp_box, ocr_cache_key_track
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
+
+logger = logging.getLogger(__name__)
 
 
 def _fmt_local_dt(ts: float) -> str:
@@ -160,6 +160,7 @@ class OcrWorkerThread(threading.Thread):
         save_ocr_audit_frames: bool = True,
         ocr_miss_save_interval: float | None = None,
         on_image_captured: Callable[[str | None, str, object, str, bool], None] | None = None,
+        on_ocr_result: Callable[[str, str, float], None] | None = None,
     ):
         super().__init__(daemon=True)
         self.recognizer = recognizer
@@ -181,6 +182,7 @@ class OcrWorkerThread(threading.Thread):
         self._runs_base = runs_base
         self.save_ocr_audit_frames = save_ocr_audit_frames
         self._on_image_captured = on_image_captured
+        self._on_ocr_result = on_ocr_result
         self._last_cap_save_ts: dict[str, float] = {}
         self._last_noocr_cap_save_ts: dict[str, float] = {}
 
@@ -253,6 +255,14 @@ class OcrWorkerThread(threading.Thread):
                         best = ocr_res[0]
                         sid = best["id"]
                         conf = float(best["confidence"])
+                        if self._on_ocr_result is not None:
+                            try:
+                                self._on_ocr_result(track_id_str, sid, conf)
+                            except Exception:
+                                logger.exception(
+                                    'OCR result callback failed for track_id=%s',
+                                    track_id_str,
+                                )
 
                         if self._boat_tracker is not None:
                             self._boat_tracker.add_ocr_vote(track_id_str, sid, conf)

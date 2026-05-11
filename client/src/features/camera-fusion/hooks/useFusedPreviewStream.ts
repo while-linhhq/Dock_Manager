@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { authStorage } from '../../../services/authStorage';
-import type { CameraGroupMember, FusionMode } from '../types/fusion.types';
+import type { CameraGroupMember, FusionMode, StitchMetadata } from '../types/fusion.types';
 
 type FusedPreviewPayload = {
   fusion_mode: FusionMode;
   canvas_width: number;
   canvas_height: number;
   members: CameraGroupMember[];
+  stitch_metadata?: StitchMetadata | null;
 };
 
 function resolveApiBaseUrl(): string {

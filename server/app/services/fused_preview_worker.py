@@ -141,6 +141,7 @@ def _build_preview_fuser(data: FusedPreviewRequest) -> _PreviewFuser:
             fusion_mode=data.fusion_mode,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
+            stitch_metadata=data.stitch_metadata,
             members=[
                 FusionMember(
                     camera_id=member.camera_id,

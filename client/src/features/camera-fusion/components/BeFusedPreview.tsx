@@ -1,14 +1,15 @@
 import React, { useMemo } from 'react';
 import { Loader2, Server } from 'lucide-react';
 import { useFusedPreviewStream } from '../hooks/useFusedPreviewStream';
-import type { CameraGroupMember, FusionMode } from '../types/fusion.types';
+import type { CameraGroupMember, FusionMode, StitchMetadata } from '../types/fusion.types';
 
 export const BeFusedPreview: React.FC<{
   fusionMode: FusionMode;
   canvasWidth: number;
   canvasHeight: number;
   members: CameraGroupMember[];
-}> = ({ fusionMode, canvasWidth, canvasHeight, members }) => {
+  stitchMetadata?: StitchMetadata | null;
+}> = ({ fusionMode, canvasWidth, canvasHeight, members, stitchMetadata }) => {
   const streamKey = useMemo(
     () =>
       JSON.stringify({
@@ -20,8 +21,9 @@ export const BeFusedPreview: React.FC<{
           enabled: member.enabled,
           homography: member.homography ?? null,
         })),
+        stitchMetadataVersion: stitchMetadata?.auto_calibrated_at ?? stitchMetadata?.manual_calibrated_at ?? null,
       }),
-    [canvasHeight, canvasWidth, fusionMode, members],
+    [canvasHeight, canvasWidth, fusionMode, members, stitchMetadata],
   );
   const { url, isConnected, error, receivedFps, renderFps } = useFusedPreviewStream(
     {
@@ -29,6 +31,7 @@ export const BeFusedPreview: React.FC<{
       canvas_width: canvasWidth,
       canvas_height: canvasHeight,
       members,
+      stitch_metadata: stitchMetadata ?? null,
     },
     streamKey,
   );
