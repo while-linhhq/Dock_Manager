@@ -18,6 +18,28 @@ export class ApiError extends Error {
 
 let refreshPromise: Promise<string | null> | null = null;
 
+function resolveErrorMessage(errorData: unknown): string {
+  if (!errorData || typeof errorData !== 'object') {
+    return 'An error occurred';
+  }
+
+  const detail = (errorData as { detail?: unknown }).detail;
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (item && typeof item === 'object' && 'msg' in item) {
+          return String((item as { msg: unknown }).msg);
+        }
+        return String(item);
+      })
+      .join(', ');
+  }
+  return 'An error occurred';
+}
+
 async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) {
     return refreshPromise;
@@ -97,7 +119,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, errorData.detail || 'An error occurred', errorData);
+    throw new ApiError(response.status, resolveErrorMessage(errorData), errorData);
   }
 
   if (response.status === 204) {
@@ -109,19 +131,19 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
 
 export const httpClient = {
   get: <T>(url: string, options?: RequestInit) => request<T>(url, { ...options, method: 'GET' }),
-  post: <T>(url: string, body?: any, options?: RequestInit) =>
+  post: <T>(url: string, body?: unknown, options?: RequestInit) =>
     request<T>(url, {
       ...options,
       method: 'POST',
       body: body instanceof FormData ? body : JSON.stringify(body),
     }),
-  put: <T>(url: string, body?: any, options?: RequestInit) =>
+  put: <T>(url: string, body?: unknown, options?: RequestInit) =>
     request<T>(url, {
       ...options,
       method: 'PUT',
       body: body instanceof FormData ? body : JSON.stringify(body),
     }),
-  patch: <T>(url: string, body?: any, options?: RequestInit) =>
+  patch: <T>(url: string, body?: unknown, options?: RequestInit) =>
     request<T>(url, {
       ...options,
       method: 'PATCH',

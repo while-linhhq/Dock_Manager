@@ -293,7 +293,7 @@ export const MainLayout: React.FC = () => {
           {/* Background Grid Pattern */}
           <div className={cn(
             "absolute inset-0 opacity-[0.03] pointer-events-none",
-              isDarkMode ? "bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" : "bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] bg-size-[16px_16px]"
+              isDarkMode ? "bg-[radial-gradient(#ffffff_1px,transparent_1px)] bg-size-[18px_18px]" : "bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] bg-size-[16px_16px]"
           )} />
           <div className="relative z-10 mx-auto w-full max-w-[1600px]">
             <RouteErrorBoundary key={location.pathname}>

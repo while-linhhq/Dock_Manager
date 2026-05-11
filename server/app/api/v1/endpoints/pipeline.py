@@ -80,8 +80,8 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err
 
 @router.post("/stop")
 async def stop_pipeline():
@@ -100,7 +100,7 @@ async def get_status():
 
 @router.websocket('/preview-stream')
 async def pipeline_preview_stream(websocket: WebSocket) -> None:
-    """Binary JPEG frames (~8 fps) while pipeline is running; query ?token=JWT."""
+    """Binary JPEG frames while pipeline is running; query ?token=JWT."""
     token = websocket.query_params.get('token')
     if not token:
         await websocket.close(code=1008)
@@ -127,9 +127,11 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         last_sent = 0.0
+        last_sequence = 0
         while True:
-            jpeg = pipeline_preview.get_jpeg()
-            if jpeg:
+            sequence, jpeg = pipeline_preview.get_jpeg_with_sequence()
+            if jpeg and sequence > last_sequence:
+                last_sequence = sequence
                 await websocket.send_bytes(jpeg)
                 last_sent = asyncio.get_event_loop().time()
             else:
@@ -163,5 +165,5 @@ async def test_video(req: PipelineTestVideoRequest):
             "detections_count": len(results),
             "results": results
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err

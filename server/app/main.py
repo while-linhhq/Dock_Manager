@@ -1,5 +1,4 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi import Request
@@ -11,6 +10,7 @@ from app.db.session import SessionLocal
 from app.repositories.audit_log_repository import audit_log_repo
 import logging
 import sys
+import time
 from logging.config import dictConfig
 
 def _configure_logging() -> None:
@@ -49,6 +49,7 @@ def _configure_logging() -> None:
 
 _configure_logging()
 logger = logging.getLogger('app.main')
+access_logger = logging.getLogger('app.api.access')
 
 
 @asynccontextmanager
@@ -77,7 +78,7 @@ app.add_middleware(
 
 @app.middleware('http')
 async def audit_http_requests(request: Request, call_next):
-    started_at = datetime.now(timezone.utc)
+    started_monotonic = time.perf_counter()
     response = None
     skip_audit = False
     try:
@@ -85,12 +86,26 @@ async def audit_http_requests(request: Request, call_next):
         return response
     finally:
         path = request.url.path or ''
+        method = request.method.upper()
+        status_code = response.status_code if response is not None else 500
+        duration_ms = int((time.perf_counter() - started_monotonic) * 1000)
+        if path.startswith('/api/v1'):
+            access_logger.info(
+                '%s %s%s -> %s %sms client=%s',
+                method,
+                path,
+                f'?{request.url.query}' if request.url.query else '',
+                status_code,
+                duration_ms,
+                request.client.host if request.client else '-',
+            )
+
         if not path.startswith('/api/v1'):
             skip_audit = True
         if path.startswith('/api/v1/auth/login'):
             skip_audit = True
         # Persist only mutating API calls; skip GET/HEAD/OPTIONS (read noise)
-        if path.startswith('/api/v1') and request.method.upper() in (
+        if path.startswith('/api/v1') and method in (
             'GET',
             'HEAD',
             'OPTIONS',
@@ -111,7 +126,6 @@ async def audit_http_requests(request: Request, call_next):
                     except Exception:
                         user_id = None
 
-            method = request.method.upper()
             action_map = {
                 'POST': 'CREATE',
                 'PUT': 'UPDATE',
@@ -132,13 +146,12 @@ async def audit_http_requests(request: Request, call_next):
                 except Exception:
                     entity_id = None
 
-            status_code = response.status_code if response is not None else 500
             details = {
                 'method': method,
                 'path': path,
                 'status_code': status_code,
                 'query': str(request.url.query or ''),
-                'duration_ms': int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000),
+                'duration_ms': duration_ms,
                 'user_agent': request.headers.get('user-agent', ''),
             }
 

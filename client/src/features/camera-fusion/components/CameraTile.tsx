@@ -9,7 +9,7 @@ export const CameraTile: React.FC<{
   selected: boolean;
   onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
 }> = ({ member, scale, selected, onMouseDown }) => {
-  const { url, isConnected } = useCameraStream(member.camera_id);
+  const { url, isConnected, renderFps } = useCameraStream(member.camera_id);
   const width = (member.layout_w ?? 320) * scale;
   const height = (member.layout_h ?? 180) * scale;
 
@@ -40,6 +40,11 @@ export const CameraTile: React.FC<{
         {member.camera?.camera_name ?? `Camera ${member.camera_id}`}
         {member.homography ? ' · calibrated' : ''}
       </div>
+      {renderFps > 0 ? (
+        <div className="absolute bottom-2 left-2 rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-mono text-white/80">
+          {renderFps} FPS
+        </div>
+      ) : null}
       <div
         className={[
           'absolute right-2 top-2 h-2 w-2 rounded-full',

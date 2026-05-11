@@ -1,10 +1,13 @@
 import { httpClient } from '../../../services/httpClient';
 import { authStorage } from '../../../services/authStorage';
 import type {
+  AutoCalibrateRequest,
   AutoCalibrateResponse,
   CameraGroup,
   CameraGroupPayload,
   CalibrationPointPair,
+  ManualPairCalibrationRequest,
+  ManualPairCalibrationResponse,
 } from '../types/fusion.types';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -45,11 +48,17 @@ export const cameraGroupsApi = {
     httpClient.post(`/camera-groups/${groupId}/members/${cameraId}/calibrate`, { points }),
   autoCalibrate: (
     groupId: string | number,
-    referenceCameraId?: number | null,
+    payload: AutoCalibrateRequest,
   ): Promise<AutoCalibrateResponse> =>
     httpClient.post(`/camera-groups/${groupId}/auto-calibrate`, {
-      reference_camera_id: referenceCameraId ?? null,
+      reference_camera_id: payload.referenceCameraId ?? null,
+      camera_order: payload.cameraOrder,
     }),
+  manualPairChain: (
+    groupId: string | number,
+    payload: ManualPairCalibrationRequest,
+  ): Promise<ManualPairCalibrationResponse> =>
+    httpClient.post(`/camera-groups/${groupId}/manual-pair-chain`, payload),
   manualRefine: (
     groupId: string | number,
     cameraId: string | number,

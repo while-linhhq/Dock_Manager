@@ -59,10 +59,12 @@ function buildFusedPreviewStreamUrl(): string | null {
   return `${wsProtocol}//${url.host}${path}/camera-groups/editor-preview/fused?${query.toString()}`;
 }
 
-export function useFusedPreviewStream(payload: FusedPreviewPayload) {
+export function useFusedPreviewStream(payload: FusedPreviewPayload, streamKey = '') {
   const [url, setUrl] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [receivedFps, setReceivedFps] = useState(0);
+  const [renderFps, setRenderFps] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
   const payloadJson = useMemo(() => JSON.stringify(payload), [payload]);
   const payloadJsonRef = useRef(payloadJson);
@@ -81,6 +83,8 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload) {
           return null;
         });
         setIsConnected(false);
+        setReceivedFps(0);
+        setRenderFps(0);
       }, 0);
       return () => window.clearTimeout(timer);
     }
@@ -89,7 +93,41 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload) {
     let closed = false;
     let retryTimer: number | null = null;
     let activeUrl: string | null = null;
+    let pendingUrl: string | null = null;
+    let animationFrame: number | null = null;
     let retries = 0;
+    let receivedCount = 0;
+    let renderedCount = 0;
+    let fpsWindowStartedAt = performance.now();
+
+    const flushFrame = () => {
+      animationFrame = null;
+      if (!pendingUrl) {
+        return;
+      }
+      const nextUrl = pendingUrl;
+      pendingUrl = null;
+      setUrl((previous) => {
+        if (previous && previous !== nextUrl) {
+          URL.revokeObjectURL(previous);
+        }
+        activeUrl = nextUrl;
+        return nextUrl;
+      });
+      renderedCount += 1;
+    };
+
+    const updateFps = () => {
+      const now = performance.now();
+      if (now - fpsWindowStartedAt < 1000) {
+        return;
+      }
+      setReceivedFps(receivedCount);
+      setRenderFps(renderedCount);
+      receivedCount = 0;
+      renderedCount = 0;
+      fpsWindowStartedAt = now;
+    };
 
     const sendPayload = () => {
       if (socket?.readyState === WebSocket.OPEN) {
@@ -122,13 +160,15 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload) {
           return;
         }
         const nextUrl = URL.createObjectURL(event.data as Blob);
-        setUrl((previous) => {
-          if (previous) {
-            URL.revokeObjectURL(previous);
-          }
-          activeUrl = nextUrl;
-          return nextUrl;
-        });
+        receivedCount += 1;
+        if (pendingUrl) {
+          URL.revokeObjectURL(pendingUrl);
+        }
+        pendingUrl = nextUrl;
+        if (animationFrame == null) {
+          animationFrame = window.requestAnimationFrame(flushFrame);
+        }
+        updateFps();
       };
 
       socket.onclose = () => {
@@ -157,11 +197,17 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload) {
         window.clearTimeout(retryTimer);
       }
       socket?.close();
+      if (animationFrame != null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
       if (activeUrl) {
         URL.revokeObjectURL(activeUrl);
       }
+      if (pendingUrl) {
+        URL.revokeObjectURL(pendingUrl);
+      }
     };
-  }, [payload.members.length]);
+  }, [payload.members.length, streamKey]);
 
   useEffect(() => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -169,5 +215,5 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload) {
     }
   }, [payloadJson]);
 
-  return { url, isConnected, error };
+  return { url, isConnected, error, receivedFps, renderFps };
 }

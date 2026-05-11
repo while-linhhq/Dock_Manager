@@ -54,6 +54,8 @@ function buildCameraStreamUrl(cameraId: number | string): string | null {
 export function useCameraStream(cameraId?: number | string | null) {
   const [url, setUrl] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [receivedFps, setReceivedFps] = useState(0);
+  const [renderFps, setRenderFps] = useState(0);
 
   useEffect(() => {
     if (!cameraId) {
@@ -65,15 +67,52 @@ export function useCameraStream(cameraId?: number | string | null) {
           return null;
         });
         setIsConnected(false);
+        setReceivedFps(0);
+        setRenderFps(0);
       }, 0);
       return () => window.clearTimeout(timer);
     }
 
     let socket: WebSocket | null = null;
     let closed = false;
+    let connectTimer: number | null = null;
     let retryTimer: number | null = null;
     let activeUrl: string | null = null;
+    let pendingUrl: string | null = null;
+    let animationFrame: number | null = null;
     let retries = 0;
+    let receivedCount = 0;
+    let renderedCount = 0;
+    let fpsWindowStartedAt = performance.now();
+
+    const flushFrame = () => {
+      animationFrame = null;
+      if (!pendingUrl) {
+        return;
+      }
+      const nextUrl = pendingUrl;
+      pendingUrl = null;
+      setUrl((previous) => {
+        if (previous && previous !== nextUrl) {
+          URL.revokeObjectURL(previous);
+        }
+        activeUrl = nextUrl;
+        return nextUrl;
+      });
+      renderedCount += 1;
+    };
+
+    const updateFps = () => {
+      const now = performance.now();
+      if (now - fpsWindowStartedAt < 1000) {
+        return;
+      }
+      setReceivedFps(receivedCount);
+      setRenderFps(renderedCount);
+      receivedCount = 0;
+      renderedCount = 0;
+      fpsWindowStartedAt = now;
+    };
 
     const connect = () => {
       const streamUrl = buildCameraStreamUrl(cameraId);
@@ -100,13 +139,15 @@ export function useCameraStream(cameraId?: number | string | null) {
           return;
         }
         const nextUrl = URL.createObjectURL(event.data as Blob);
-        setUrl((previous) => {
-          if (previous) {
-            URL.revokeObjectURL(previous);
-          }
-          activeUrl = nextUrl;
-          return nextUrl;
-        });
+        receivedCount += 1;
+        if (pendingUrl) {
+          URL.revokeObjectURL(pendingUrl);
+        }
+        pendingUrl = nextUrl;
+        if (animationFrame == null) {
+          animationFrame = window.requestAnimationFrame(flushFrame);
+        }
+        updateFps();
       };
 
       socket.onclose = () => {
@@ -124,19 +165,28 @@ export function useCameraStream(cameraId?: number | string | null) {
       };
     };
 
-    connect();
+    connectTimer = window.setTimeout(connect, 50);
 
     return () => {
       closed = true;
+      if (connectTimer != null) {
+        window.clearTimeout(connectTimer);
+      }
       if (retryTimer != null) {
         window.clearTimeout(retryTimer);
       }
       socket?.close();
+      if (animationFrame != null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
       if (activeUrl) {
         URL.revokeObjectURL(activeUrl);
+      }
+      if (pendingUrl) {
+        URL.revokeObjectURL(pendingUrl);
       }
     };
   }, [cameraId]);
 
-  return { url, isConnected };
+  return { url, isConnected, receivedFps, renderFps };
 }

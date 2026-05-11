@@ -36,9 +36,12 @@ export type CameraGroup = {
   canvas_height: number;
   stitch_metadata?: {
     reference_camera_id?: number;
+    camera_order?: number[];
     pair_stats?: PairMatchStat[];
+    manual_pairs?: ManualPairPointSet[];
     unmatched_camera_ids?: number[];
     auto_calibrated_at?: string;
+    manual_calibrated_at?: string;
   } | null;
   is_active: boolean;
   created_by?: number | null;
@@ -62,6 +65,25 @@ export type AutoCalibrateResponse = {
   pair_stats: PairMatchStat[];
   unmatched_camera_ids: number[];
 };
+
+export type AutoCalibrateRequest = {
+  referenceCameraId?: number | null;
+  cameraOrder: number[];
+};
+
+export type ManualPairPointSet = {
+  source_camera_id: number;
+  target_camera_id: number;
+  points: CalibrationPointPair[];
+};
+
+export type ManualPairCalibrationRequest = {
+  reference_camera_id?: number | null;
+  camera_order: number[];
+  pairs: ManualPairPointSet[];
+};
+
+export type ManualPairCalibrationResponse = AutoCalibrateResponse;
 
 export type CameraGroupPayload = {
   name: string;

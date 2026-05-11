@@ -8,6 +8,10 @@ export type {
   CameraGroupPayload,
   CalibrationPointPair,
   FusionMode,
+  AutoCalibrateRequest,
   AutoCalibrateResponse,
+  ManualPairCalibrationRequest,
+  ManualPairCalibrationResponse,
+  ManualPairPointSet,
   PairMatchStat,
 } from './types/fusion.types';

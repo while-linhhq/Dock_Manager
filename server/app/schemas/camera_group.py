@@ -112,6 +112,7 @@ class CalibrationComputeResponse(BaseModel):
 
 
 class AutoCalibrateRequest(BaseModel):
+    camera_order: list[int] | None = None
     reference_camera_id: int | None = None
 
 
@@ -129,6 +130,22 @@ class AutoCalibrateResponse(BaseModel):
     canvas_height: int
     pair_stats: list[PairMatchStat]
     unmatched_camera_ids: list[int] = Field(default_factory=list)
+
+
+class ManualPairPointSet(BaseModel):
+    source_camera_id: int
+    target_camera_id: int
+    points: list[CalibrationPointPair] = Field(min_length=4)
+
+
+class ManualPairCalibrationRequest(BaseModel):
+    camera_order: list[int] = Field(min_length=2)
+    reference_camera_id: int | None = None
+    pairs: list[ManualPairPointSet] = Field(min_length=1)
+
+
+class ManualPairCalibrationResponse(AutoCalibrateResponse):
+    pass
 
 
 class FusedPreviewRequest(BaseModel):

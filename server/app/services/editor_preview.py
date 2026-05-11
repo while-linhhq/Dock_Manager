@@ -19,8 +19,10 @@ class _PreviewStream:
     buffer: LatestFrameBuffer
     stop_event: threading.Event
     reader: MultiFrameReaderThread
+    encoder: threading.Thread
     ref_count: int = 0
     last_jpeg: bytes | None = None
+    last_sequence: int = 0
     last_encoded_at: float = 0.0
 
 
@@ -31,6 +33,15 @@ class EditorPreviewManager:
         self._target_fps = target_fps
         self._jpeg_quality = jpeg_quality
         self._min_encode_interval = 1.0 / max(1.0, target_fps)
+
+    def set_target_fps(self, target_fps: float) -> None:
+        try:
+            fps = max(1.0, float(target_fps))
+        except Exception:
+            return
+        with self._lock:
+            self._target_fps = fps
+            self._min_encode_interval = 1.0 / fps
 
     def acquire(self, camera_id: int, source: str | int) -> None:
         camera_key = int(camera_id)
@@ -45,14 +56,26 @@ class EditorPreviewManager:
                     stop_event=stop_event,
                     target_fps=self._target_fps,
                 )
-                stream = _PreviewStream(buffer=buffer, stop_event=stop_event, reader=reader)
+                encoder = threading.Thread(
+                    target=self._encode_loop,
+                    args=(camera_key, buffer, stop_event),
+                    daemon=True,
+                )
+                stream = _PreviewStream(
+                    buffer=buffer,
+                    stop_event=stop_event,
+                    reader=reader,
+                    encoder=encoder,
+                )
                 self._streams[camera_key] = stream
                 reader.start()
+                encoder.start()
             stream.ref_count += 1
 
     def release(self, camera_id: int) -> None:
         camera_key = int(camera_id)
         reader: MultiFrameReaderThread | None = None
+        encoder: threading.Thread | None = None
         with self._lock:
             stream = self._streams.get(camera_key)
             if stream is None:
@@ -62,10 +85,13 @@ class EditorPreviewManager:
                 return
             stream.stop_event.set()
             reader = stream.reader
+            encoder = stream.encoder
             self._streams.pop(camera_key, None)
 
         if reader is not None:
             reader.join(timeout=2.0)
+        if encoder is not None:
+            encoder.join(timeout=2.0)
 
     def get_jpeg(self, camera_id: int) -> bytes | None:
         camera_key = int(camera_id)
@@ -73,32 +99,17 @@ class EditorPreviewManager:
             stream = self._streams.get(camera_key)
             if stream is None:
                 return None
-            now = time.monotonic()
-            if stream.last_jpeg is not None and now - stream.last_encoded_at < self._min_encode_interval:
-                return stream.last_jpeg
-            snapshot = stream.buffer.snapshot()
+            return stream.last_jpeg
 
-        timed_frame = snapshot.get(camera_key)
-        if timed_frame is None:
-            return None
-
-        ok, encoded = cv2.imencode(
-            '.jpg',
-            timed_frame.frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality],
-        )
-        if not ok:
-            return None
-
-        jpeg = encoded.tobytes()
+    def get_jpeg_with_sequence(self, camera_id: int) -> tuple[int, bytes | None]:
+        camera_key = int(camera_id)
         with self._lock:
             stream = self._streams.get(camera_key)
-            if stream is not None:
-                stream.last_jpeg = jpeg
-                stream.last_encoded_at = time.monotonic()
-        return jpeg
+            if stream is None:
+                return 0, None
+            return stream.last_sequence, stream.last_jpeg
 
-    def latest_frames(self, camera_ids: list[int]) -> dict[int, TimedFrame]:
+    def latest_frames(self, camera_ids: list[int], copy_frames: bool = True) -> dict[int, TimedFrame]:
         frames: dict[int, TimedFrame] = {}
         camera_keys = {int(camera_id) for camera_id in camera_ids}
         with self._lock:
@@ -109,11 +120,40 @@ class EditorPreviewManager:
             }
 
         for camera_id, stream in streams.items():
-            snapshot = stream.buffer.snapshot()
+            snapshot = stream.buffer.snapshot(copy_frames=copy_frames)
             timed_frame = snapshot.get(camera_id)
             if timed_frame is not None:
                 frames[camera_id] = timed_frame
         return frames
+
+    def _encode_loop(
+        self,
+        camera_id: int,
+        buffer: LatestFrameBuffer,
+        stop_event: threading.Event,
+    ) -> None:
+        while not stop_event.is_set():
+            started_at = time.monotonic()
+            snapshot = buffer.snapshot()
+            timed_frame = snapshot.get(camera_id)
+            if timed_frame is not None:
+                ok, encoded = cv2.imencode(
+                    '.jpg',
+                    timed_frame.frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality],
+                )
+                if ok:
+                    with self._lock:
+                        stream = self._streams.get(camera_id)
+                        if stream is not None:
+                            stream.last_jpeg = encoded.tobytes()
+                            stream.last_sequence += 1
+                            stream.last_encoded_at = time.monotonic()
+
+            with self._lock:
+                interval = self._min_encode_interval
+            elapsed = time.monotonic() - started_at
+            stop_event.wait(max(0.0, interval - elapsed))
 
 
 editor_preview_manager = EditorPreviewManager()

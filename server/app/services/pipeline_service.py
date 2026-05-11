@@ -91,10 +91,10 @@ class PipelineService:
         self._yolo_worker: YoloWorkerThread | None = None
         self._ocr_worker: OcrWorkerThread | None = None
         self._video_worker: VideoRecorderThread | None = None
-        self._frame_queue: queue.Queue = queue.Queue(maxsize=30)
-        self._result_queue: queue.Queue = queue.Queue(maxsize=30)
-        self._ocr_queue: queue.Queue = queue.Queue(maxsize=30)
-        self._video_queue: queue.Queue = queue.Queue(maxsize=60)
+        self._frame_queue: queue.Queue = queue.Queue(maxsize=5)
+        self._result_queue: queue.Queue = queue.Queue(maxsize=10)
+        self._ocr_queue: queue.Queue = queue.Queue(maxsize=10)
+        self._video_queue: queue.Queue = queue.Queue(maxsize=30)
         self.ocr_cache: dict[str, Any] = {}
         self.ocr_lock = threading.Lock()
         self._runtime_media_base = Path('app/data-docker/runtime-media')
@@ -105,6 +105,12 @@ class PipelineService:
         self._detector_signature: tuple[str, str, float] | None = None
         self._boat_tracker: BoatTracker = BoatTracker()
         self._db: Session | None = None
+
+    def _reset_runtime_queues(self) -> None:
+        self._frame_queue = queue.Queue(maxsize=5)
+        self._result_queue = queue.Queue(maxsize=10)
+        self._ocr_queue = queue.Queue(maxsize=10)
+        self._video_queue = queue.Queue(maxsize=30)
 
     @staticmethod
     def _to_bool(raw: str, default: bool) -> bool:
@@ -442,6 +448,7 @@ class PipelineService:
             return
 
         self._stop.clear()
+        self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
 
@@ -543,6 +550,7 @@ class PipelineService:
             raise ValueError('Camera group has no enabled cameras')
 
         self._stop.clear()
+        self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
 

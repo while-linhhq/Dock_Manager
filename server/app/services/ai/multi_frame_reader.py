@@ -21,25 +21,36 @@ class TimedFrame:
     camera_id: int
     frame: Any
     captured_at: float
+    sequence: int = 0
 
 
 class LatestFrameBuffer:
     def __init__(self) -> None:
         self._frames: dict[int, TimedFrame] = {}
+        self._sequences: dict[int, int] = {}
         self._lock = threading.Lock()
 
     def set(self, camera_id: int, frame: Any, captured_at: float | None = None) -> None:
+        camera_key = int(camera_id)
         with self._lock:
-            self._frames[int(camera_id)] = TimedFrame(
-                camera_id=int(camera_id),
+            sequence = self._sequences.get(camera_key, 0) + 1
+            self._sequences[camera_key] = sequence
+            self._frames[camera_key] = TimedFrame(
+                camera_id=camera_key,
                 frame=frame.copy(),
                 captured_at=captured_at or time.monotonic(),
+                sequence=sequence,
             )
 
-    def snapshot(self) -> dict[int, TimedFrame]:
+    def snapshot(self, copy_frames: bool = True) -> dict[int, TimedFrame]:
         with self._lock:
             return {
-                camera_id: TimedFrame(item.camera_id, item.frame.copy(), item.captured_at)
+                camera_id: TimedFrame(
+                    item.camera_id,
+                    item.frame.copy() if copy_frames else item.frame,
+                    item.captured_at,
+                    item.sequence,
+                )
                 for camera_id, item in self._frames.items()
             }
 

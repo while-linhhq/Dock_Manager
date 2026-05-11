@@ -131,11 +131,8 @@ class YoloWorkerThread(threading.Thread):
                     and len(confirmed) > 0
                 )
                 if ocr_tick:
-                    try:
-                        items = [(tb.track_id, tb.box.copy()) for tb in confirmed]
-                        self._ocr_queue.put_nowait((frame.copy(), items))
-                    except queue.Full:
-                        pass
+                    items = [(tb.track_id, tb.box.copy()) for tb in confirmed]
+                    put_queue_drop_oldest(self._ocr_queue, (frame.copy(), items))
         except Exception as e:
             print(f"[WARNING] YoloWorkerThread crashed: {e}")
         finally:

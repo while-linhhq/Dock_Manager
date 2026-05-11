@@ -34,6 +34,8 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
 }) => {
   const [tab, setTab] = useState<AiPanelTab>('live');
   const [pipelinePreviewUrl, setPipelinePreviewUrl] = useState<string | null>(null);
+  const [previewReceivedFps, setPreviewReceivedFps] = useState(0);
+  const [previewRenderFps, setPreviewRenderFps] = useState(0);
   const previewObjectUrlRef = useRef<string | null>(null);
 
   const wsActive = tab === 'live' && Boolean(pipelineStatus?.is_running);
@@ -44,8 +46,12 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
         URL.revokeObjectURL(previewObjectUrlRef.current);
         previewObjectUrlRef.current = null;
       }
-      setPipelinePreviewUrl(null);
-      return;
+      const resetTimer = window.setTimeout(() => {
+        setPipelinePreviewUrl(null);
+        setPreviewReceivedFps(0);
+        setPreviewRenderFps(0);
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
     }
 
     const wsUrl = buildPipelinePreviewWsUrl();
@@ -59,6 +65,11 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
     let attempt = 0;
     let watchdogTimer: ReturnType<typeof setInterval> | null = null;
     let lastMessageAt = Date.now();
+    let pendingPreviewUrl: string | null = null;
+    let animationFrame: number | null = null;
+    let receivedCount = 0;
+    let renderedCount = 0;
+    let fpsWindowStartedAt = performance.now();
 
     const clearReconnect = () => {
       if (reconnectTimer != null) {
@@ -75,11 +86,46 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
     };
 
     const revokePreview = () => {
+      if (animationFrame != null) {
+        cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+      if (pendingPreviewUrl) {
+        URL.revokeObjectURL(pendingPreviewUrl);
+        pendingPreviewUrl = null;
+      }
       if (previewObjectUrlRef.current) {
         URL.revokeObjectURL(previewObjectUrlRef.current);
         previewObjectUrlRef.current = null;
       }
       setPipelinePreviewUrl(null);
+    };
+
+    const flushPreviewFrame = () => {
+      animationFrame = null;
+      if (!pendingPreviewUrl) {
+        return;
+      }
+      const next = pendingPreviewUrl;
+      pendingPreviewUrl = null;
+      if (previewObjectUrlRef.current && previewObjectUrlRef.current !== next) {
+        URL.revokeObjectURL(previewObjectUrlRef.current);
+      }
+      previewObjectUrlRef.current = next;
+      setPipelinePreviewUrl(next);
+      renderedCount += 1;
+    };
+
+    const updateFps = () => {
+      const now = performance.now();
+      if (now - fpsWindowStartedAt < 1000) {
+        return;
+      }
+      setPreviewReceivedFps(receivedCount);
+      setPreviewRenderFps(renderedCount);
+      receivedCount = 0;
+      renderedCount = 0;
+      fpsWindowStartedAt = now;
     };
 
     const hardResetSocket = () => {
@@ -121,11 +167,15 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
           return;
         }
         const next = URL.createObjectURL(blob);
-        if (previewObjectUrlRef.current) {
-          URL.revokeObjectURL(previewObjectUrlRef.current);
+        receivedCount += 1;
+        if (pendingPreviewUrl) {
+          URL.revokeObjectURL(pendingPreviewUrl);
         }
-        previewObjectUrlRef.current = next;
-        setPipelinePreviewUrl(next);
+        pendingPreviewUrl = next;
+        if (animationFrame == null) {
+          animationFrame = requestAnimationFrame(flushPreviewFrame);
+        }
+        updateFps();
       };
 
       ws.onerror = () => {
@@ -245,6 +295,11 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
             <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
               Hệ thống: {pipelineStatus?.is_running ? 'ONLINE' : 'OFFLINE'}
             </div>
+            {pipelineStatus?.is_running ? (
+              <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
+                RX {previewReceivedFps} / UI {previewRenderFps} FPS
+              </div>
+            ) : null}
           </div>
         </div>
       ) : (

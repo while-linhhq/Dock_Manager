@@ -46,6 +46,12 @@ def detect_features(frame: np.ndarray) -> tuple[list[Any], np.ndarray | None]:
     if hasattr(cv2, 'SIFT_create'):
         sift = cv2.SIFT_create()
         keypoints, descriptors = sift.detectAndCompute(gray, None)
+        if descriptors is not None and len(keypoints) >= MIN_FEATURES:
+            return list(keypoints), descriptors
+
+    orb = cv2.ORB_create(nfeatures=1000)
+    keypoints, descriptors = orb.detectAndCompute(gray, None)
+    if descriptors is not None:
         return list(keypoints), descriptors
 
     return list(keypoints or []), descriptors
@@ -58,6 +64,8 @@ def _matcher_for(descriptors: np.ndarray) -> cv2.BFMatcher:
 
 def _ratio_matches(desc_a: np.ndarray, desc_b: np.ndarray) -> list[Any]:
     if desc_a is None or desc_b is None or len(desc_a) < 2 or len(desc_b) < 2:
+        return []
+    if desc_a.dtype != desc_b.dtype:
         return []
     matches = _matcher_for(desc_a).knnMatch(desc_a, desc_b, k=2)
     good_matches = []
@@ -127,6 +135,71 @@ def compute_pairwise_homographies(
         )
         if matrix is None:
             continue
+        pairwise[(int(camera_a), int(camera_b))] = matrix
+        pairwise[(int(camera_b), int(camera_a))] = np.linalg.inv(matrix)
+
+    return pairwise, stats
+
+
+def _normalize_camera_order(
+    frames: dict[int, np.ndarray],
+    camera_order: list[int] | None,
+) -> list[int]:
+    if camera_order is None:
+        return [int(camera_id) for camera_id in frames.keys()]
+
+    normalized = [int(camera_id) for camera_id in camera_order]
+    if len(normalized) < 2:
+        raise ValueError('Camera order must contain at least two cameras')
+    if len(set(normalized)) != len(normalized):
+        raise ValueError('Camera order must not contain duplicate cameras')
+
+    frame_ids = {int(camera_id) for camera_id in frames.keys()}
+    missing = [camera_id for camera_id in normalized if camera_id not in frame_ids]
+    if missing:
+        raise ValueError(f'Camera order contains cameras without frames: {missing}')
+    return normalized
+
+
+def compute_ordered_pairwise_homographies(
+    frames: dict[int, np.ndarray],
+    camera_order: list[int],
+) -> tuple[dict[tuple[int, int], np.ndarray], list[PairMatchStats]]:
+    features = {
+        camera_id: detect_features(frames[camera_id])
+        for camera_id in camera_order
+    }
+    pairwise: dict[tuple[int, int], np.ndarray] = {}
+    stats: list[PairMatchStats] = []
+
+    for camera_a, camera_b in zip(camera_order, camera_order[1:], strict=False):
+        keypoints_a, desc_a = features[camera_a]
+        keypoints_b, desc_b = features[camera_b]
+        matrix, matches, inliers, confidence = _compute_pair_homography(
+            keypoints_a,
+            desc_a,
+            keypoints_b,
+            desc_b,
+        )
+        stats.append(
+            PairMatchStats(
+                source_camera_id=int(camera_a),
+                target_camera_id=int(camera_b),
+                matches=matches,
+                inliers=inliers,
+                confidence=round(confidence, 4),
+            )
+        )
+        if matrix is None:
+            frame_width = frames[camera_a].shape[1]
+            matrix = np.array(
+                [
+                    [1.0, 0.0, float(-frame_width)],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float64,
+            )
         pairwise[(int(camera_a), int(camera_b))] = matrix
         pairwise[(int(camera_b), int(camera_a))] = np.linalg.inv(matrix)
 
@@ -215,16 +288,25 @@ def compute_canvas_and_offsets(
 def auto_stitch(
     frames: dict[int, np.ndarray],
     reference_camera_id: int | None = None,
+    camera_order: list[int] | None = None,
 ) -> StitchResult:
     if len(frames) < 2:
         raise ValueError('At least two camera frames are required for panorama stitching')
 
-    camera_ids = [int(camera_id) for camera_id in frames.keys()]
-    pairwise, pair_stats = compute_pairwise_homographies(frames)
+    camera_ids = _normalize_camera_order(frames, camera_order)
+    if camera_order is None:
+        pairwise, pair_stats = compute_pairwise_homographies(frames)
+    else:
+        pairwise, pair_stats = compute_ordered_pairwise_homographies(frames, camera_ids)
+
     if not pairwise:
         raise ValueError('Could not find overlapping camera pairs')
 
-    reference = _choose_reference_camera(camera_ids, pairwise, reference_camera_id)
+    reference = _choose_reference_camera(
+        camera_ids,
+        pairwise,
+        reference_camera_id if camera_order is None else reference_camera_id or camera_ids[0],
+    )
     chained = chain_homographies(camera_ids, pairwise, reference)
     canvas_width, canvas_height, final_homographies = compute_canvas_and_offsets(frames, chained)
 
