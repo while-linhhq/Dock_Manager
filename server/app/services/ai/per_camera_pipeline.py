@@ -64,6 +64,7 @@ class PerCameraPipeline(threading.Thread):
         ocr_lock: threading.RLock,
         runs_base: str,
         on_image_captured=None,
+        input_frame_queue: queue.Queue | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -75,13 +76,16 @@ class PerCameraPipeline(threading.Thread):
         self._stop_event = stop_event
         self._ocr_cache = ocr_cache
         self._ocr_lock = ocr_lock
-        self._frame_queue: queue.Queue = queue.Queue(maxsize=3)
-        self._reader = FrameReaderThread(
-            config.source,
-            self._frame_queue,
-            stop_event,
-            target_fps=config.record_fps,
-        )
+        self._uses_external_frames = input_frame_queue is not None
+        self._frame_queue = input_frame_queue or queue.Queue(maxsize=3)
+        self._reader: FrameReaderThread | None = None
+        if not self._uses_external_frames:
+            self._reader = FrameReaderThread(
+                config.source,
+                self._frame_queue,
+                stop_event,
+                target_fps=config.record_fps,
+            )
         self._tracker = BoatTracker(
             min_hits=config.track_min_hits,
             max_tentative_misses=config.track_max_tentative_misses,
@@ -122,7 +126,8 @@ class PerCameraPipeline(threading.Thread):
         return self._tracker
 
     def start(self) -> None:
-        self._reader.start()
+        if self._reader is not None:
+            self._reader.start()
         if self._ocr_worker is not None:
             self._ocr_worker.start()
         super().start()
@@ -151,7 +156,8 @@ class PerCameraPipeline(threading.Thread):
             self._stop_event.set()
 
     def join(self, timeout: float | None = None) -> None:
-        self._reader.join(timeout=timeout)
+        if self._reader is not None:
+            self._reader.join(timeout=timeout)
         if self._ocr_worker is not None:
             self._ocr_worker.join(timeout=timeout)
         super().join(timeout=timeout)

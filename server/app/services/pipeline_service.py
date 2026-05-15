@@ -25,9 +25,7 @@ from app.services.ai.boat_tracker import BoatTracker
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
-from app.services.ai.frame_fusion import FrameFuser, FrameFusionWorker, build_fusion_config_from_group
-from app.services.ai.frame_synchronizer import FrameSynchronizer
-from app.services.ai.multi_frame_reader import CameraSource, LatestFrameBuffer, MultiFrameReaderThread
+from app.services.ai.group_frame_hub import GroupFrameHub
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
@@ -89,8 +87,7 @@ class PipelineService:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._reader: FrameReaderThread | None = None
-        self._multi_readers: list[MultiFrameReaderThread] = []
-        self._fusion_worker: FrameFusionWorker | None = None
+        self._group_frame_hub: GroupFrameHub | None = None
         self._yolo_worker: YoloWorkerThread | None = None
         self._ocr_worker: OcrWorkerThread | None = None
         self._video_worker: VideoRecorderThread | None = None
@@ -270,9 +267,9 @@ class PipelineService:
     @property
     def is_running(self) -> bool:
         single_running = self._reader is not None and self._reader.is_alive()
-        fusion_running = self._fusion_worker is not None and self._fusion_worker.is_alive()
         hybrid_running = any(pipeline.is_alive() for pipeline in self._per_camera_pipelines)
-        return single_running or fusion_running or hybrid_running
+        hub_running = self._group_frame_hub is not None and self._group_frame_hub.is_alive()
+        return single_running or hub_running or hybrid_running
 
     def _upload_captured_image(
         self,
@@ -588,7 +585,13 @@ class PipelineService:
     @staticmethod
     def _resolve_group_camera_order(group: Any, enabled_members: list[Any]) -> list[int]:
         ordered: list[int] = []
-        for member in sorted(enabled_members, key=lambda item: int(getattr(item, 'priority', 0) or 0)):
+        for member in sorted(
+            enabled_members,
+            key=lambda item: (
+                int(getattr(item, 'priority', 0) or 0),
+                int(item.camera_id),
+            ),
+        ):
             camera_key = int(member.camera_id)
             if camera_key not in ordered:
                 ordered.append(camera_key)
@@ -635,10 +638,20 @@ class PipelineService:
             )
             self._video_worker.start()
 
+        self._group_frame_hub = GroupFrameHub(
+            group=group,
+            enabled_members=enabled_members,
+            runtime_cfg=runtime_cfg,
+            stop_event=self._stop,
+            video_queue=self._video_queue if runtime_cfg['record_enable'] else None,
+            distribute_per_camera=True,
+        )
+
         self._per_camera_pipelines = []
-        for index, member in enumerate(ordered_members):
+        for member in ordered_members:
+            camera_id = int(member.camera_id)
             pipeline_config = PerCameraPipelineConfig(
-                camera_id=int(member.camera_id),
+                camera_id=camera_id,
                 source=member.camera.rtsp_url,
                 record_fps=runtime_cfg['record_fps'],
                 enable_ocr=ocr_active,
@@ -656,7 +669,7 @@ class PipelineService:
                 clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
-                enable_preview_stream=index == 0,
+                enable_preview_stream=False,
             )
             self._per_camera_pipelines.append(
                 PerCameraPipeline(
@@ -665,15 +678,20 @@ class PipelineService:
                     detector_lock=self._detector_lock,
                     reid_manager=self._reid_manager,
                     embedding_extractor=embedding_extractor,
-                    video_queue=self._video_queue,
+                    video_queue=None,
                     stop_event=self._stop,
                     ocr_cache=self.ocr_cache,
                     ocr_lock=self.ocr_lock,
                     runs_base=str(self._runtime_media_base / 'detect'),
                     on_image_captured=self._upload_captured_image,
+                    input_frame_queue=self._group_frame_hub.queue_for_camera(camera_id),
                 )
             )
 
+        self._group_frame_hub.set_track_providers(
+            [pipeline.tracker.confirmed_boats for pipeline in self._per_camera_pipelines]
+        )
+        self._group_frame_hub.start()
         for pipeline in self._per_camera_pipelines:
             pipeline.start()
 
@@ -747,41 +765,16 @@ class PipelineService:
             on_track_removed=combined_on_removed,
         )
 
-        frame_buffer = LatestFrameBuffer()
-        camera_sources = [
-            CameraSource(
-                camera_id=int(member.camera_id),
-                source=member.camera.rtsp_url,
-            )
-            for member in enabled_members
-        ]
-        self._multi_readers = [
-            MultiFrameReaderThread(
-                source,
-                frame_buffer,
-                self._stop,
-                target_fps=runtime_cfg['record_fps'],
-            )
-            for source in camera_sources
-        ]
-        synchronizer = FrameSynchronizer(
-            frame_buffer,
-            [source.camera_id for source in camera_sources],
-            tolerance_ms=runtime_cfg['sync_tolerance_ms'],
+        self._group_frame_hub = GroupFrameHub(
+            group=group,
+            enabled_members=enabled_members,
+            runtime_cfg=runtime_cfg,
+            stop_event=self._stop,
+            video_queue=self._video_queue if runtime_cfg['record_enable'] else None,
+            yolo_frame_queue=self._frame_queue,
+            distribute_per_camera=False,
         )
-        self._fusion_worker = FrameFusionWorker(
-            synchronizer,
-            FrameFuser(
-                build_fusion_config_from_group(
-                    group,
-                    max_width=runtime_cfg['fused_frame_max_width'],
-                    max_height=runtime_cfg['fused_frame_max_height'],
-                )
-            ),
-            self._frame_queue,
-            self._stop,
-            target_fps=runtime_cfg['record_fps'],
-        )
+        self._group_frame_hub.set_track_providers([self._boat_tracker.confirmed_boats])
         try:
             pipeline_preview.set_target_fps(runtime_cfg['record_fps'])
         except Exception:
@@ -793,7 +786,7 @@ class PipelineService:
             self._frame_queue,
             self._result_queue,
             self._ocr_queue,
-            self._video_queue,
+            None,
             self._stop,
             ocr_interval,
             ocr_active,
@@ -832,9 +825,7 @@ class PipelineService:
             )
             self._video_worker.start()
 
-        for reader in self._multi_readers:
-            reader.start()
-        self._fusion_worker.start()
+        self._group_frame_hub.start()
         self._yolo_worker.start()
         if self._ocr_worker:
             self._ocr_worker.start()
@@ -842,17 +833,15 @@ class PipelineService:
         _log.info(
             'Pipeline started with camera_group_id=%s cameras=%s',
             group.id,
-            [source.camera_id for source in camera_sources],
+            [int(member.camera_id) for member in enabled_members],
         )
 
     def stop(self) -> None:
         self._stop.set()
         if self._reader:
             self._reader.join(timeout=2.0)
-        for reader in self._multi_readers:
-            reader.join(timeout=2.0)
-        if self._fusion_worker:
-            self._fusion_worker.join(timeout=2.0)
+        if self._group_frame_hub:
+            self._group_frame_hub.join(timeout=2.0)
         if self._yolo_worker:
             self._yolo_worker.join(timeout=2.0)
         if self._ocr_worker:
@@ -871,8 +860,7 @@ class PipelineService:
             self._boat_tracker.flush_shutdown_logs()
             
         self._reader = self._yolo_worker = self._ocr_worker = self._video_worker = None
-        self._fusion_worker = None
-        self._multi_readers = []
+        self._group_frame_hub = None
         self._per_camera_pipelines = []
         self._reid_manager = None
         pipeline_preview.clear()

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { CameraRead } from '../../../types/api.types';
 import type { CameraGroupMember } from '../types/fusion.types';
+import { normalizeMemberPriorities } from '../utils/camera-group-order';
 
 export const MemberList: React.FC<{
   cameras: CameraRead[];
@@ -14,7 +15,8 @@ export const MemberList: React.FC<{
     if (!camera || members.some((member) => member.camera_id === cameraId)) {
       return;
     }
-    onMembersChange([
+    onMembersChange(
+      normalizeMemberPriorities([
       ...members,
       {
         camera_id: cameraId,
@@ -32,7 +34,8 @@ export const MemberList: React.FC<{
         crop_right: 0,
         enabled: true,
       },
-    ]);
+    ]),
+    );
   };
 
   const updateMember = (cameraId: number, patch: Partial<CameraGroupMember>) => {
@@ -83,7 +86,11 @@ export const MemberList: React.FC<{
                 className="text-[10px] font-bold uppercase tracking-widest text-red-500"
                 onClick={(event) => {
                   event.stopPropagation();
-                  onMembersChange(members.filter((item) => item.camera_id !== member.camera_id));
+                  onMembersChange(
+                    normalizeMemberPriorities(
+                      members.filter((item) => item.camera_id !== member.camera_id),
+                    ),
+                  );
                 }}
               >
                 Xóa
@@ -99,7 +106,6 @@ export const MemberList: React.FC<{
                 ['W', 'layout_w'],
                 ['H', 'layout_h'],
                 ['Rot', 'layout_rotation'],
-                ['Z', 'priority'],
               ].map(([label, key]) => (
                 <label key={key} className="text-[10px] uppercase tracking-widest text-gray-500">
                   {label}

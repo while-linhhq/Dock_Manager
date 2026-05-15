@@ -64,8 +64,14 @@ class CameraGroupRepository:
 
     def _replace_members(self, db: Session, group_id: int, members: Sequence) -> None:
         db.query(CameraGroupMember).filter(CameraGroupMember.group_id == group_id).delete()
-        for member in members:
-            db.add(CameraGroupMember(group_id=group_id, **member.model_dump()))
+        ordered_members = sorted(
+            members,
+            key=lambda item: int(getattr(item, 'priority', 0) or 0),
+        )
+        for index, member in enumerate(ordered_members):
+            payload = member.model_dump()
+            payload['priority'] = index
+            db.add(CameraGroupMember(group_id=group_id, **payload))
 
 
 camera_group_repo = CameraGroupRepository()

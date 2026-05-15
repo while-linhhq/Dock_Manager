@@ -11,6 +11,11 @@ import type { CameraGroupMember, PipelineMode } from '../types/fusion.types';
 import { FusionCanvas } from '../components/FusionCanvas';
 import { MemberList } from '../components/MemberList';
 import { BeFusedPreview } from '../components/BeFusedPreview';
+import {
+  moveMemberInCameraOrder,
+  normalizeMemberPriorities,
+  sortMembersByCameraOrder,
+} from '../utils/camera-group-order';
 
 export const FusionGroupEditorView: React.FC = () => {
   const { id } = useParams();
@@ -44,32 +49,16 @@ export const FusionGroupEditorView: React.FC = () => {
         setCanvasWidth(group.canvas_width);
         setCanvasHeight(group.canvas_height);
         setIsActive(group.is_active);
-        setMembers(group.members);
+        setMembers(normalizeMemberPriorities(group.members));
         setSelectedMemberCameraId(group.members[0]?.camera_id ?? null);
       })
       .catch(console.error);
   }, [id, isNew, setSelectedMemberCameraId]);
 
-  const orderedMembers = useMemo(
-    () => [...members].sort((left, right) => left.priority - right.priority),
-    [members],
-  );
+  const orderedMembers = useMemo(() => sortMembersByCameraOrder(members), [members]);
 
   const moveMember = (cameraId: number, direction: -1 | 1) => {
-    const currentIndex = orderedMembers.findIndex((member) => member.camera_id === cameraId);
-    const nextIndex = currentIndex + direction;
-    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= orderedMembers.length) {
-      return;
-    }
-    const nextOrdered = [...orderedMembers];
-    [nextOrdered[currentIndex], nextOrdered[nextIndex]] = [nextOrdered[nextIndex], nextOrdered[currentIndex]];
-    const priorities = new Map(nextOrdered.map((member, index) => [member.camera_id, index]));
-    setMembers((current) =>
-      current.map((member) => ({
-        ...member,
-        priority: priorities.get(member.camera_id) ?? member.priority,
-      })),
-    );
+    setMembers((current) => moveMemberInCameraOrder(current, cameraId, direction));
   };
 
   const save = async () => {
@@ -83,7 +72,7 @@ export const FusionGroupEditorView: React.FC = () => {
         canvas_width: canvasWidth,
         canvas_height: canvasHeight,
         is_active: isActive,
-        members,
+        members: normalizeMemberPriorities(members),
       };
       const group = isNew
         ? await cameraGroupsApi.create(payload)
@@ -169,7 +158,7 @@ export const FusionGroupEditorView: React.FC = () => {
             <FusionCanvas
               canvasWidth={canvasWidth}
               canvasHeight={canvasHeight}
-              members={members}
+              members={orderedMembers}
               selectedCameraId={selectedMemberCameraId}
               onSelect={setSelectedMemberCameraId}
               onMembersChange={setMembers}
@@ -197,9 +186,15 @@ const CameraOrderPanel: React.FC<{
         Thứ tự camera trái sang phải
       </p>
       <p className="text-xs text-gray-500">
-        Dùng cho Re-ID giữa camera rời rạc và thứ tự hiển thị trên layout canvas.
+        Thứ tự trái → phải dọc theo luồng tàu. Chỉ dùng cho Re-ID hybrid (match camera liền kề).
+        Vị trí tile trên canvas vẫn chỉnh bằng X/Y.
       </p>
     </div>
+    {members.length < 2 ? (
+      <p className="mb-2 text-xs text-amber-600 dark:text-amber-400">
+        Thêm ít nhất 2 camera để chỉnh thứ tự trái / phải.
+      </p>
+    ) : null}
     <div className="grid gap-2">
       {members.map((member, index) => (
         <div
@@ -214,17 +209,17 @@ const CameraOrderPanel: React.FC<{
               type="button"
               className="rounded-lg border border-gray-200 px-2 py-1 text-gray-600 disabled:opacity-40 dark:border-white/10 dark:text-gray-300"
               disabled={index === 0}
-              onClick={() => onMove(member.camera_id, -1)}
+              onClick={() => onMove(Number(member.camera_id), -1)}
             >
-              Up
+              ← Trái
             </button>
             <button
               type="button"
               className="rounded-lg border border-gray-200 px-2 py-1 text-gray-600 disabled:opacity-40 dark:border-white/10 dark:text-gray-300"
               disabled={index === members.length - 1}
-              onClick={() => onMove(member.camera_id, 1)}
+              onClick={() => onMove(Number(member.camera_id), 1)}
             >
-              Down
+              Phải →
             </button>
           </div>
         </div>
