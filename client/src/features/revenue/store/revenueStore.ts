@@ -125,6 +125,8 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
           unit: data.unit,
           effective_from: data.effective_from,
           effective_to: data.effective_to,
+          berth_limit_count: data.berth_limit_count,
+          berth_limit_unit: data.berth_limit_unit,
         };
         await revenueApi.updateFeeConfig(id, patch);
       } else {

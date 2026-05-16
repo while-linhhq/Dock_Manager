@@ -168,6 +168,12 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                 <p className="text-[10px] text-gray-500 uppercase tracking-widest">
                   Loại tàu: {feeConfigVesselTypeLabel(fee, vesselTypes)}
                 </p>
+                {fee.berth_limit_count != null && fee.berth_limit_count > 0 && fee.berth_limit_unit ? (
+                  <p className="text-[10px] text-orange-600 dark:text-orange-400 uppercase tracking-widest mt-1">
+                    Giới hạn: {fee.berth_limit_count} lần/
+                    {fee.berth_limit_unit === 'day' ? 'ngày' : 'tháng'}
+                  </p>
+                ) : null}
               </div>
               <div className="pt-4 border-t border-gray-100 dark:border-white/5 flex justify-between items-end gap-3">
                 <div className="min-w-0 flex-1">

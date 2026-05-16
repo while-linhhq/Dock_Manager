@@ -7,7 +7,9 @@ import queue
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional
+
+import cv2
 
 from app.services import pipeline_preview
 from app.services.ai.background_model import BackgroundModelRegistry
@@ -17,6 +19,7 @@ from app.services.ai.frame_fusion import (
     DEFAULT_FUSED_MAX_HEIGHT,
     DEFAULT_FUSED_MAX_WIDTH,
     FrameFuser,
+    FusionMember,
     build_fusion_config_from_group,
 )
 from app.services.ai.frame_synchronizer import FrameSynchronizer
@@ -53,6 +56,7 @@ class GroupFrameHub:
         distribute_per_camera: bool = False,
         bg_registry: BackgroundModelRegistry | None = None,
         seam_anchor_verifier: SeamAnchorVerifier | None = None,
+        on_fused_media_sample: Optional[Callable[[Any, list[Any]], None]] = None,
     ) -> None:
         self._stop_event = stop_event
         self._video_queue = video_queue
@@ -60,10 +64,8 @@ class GroupFrameHub:
         self._distribute_per_camera = distribute_per_camera
         self._bg_registry = bg_registry
         self._seam_anchor_verifier = seam_anchor_verifier
+        self._on_fused_media_sample = on_fused_media_sample
         self._track_providers: list[TrackProvider] = []
-        self._members_by_camera = {
-            int(member.camera_id): member for member in enabled_members
-        }
         self._frame_buffer = LatestFrameBuffer()
         self._per_camera_queues: dict[int, queue.Queue] = {}
         if distribute_per_camera:
@@ -77,6 +79,9 @@ class GroupFrameHub:
             max_height=runtime_cfg['fused_frame_max_height'],
         )
         self._fuser = FrameFuser(fusion_config)
+        self._overlay_members_record: dict[int, FusionMember] = {
+            int(m.camera_id): m for m in fusion_config.members if m.enabled
+        }
         preview_max_w = min(
             int(runtime_cfg['fused_frame_max_width']),
             int(getattr(settings, 'PREVIEW_MAX_WIDTH', DEFAULT_FUSED_MAX_WIDTH)),
@@ -90,15 +95,19 @@ class GroupFrameHub:
             max_width=preview_max_w,
             max_height=preview_max_h,
         )
-        self._preview_fuser = FrameFuser(preview_fusion_config)
+        # Dashboard WS preview = resize of the same fused frame (avoids a 2nd fuse+overlay thread).
+        self._preview_canvas_size: tuple[int, int] = (
+            int(preview_fusion_config.canvas_width),
+            int(preview_fusion_config.canvas_height),
+        )
         camera_ids = [int(member.camera_id) for member in enabled_members]
         self._synchronizer = FrameSynchronizer(
             self._frame_buffer,
             camera_ids,
             tolerance_ms=runtime_cfg['sync_tolerance_ms'],
         )
-        record_fps = max(1, int(runtime_cfg['record_fps']))
-        self._preview_interval = 1.0 / float(record_fps)
+        raw_fps = float(runtime_cfg['record_fps'])
+        record_fps = raw_fps if raw_fps > 0 else float(settings.RECORD_FPS)
         self._readers = [
             MultiFrameReaderThread(
                 CameraSource(
@@ -111,13 +120,8 @@ class GroupFrameHub:
             )
             for member in enabled_members
         ]
-        self._interval = 1.0 / max(1.0, float(record_fps))
+        self._interval = 1.0 / record_fps
         self._coordinator = threading.Thread(target=self._run_coordinator, daemon=True)
-        self._preview_emitter = threading.Thread(
-            target=self._run_preview_emitter,
-            name='GroupFrameHub-preview',
-            daemon=True,
-        )
 
     @property
     def frame_buffer(self) -> LatestFrameBuffer:
@@ -127,12 +131,13 @@ class GroupFrameHub:
         self,
         fused: Any,
         batch: dict[int, TimedFrame],
+        members_by_camera: dict[int, FusionMember],
     ) -> Any:
         if not self._distribute_per_camera or fused is None or fused.size == 0:
             return fused
         return draw_fused_track_overlay(
             fused,
-            members_by_camera=self._members_by_camera,
+            members_by_camera=members_by_camera,
             batch=batch,
             track_providers=self._track_providers,
         )
@@ -147,17 +152,15 @@ class GroupFrameHub:
         self._track_providers = list(providers)
 
     def is_alive(self) -> bool:
-        return self._coordinator.is_alive() or self._preview_emitter.is_alive()
+        return self._coordinator.is_alive()
 
     def start(self) -> None:
         for reader in self._readers:
             reader.start()
         self._coordinator.start()
-        self._preview_emitter.start()
 
     def join(self, timeout: float | None = None) -> None:
         self._coordinator.join(timeout=timeout)
-        self._preview_emitter.join(timeout=timeout)
         for reader in self._readers:
             reader.join(timeout=timeout)
 
@@ -196,41 +199,44 @@ class GroupFrameHub:
                 fused = self._fuser.fuse(batch)
                 if fused is None or fused.size == 0:
                     continue
-                fused = self._overlay_fused(fused, batch)
+                fused = self._overlay_fused(fused, batch, self._overlay_members_record)
+
+                self._push_dashboard_preview(fused)
+
+                need_tracks = (
+                    self._video_queue is not None or self._on_fused_media_sample is not None
+                )
+                tracks = self._aggregate_confirmed_tracks() if need_tracks else []
+                if self._on_fused_media_sample is not None and fused is not None:
+                    try:
+                        self._on_fused_media_sample(fused, tracks)
+                    except Exception:
+                        _log.exception('on_fused_media_sample failed')
 
                 if self._yolo_frame_queue is not None:
                     put_queue_drop_oldest(self._yolo_frame_queue, fused.copy())
 
                 if self._video_queue is not None:
-                    tracks = self._aggregate_confirmed_tracks()
                     put_queue_drop_oldest(self._video_queue, (fused.copy(), tracks))
         except Exception:
             _log.exception('GroupFrameHub coordinator crashed')
         finally:
             self._stop_event.set()
 
-    def _run_preview_emitter(self) -> None:
-        """Dedicated fused preview for dashboard WS — not blocked by seam-anchor / AI."""
-        next_emit = time.monotonic()
+    def _push_dashboard_preview(self, fused: Any) -> None:
+        """Downscale fused output for WS preview (same pixels as old preview_fuser path, one resize)."""
+        if fused is None or fused.size == 0:
+            return
         try:
-            while not self._stop_event.is_set():
-                now = time.monotonic()
-                if now < next_emit:
-                    time.sleep(min(0.01, next_emit - now))
-                    continue
-                next_emit = now + self._preview_interval
-
-                batch = self._synchronizer.next_batch()
-                if not batch:
-                    continue
-
-                fused = self._preview_fuser.fuse(batch)
-                if fused is None or fused.size == 0:
-                    continue
-                fused = self._overlay_fused(fused, batch)
+            pw, ph = self._preview_canvas_size
+            h, w = fused.shape[:2]
+            if w == pw and h == ph:
                 pipeline_preview.push_bgr_frame(fused)
+            else:
+                small = cv2.resize(fused, (pw, ph), interpolation=cv2.INTER_AREA)
+                pipeline_preview.push_bgr_frame(small)
         except Exception:
-            _log.exception('GroupFrameHub preview emitter crashed')
+            _log.exception('pipeline_preview.push_bgr_frame failed')
 
     def _update_seam_anchor(self, batch: dict[int, Any]) -> None:
         if self._bg_registry is None and self._seam_anchor_verifier is None:

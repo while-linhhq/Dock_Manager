@@ -43,6 +43,9 @@ def main() -> None:
             port=port,
             reload=reload,
             timeout_graceful_shutdown=graceful,
+            # App-level 'ka' keepalive; disable uvicorn ping to avoid concurrent drain races.
+            ws_ping_interval=None,
+            ws_ping_timeout=None,
         )
     except TypeError:
         # uvicorn < 0.29: không có timeout_graceful_shutdown

@@ -15,11 +15,22 @@ import { RevenueMainTabs, type RevenueMainTab } from '../components/RevenueMainT
 import { RevenueInvoiceSection } from '../components/RevenueInvoiceSection';
 import { RevenueFeesSection } from '../components/RevenueFeesSection';
 import { RevenueModals } from '../components/RevenueModals';
+import { SepayPaymentModal } from '../components/SepayPaymentModal';
+import {
+  PaymentMethodChoiceModal,
+  type PaymentMethodChoice,
+} from '../components/PaymentMethodChoiceModal';
+import type { InvoiceRead } from '../../../types/api.types';
 
 export const RevenueView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<RevenueMainTab>('invoices');
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isPaymentChoiceModalOpen, setIsPaymentChoiceModalOpen] = useState(false);
+  const [isSepayPaymentModalOpen, setIsSepayPaymentModalOpen] = useState(false);
+  const [pendingPaymentInvoice, setPendingPaymentInvoice] = useState<InvoiceRead | null>(null);
+  const [paymentModalTitle, setPaymentModalTitle] = useState('Ghi Nhận Thanh Toán');
+  const [lockPaymentMethod, setLockPaymentMethod] = useState<'cash' | undefined>(undefined);
   const [isFeeModalOpen, setIsFeeModalOpen] = useState(false);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | number | null>(null);
   const [editingFeeId, setEditingFeeId] = useState<string | number | null>(null);
@@ -74,6 +85,8 @@ export const RevenueView: React.FC = () => {
       vessel_type_id: '',
       unit: 'per_month',
       base_fee: 0,
+      berth_limit_count: undefined,
+      berth_limit_unit: undefined,
     },
   });
 
@@ -273,18 +286,29 @@ export const RevenueView: React.FC = () => {
 
   const onFeeSubmit = async (data: FeeFormValues) => {
     try {
+      const hasBerthLimit =
+        data.berth_limit_count != null &&
+        Number.isFinite(data.berth_limit_count) &&
+        data.berth_limit_count > 0 &&
+        data.berth_limit_unit;
+
       const payload: FeeConfigCreate = {
         fee_name: data.fee_name,
         base_fee: data.unit === 'none' ? 0 : data.base_fee,
         unit: data.unit,
         is_active: data.is_active,
         vessel_type_id: data.vessel_type_id ? Number(data.vessel_type_id) : undefined,
+        berth_limit_count: hasBerthLimit ? data.berth_limit_count : null,
+        berth_limit_unit: hasBerthLimit ? data.berth_limit_unit : null,
       };
       await upsertFeeConfig(editingFeeId, payload);
       setIsFeeModalOpen(false);
       feeForm.reset();
       setEditingFeeId(null);
-    } catch (err) {
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : 'Lưu cấu hình phí thất bại. Thử lại sau.';
+      window.alert(msg);
       console.error(err);
     }
   };
@@ -297,6 +321,14 @@ export const RevenueView: React.FC = () => {
       unit: normalizeFeeBillingUnit(fee.unit),
       base_fee: Number(fee.base_fee),
       is_active: fee.is_active,
+      berth_limit_count:
+        fee.berth_limit_count != null && fee.berth_limit_count > 0
+          ? fee.berth_limit_count
+          : undefined,
+      berth_limit_unit:
+        fee.berth_limit_unit === 'day' || fee.berth_limit_unit === 'month'
+          ? fee.berth_limit_unit
+          : undefined,
     });
     setIsFeeModalOpen(true);
   };
@@ -319,6 +351,8 @@ export const RevenueView: React.FC = () => {
           vessel_type_id: '',
           unit: 'per_month',
           base_fee: 0,
+          berth_limit_count: undefined,
+          berth_limit_unit: undefined,
         });
       }
       await deleteFeeConfig(fee.id);
@@ -335,6 +369,8 @@ export const RevenueView: React.FC = () => {
       vessel_type_id: '',
       unit: 'per_month',
       base_fee: 0,
+      berth_limit_count: undefined,
+      berth_limit_unit: undefined,
     });
     setIsFeeModalOpen(true);
   };
@@ -373,9 +409,8 @@ export const RevenueView: React.FC = () => {
           vesselTypes={filterVesselTypes}
           onOpenCreateInvoice={() => setIsInvoiceModalOpen(true)}
           onOpenPayment={(inv) => {
-            setSelectedInvoiceId(inv.id);
-            paymentForm.reset({ amount: Number(inv.total_amount) });
-            setIsPaymentModalOpen(true);
+            setPendingPaymentInvoice(inv);
+            setIsPaymentChoiceModalOpen(true);
           }}
           onDeleteInvoice={handleDeleteInvoice}
         />
@@ -403,6 +438,45 @@ export const RevenueView: React.FC = () => {
         />
       )}
 
+      <PaymentMethodChoiceModal
+        isOpen={isPaymentChoiceModalOpen}
+        onClose={() => {
+          setIsPaymentChoiceModalOpen(false);
+          setPendingPaymentInvoice(null);
+        }}
+        invoice={pendingPaymentInvoice}
+        onSelect={(method: PaymentMethodChoice) => {
+          if (!pendingPaymentInvoice) {
+            return;
+          }
+          setIsPaymentChoiceModalOpen(false);
+          if (method === 'transfer') {
+            setIsSepayPaymentModalOpen(true);
+            return;
+          }
+          setSelectedInvoiceId(pendingPaymentInvoice.id);
+          setPaymentModalTitle('Thanh Toán Tiền Mặt');
+          setLockPaymentMethod('cash');
+          paymentForm.reset({
+            amount: Number(pendingPaymentInvoice.total_amount),
+            payment_method: 'cash',
+          });
+          setIsPaymentModalOpen(true);
+        }}
+      />
+
+      <SepayPaymentModal
+        isOpen={isSepayPaymentModalOpen}
+        onClose={() => {
+          setIsSepayPaymentModalOpen(false);
+          setPendingPaymentInvoice(null);
+        }}
+        invoice={pendingPaymentInvoice}
+        onPaid={() => {
+          void fetchInvoices();
+        }}
+      />
+
       <RevenueModals
         isInvoiceModalOpen={isInvoiceModalOpen}
         onCloseInvoice={() => setIsInvoiceModalOpen(false)}
@@ -410,9 +484,16 @@ export const RevenueView: React.FC = () => {
         onInvoiceSubmit={onInvoiceSubmit}
         orders={orders}
         isPaymentModalOpen={isPaymentModalOpen}
-        onClosePayment={() => setIsPaymentModalOpen(false)}
+        onClosePayment={() => {
+          setIsPaymentModalOpen(false);
+          setLockPaymentMethod(undefined);
+          setPaymentModalTitle('Ghi Nhận Thanh Toán');
+          setPendingPaymentInvoice(null);
+        }}
         paymentForm={paymentForm}
         onPaymentSubmit={onPaymentSubmit}
+        paymentModalTitle={paymentModalTitle}
+        lockPaymentMethod={lockPaymentMethod}
         isFeeModalOpen={isFeeModalOpen}
         onCloseFee={() => setIsFeeModalOpen(false)}
         feeForm={feeForm}

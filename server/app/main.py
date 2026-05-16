@@ -61,6 +61,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception('Schema patches failed — fix DB or run app/db/add_invoice_deleted_at.sql')
         raise
+    from app.services.storage.minio_probe import log_minio_probe_at_startup
+
+    log_minio_probe_at_startup()
     yield
     from app.services.pipeline_service import pipeline_service
 

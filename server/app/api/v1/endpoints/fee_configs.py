@@ -32,7 +32,7 @@ def create_fee_config(data: FeeConfigCreate, db: Session = Depends(get_db), _=De
 
 @router.put('/{fee_id}', response_model=FeeConfigRead)
 def update_fee_config(fee_id: int, data: FeeConfigUpdate, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    updated = fee_config_repo.update(db, fee_id, data.model_dump(exclude_none=True))
+    updated = fee_config_repo.update(db, fee_id, data.model_dump(exclude_unset=True))
     if not updated:
         raise HTTPException(status_code=404, detail='Fee config not found')
     return updated

@@ -7,8 +7,10 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 FeeBillingUnitLiteral = Literal['per_hour', 'per_month', 'per_year', 'none']
+BerthLimitUnitLiteral = Literal['day', 'month']
 
 _ALLOWED_UNITS = frozenset({'per_hour', 'per_month', 'per_year', 'none'})
+_ALLOWED_BERTH_UNITS = frozenset({'day', 'month'})
 
 
 def normalize_stored_fee_unit(value: Optional[str]) -> str:
@@ -35,6 +37,8 @@ class FeeConfigBase(BaseModel):
     is_active: bool = True
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
+    berth_limit_count: Optional[int] = None
+    berth_limit_unit: Optional[BerthLimitUnitLiteral] = None
 
 
 class FeeConfigCreate(FeeConfigBase):
@@ -46,6 +50,16 @@ class FeeConfigCreate(FeeConfigBase):
             object.__setattr__(self, 'base_fee', Decimal('0'))
         return self
 
+    @model_validator(mode='after')
+    def berth_limit_fields_paired(self):
+        count = self.berth_limit_count
+        unit = self.berth_limit_unit
+        if count is None and unit is None:
+            return self
+        if count is not None and count > 0 and unit in _ALLOWED_BERTH_UNITS:
+            return self
+        raise ValueError('berth_limit_count must be > 0 when berth_limit_unit is set')
+
 
 class FeeConfigUpdate(BaseModel):
     fee_name: Optional[str] = None
@@ -54,12 +68,24 @@ class FeeConfigUpdate(BaseModel):
     is_active: Optional[bool] = None
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
+    berth_limit_count: Optional[int] = None
+    berth_limit_unit: Optional[BerthLimitUnitLiteral] = None
 
     @model_validator(mode='after')
     def none_unit_zeroes_fee(self):
         if self.unit == 'none':
             object.__setattr__(self, 'base_fee', Decimal('0'))
         return self
+
+    @model_validator(mode='after')
+    def berth_limit_fields_paired(self):
+        count = self.berth_limit_count
+        unit = self.berth_limit_unit
+        if count is None and unit is None:
+            return self
+        if count is not None and count > 0 and unit in _ALLOWED_BERTH_UNITS:
+            return self
+        raise ValueError('berth_limit_count must be > 0 when berth_limit_unit is set')
 
 
 class FeeConfigRead(FeeConfigBase):

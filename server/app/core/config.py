@@ -8,10 +8,10 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
-    # MinIO (Object Storage) for detection media
-    MINIO_ENDPOINT: str = "127.0.0.1:9000"
-    MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
+    # MinIO (Object Storage) for detection media — API :9100, Console UI :9101 (docker-compose)
+    MINIO_ENDPOINT: str = "127.0.0.1:9100"
+    MINIO_ACCESS_KEY: str = "minio"
+    MINIO_SECRET_KEY: str = "minio123456"
     MINIO_BUCKET: str = "media"
     MINIO_SECURE: bool = False
     MINIO_MEDIA_PREFIX: str = ""  # optional prefix inside bucket, e.g. "prod"
@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     ANCHOR_DB_UPDATE_DEBOUNCE_SEC: float = 30.0
     ANCHOR_MIN_STATIONARY_SEC: float = 8.0
     ANCHOR_COLOR_HSV_TOLERANCE_H: int = 15
+
+    # SEPay (bank transfer QR + webhook)
+    SEPAY_WEBHOOK_SECRET: str = ''
+    SEPAY_BANK_ACCOUNT: str = ''
+    SEPAY_BANK_NAME: str = ''
+    SEPAY_ACCOUNT_NAME: str = ''
+    # Public API origin for SEPay webhook URL (e.g. https://api.example.com). Overrides request base when set.
+    SEPAY_PUBLIC_API_BASE_URL: str = ''
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'

@@ -133,6 +133,7 @@ class InvoiceRead(InvoiceBase):
     detection_confidence_avg: Optional[Decimal] = None
     berth_duration_hours: Optional[Decimal] = None
     berth_duration_seconds: Optional[int] = None
+    is_over_berth_limit: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

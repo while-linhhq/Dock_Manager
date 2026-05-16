@@ -172,6 +172,7 @@ class OcrWorkerThread(threading.Thread):
         save_ocr_audit_frames: bool = True,
         ocr_miss_save_interval: float | None = None,
         on_image_captured: Callable[[str | None, str, object, str, bool], None] | None = None,
+        on_ocr_track_media: Callable[[str, object, float, str, int | None], None] | None = None,
         on_ocr_result: Callable[[str, str, float], None] | None = None,
     ):
         super().__init__(daemon=True)
@@ -194,6 +195,7 @@ class OcrWorkerThread(threading.Thread):
         self._runs_base = runs_base
         self.save_ocr_audit_frames = save_ocr_audit_frames
         self._on_image_captured = on_image_captured
+        self._on_ocr_track_media = on_ocr_track_media
         self._on_ocr_result = on_ocr_result
         self._last_cap_save_ts: dict[str, float] = {}
         self._last_noocr_cap_save_ts: dict[str, float] = {}
@@ -304,44 +306,60 @@ class OcrWorkerThread(threading.Thread):
                             if self.confirmed_save_interval <= 0 or (
                                 time.monotonic() - last_ts
                             ) >= self.confirmed_save_interval:
+                                if self._on_ocr_track_media is not None:
+                                    try:
+                                        self._on_ocr_track_media(
+                                            track_id_str,
+                                            frame,
+                                            conf,
+                                            sid,
+                                            job_camera_id,
+                                        )
+                                    except Exception:
+                                        logger.exception(
+                                            'on_ocr_track_media failed for track_id=%s',
+                                            track_id_str,
+                                        )
+                                elif self._on_image_captured is not None:
+                                    save_prefix = timestamp_prefix()
+                                    self._capture_image(
+                                        track_id_str,
+                                        'image',
+                                        frame,
+                                        f"{save_prefix}_{track_id_str}_frame.jpg",
+                                        True,
+                                    )
+                                    self._capture_image(
+                                        track_id_str,
+                                        'crop',
+                                        crop,
+                                        f"{save_prefix}_{track_id_str}_boat.jpg",
+                                        False,
+                                    )
+                                self._last_cap_save_ts[track_id_str] = time.monotonic()
+
+                    elif crop.size > 0 and state == TrackState.CONFIRMED:
+                        if self._on_ocr_track_media is None:
+                            last_miss = self._last_noocr_cap_save_ts.get(track_id_str, 0.0)
+                            if self.ocr_miss_save_interval <= 0 or (
+                                time.monotonic() - last_miss
+                            ) >= self.ocr_miss_save_interval:
                                 save_prefix = timestamp_prefix()
                                 self._capture_image(
                                     track_id_str,
                                     'image',
                                     frame,
-                                    f"{save_prefix}_{track_id_str}_frame.jpg",
+                                    f"{save_prefix}_{track_id_str}_noocr_frame.jpg",
                                     True,
                                 )
                                 self._capture_image(
                                     track_id_str,
                                     'crop',
                                     crop,
-                                    f"{save_prefix}_{track_id_str}_boat.jpg",
+                                    f"{save_prefix}_{track_id_str}_noocr_boat.jpg",
                                     False,
                                 )
-                                self._last_cap_save_ts[track_id_str] = time.monotonic()
-
-                    elif crop.size > 0 and state == TrackState.CONFIRMED:
-                        last_miss = self._last_noocr_cap_save_ts.get(track_id_str, 0.0)
-                        if self.ocr_miss_save_interval <= 0 or (
-                            time.monotonic() - last_miss
-                        ) >= self.ocr_miss_save_interval:
-                            save_prefix = timestamp_prefix()
-                            self._capture_image(
-                                track_id_str,
-                                'image',
-                                frame,
-                                f"{save_prefix}_{track_id_str}_noocr_frame.jpg",
-                                True,
-                            )
-                            self._capture_image(
-                                track_id_str,
-                                'crop',
-                                crop,
-                                f"{save_prefix}_{track_id_str}_noocr_boat.jpg",
-                                False,
-                            )
-                            self._last_noocr_cap_save_ts[track_id_str] = time.monotonic()
+                                self._last_noocr_cap_save_ts[track_id_str] = time.monotonic()
 
                 with self._ocr_lock:
                     for ck, entry in updates:

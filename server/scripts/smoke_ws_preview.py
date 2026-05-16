@@ -48,6 +48,8 @@ async def smoke_ws(token: str) -> None:
       open_timeout=8,
       close_timeout=2,
       max_size=5_000_000,
+      ping_interval=None,
+      ping_timeout=None,
     ) as ws:
       print('ws_open', True)
       first = None

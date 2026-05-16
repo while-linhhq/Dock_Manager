@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { CheckCircle2, Eye, Loader2, RefreshCw, Trash2, X, XCircle } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
+import { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
@@ -290,7 +291,10 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                       })()}
                     </td>
                     <td className={cn(dt.pad, dt.body, 'font-bold uppercase')}>
-                      {getDetectionShipLabel(det)}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>{getDetectionShipLabel(det)}</span>
+                        {det.is_over_berth_limit ? <OverBerthLimitBadge /> : null}
+                      </div>
                     </td>
                     <td className={cn(dt.pad, dt.mono, 'text-blue-600 dark:text-blue-400')}>
                       {(((det.confidence ?? 0) as number) * 100).toFixed(1)}%

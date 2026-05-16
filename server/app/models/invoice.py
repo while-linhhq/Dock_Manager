@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -22,6 +22,7 @@ class Invoice(Base):
     notes = Column(Text, nullable=True)
     # USER = tạo tay; ORDER_AUTO = sinh khi tạo đơn; AI = pipeline tự động
     creation_source = Column(String(20), nullable=False, default='USER', server_default='USER')
+    is_over_berth_limit = Column(Boolean, nullable=False, default=False, server_default='false')
     created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

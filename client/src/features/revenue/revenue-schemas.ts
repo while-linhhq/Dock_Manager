@@ -23,12 +23,50 @@ export const paymentSchema = z.object({
 
 const feeUnitEnum = z.enum(FEE_BILLING_UNITS);
 
-export const feeSchema = z.object({
-  fee_name: z.string().min(1, 'Tên phí là bắt buộc'),
-  vessel_type_id: z.string().optional(),
-  unit: feeUnitEnum,
-  base_fee: z.number().min(0, 'Mức phí không được âm'),
-  is_active: z.boolean(),
-});
+const berthLimitUnitEnum = z.enum(['day', 'month']);
+
+const optionalBerthLimitCount = z.preprocess((value) => {
+  if (value === '' || value == null) {
+    return undefined;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}, z.number().int().min(1).optional());
+
+const optionalBerthLimitUnit = z.preprocess((value) => {
+  if (value === '' || value == null) {
+    return undefined;
+  }
+  return value;
+}, berthLimitUnitEnum.optional());
+
+export const feeSchema = z
+  .object({
+    fee_name: z.string().min(1, 'Tên phí là bắt buộc'),
+    vessel_type_id: z.string().optional(),
+    unit: feeUnitEnum,
+    base_fee: z.number().min(0, 'Mức phí không được âm'),
+    is_active: z.boolean(),
+    berth_limit_count: optionalBerthLimitCount,
+    berth_limit_unit: optionalBerthLimitUnit,
+  })
+  .superRefine((data, ctx) => {
+    const count = Number.isFinite(data.berth_limit_count) ? data.berth_limit_count : undefined;
+    const unit = data.berth_limit_unit;
+    if (count != null && !unit) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Chọn đơn vị giới hạn (ngày hoặc tháng)',
+        path: ['berth_limit_unit'],
+      });
+    }
+    if (unit && count == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Nhập số lượng giới hạn neo đậu',
+        path: ['berth_limit_count'],
+      });
+    }
+  });
 
 export type FeeFormValues = z.infer<typeof feeSchema>;

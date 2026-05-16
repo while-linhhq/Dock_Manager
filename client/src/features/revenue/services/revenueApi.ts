@@ -25,6 +25,8 @@ export type FeeConfigCreate = {
   is_active?: boolean;
   effective_from?: string | null;
   effective_to?: string | null;
+  berth_limit_count?: number | null;
+  berth_limit_unit?: 'day' | 'month' | null;
 }
 
 export type FeeConfigUpdatePayload = {
@@ -34,7 +36,21 @@ export type FeeConfigUpdatePayload = {
   is_active?: boolean;
   effective_from?: string | null;
   effective_to?: string | null;
+  berth_limit_count?: number | null;
+  berth_limit_unit?: 'day' | 'month' | null;
 }
+
+export type SepayBankInfo = {
+  bank_account: string;
+  bank_name: string;
+  account_name: string;
+  webhook_url?: string;
+};
+
+export type InvoicePaymentStatus = {
+  payment_status: string;
+  paid_at?: string | null;
+};
 
 export type InvoiceListParams = {
   skip?: number;
@@ -73,6 +89,12 @@ export const revenueApi = {
   },
   getInvoice: async (id: string): Promise<InvoiceRead> => {
     return httpClient.get<InvoiceRead>(`/invoices/${id}`);
+  },
+  getSepayBankInfo: async (): Promise<SepayBankInfo> => {
+    return httpClient.get<SepayBankInfo>('/sepay/bank-info');
+  },
+  getInvoicePaymentStatus: async (invoiceId: string | number): Promise<InvoicePaymentStatus> => {
+    return httpClient.get<InvoicePaymentStatus>(`/invoices/${invoiceId}/payment-status`);
   },
   createInvoice: async (data: InvoiceCreate): Promise<InvoiceRead> => {
     return httpClient.post<InvoiceRead>('/invoices/', {

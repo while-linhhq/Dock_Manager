@@ -62,6 +62,7 @@ export type DetectionRead = {
   created_at: string;
   confidence?: number | null;
   is_accepted?: boolean | null;
+  is_over_berth_limit?: boolean;
   ocr_results?: Array<Record<string, unknown>> | null;
   vessel?: VesselRead;
 }
@@ -118,6 +119,7 @@ export type InvoiceRead = {
   detection_confidence_avg?: number | string | null;
   berth_duration_hours?: number | string | null;
   berth_duration_seconds?: number | null;
+  is_over_berth_limit?: boolean;
 };
 
 export type FeeConfigRead = {
@@ -129,6 +131,8 @@ export type FeeConfigRead = {
   is_active: boolean;
   effective_from?: string | null;
   effective_to?: string | null;
+  berth_limit_count?: number | null;
+  berth_limit_unit?: 'day' | 'month' | null;
   created_at: string;
   updated_at: string;
   vessel_type?: VesselTypeRead;

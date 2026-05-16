@@ -118,7 +118,12 @@ def _run_seed_data() -> None:
         ('anchor_max_duration_sec',        '172800',     'Tối đa giữ anchor (giây) để tránh kẹt vô hạn'),
         ('anchor_db_update_debounce_sec',  '30.0',       'Debounce ghi last_seen vào DB cho anchor (giây)'),
         ('anchor_min_stationary_sec',        '8.0',        'Thời gian tàu STATIC tối thiểu trước khi được anchor'),
-        ('anchor_color_hsv_tolerance_h',   '15',         'Dung sai Hue (độ) khi so màu re-validate anchor')
+        ('anchor_color_hsv_tolerance_h',   '15',         'Dung sai Hue (độ) khi so màu re-validate anchor'),
+        ('sepay_webhook_secret',           '',           'Secret HMAC-SHA256 khi tạo webhook trên my.sepay.vn'),
+        ('sepay_public_api_base_url',      '',           'URL gốc API backend công khai cho webhook SEPay'),
+        ('sepay_bank_account',             '',           'Số tài khoản nhận chuyển khoản (hiển thị QR)'),
+        ('sepay_bank_name',                '',           'Tên ngân hàng (VD: Vietcombank, BIDV)'),
+        ('sepay_account_name',             '',           'Tên chủ tài khoản')
     ON CONFLICT (key) DO NOTHING;
     """
     with engine.connect() as conn:

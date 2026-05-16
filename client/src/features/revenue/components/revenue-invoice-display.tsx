@@ -3,6 +3,8 @@ import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import type { InvoiceRead } from '../../../types/api.types';
 
+export { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
+
 export function normInvoicePaymentStatus(
   status: string,
 ): 'paid' | 'partial' | 'unpaid' | 'overdue' | 'cancelled' {

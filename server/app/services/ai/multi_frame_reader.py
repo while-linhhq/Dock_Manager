@@ -98,6 +98,9 @@ class MultiFrameReaderThread(threading.Thread):
 
                 now = time.monotonic()
                 if self._target_interval is not None and now < next_emit:
+                    slack = next_emit - now
+                    if slack > 0:
+                        time.sleep(min(slack, 0.02))
                     continue
                 if self._target_interval is not None:
                     next_emit = now + self._target_interval

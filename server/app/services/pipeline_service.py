@@ -12,17 +12,25 @@ import cv2
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.db.session import SessionLocal
+from app.models.detection import Detection
 from app.models.detection_media import DetectionMedia
 from app.repositories import vessel_repo, detection_repo, order_repo, port_log_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.repositories.port_config_repository import port_config_repo
 from app.schemas import VesselCreate, DetectionCreate, PortLogCreate
 from app.core.config import settings
-from app.services.storage.minio_service import put_bytes, put_file
+from app.services.storage.minio_layout import final_image_key, final_video_key, staging_video_key
+from app.services.storage.minio_service import (
+    copy_object_same_bucket,
+    parse_minio_uri,
+    put_bytes,
+    put_file,
+    remove_object,
+)
 
 from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
 from app.services.ai.background_model import BackgroundModelConfig, BackgroundModelRegistry
-from app.services.ai.boat_tracker import BoatTracker
+from app.services.ai.boat_tracker import BoatTracker, TrackState
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
@@ -31,6 +39,8 @@ from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
 from app.services.ai.seam_anchor_verifier import SeamAnchorConfig, SeamAnchorVerifier
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
+from app.services.ai.track_media_collector import TrackMediaCollector
+from app.services.ai.track_video_registry import RecordedVideo, TrackVideoRegistry
 from app.services.ai.video_recorder import VideoRecorderThread
 from app.utils.ai.gpu_probe import log_gpu_runtime_status
 from app.utils.ai.yolo_detector import load_yolo_detector
@@ -41,7 +51,8 @@ init_windows_cuda_path("pre")
 
 _log = logging.getLogger("app.services.pipeline")
 
-MediaInfo = dict[str, Any]
+# Resolve runtime temp paths regardless of process cwd (upload / VideoWriter must agree).
+_SERVER_ROOT = Path(__file__).resolve().parents[2]
 
 def _guess_content_type(p: Path) -> str:
     ct, _ = mimetypes.guess_type(str(p))
@@ -62,7 +73,7 @@ def _upload_file_to_minio(*, local_path: str, object_key: str) -> str:
     """
     Upload a local runtime file to MinIO and return minio:// URI.
     """
-    p = Path(str(local_path))
+    p = Path(str(local_path)).resolve()
     if not p.exists():
         raise FileNotFoundError(str(p))
     bucket = str(getattr(settings, 'MINIO_BUCKET', '') or '').strip() or 'media'
@@ -94,18 +105,22 @@ class PipelineService:
         self._yolo_worker: YoloWorkerThread | None = None
         self._ocr_worker: OcrWorkerThread | None = None
         self._video_worker: VideoRecorderThread | None = None
+        self._single_video_worker: VideoRecorderThread | None = None
         self._per_camera_pipelines: list[PerCameraPipeline] = []
         self._reid_manager: CrossCameraReIdManager | None = None
         self._frame_queue: queue.Queue = queue.Queue(maxsize=5)
         self._result_queue: queue.Queue = queue.Queue(maxsize=10)
         self._ocr_queue: queue.Queue = queue.Queue(maxsize=10)
         self._video_queue: queue.Queue = queue.Queue(maxsize=30)
+        self._single_video_queue: queue.Queue = queue.Queue(maxsize=30)
         self.ocr_cache: dict[str, Any] = {}
         self.ocr_lock = threading.Lock()
-        self._runtime_media_base = Path('app/data-docker/runtime-media')
-        self._track_snapshot_media: dict[str, MediaInfo] = {}
-        self._video_media: list[MediaInfo] = []
-        self._media_lock = threading.Lock()
+        self._runtime_media_base = _SERVER_ROOT / 'app' / 'data-docker' / 'runtime-media'
+        self._media_collector = TrackMediaCollector()
+        self._video_registry = TrackVideoRegistry()
+        self._latest_fused_lock = threading.Lock()
+        self._latest_fused_bgr: Any = None
+        self._primary_record_camera_id: int | None = None
         self._detector: Any = None
         self._detector_lock = threading.Lock()
         self._detector_signature: tuple[str, str, float] | None = None
@@ -118,7 +133,7 @@ class PipelineService:
 
     @staticmethod
     def _configure_dashboard_preview(runtime_cfg: dict[str, Any]) -> None:
-        pipeline_preview.set_target_fps(max(1, int(runtime_cfg['record_fps'])))
+        pipeline_preview.set_target_fps(float(runtime_cfg['record_fps']))
         pipeline_preview.set_max_width(int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)))
 
     def _reset_runtime_queues(self) -> None:
@@ -126,6 +141,8 @@ class PipelineService:
         self._result_queue = queue.Queue(maxsize=10)
         self._ocr_queue = queue.Queue(maxsize=10)
         self._video_queue = queue.Queue(maxsize=30)
+        self._single_video_queue = queue.Queue(maxsize=30)
+        self._video_registry.clear()
 
     @staticmethod
     def _to_bool(raw: str, default: bool) -> bool:
@@ -227,7 +244,11 @@ class PipelineService:
                 1,
                 self._to_int(cfg_map.get('record_no_boat_gap_sec', ''), int(settings.RECORD_NO_BOAT_GAP_SEC)),
             ),
-            'record_fps': max(1, self._to_int(cfg_map.get('record_fps', ''), int(settings.RECORD_FPS))),
+            'record_fps': (
+                float(rf)
+                if (rf := self._to_float(cfg_map.get('record_fps', ''), float(settings.RECORD_FPS))) > 0
+                else float(settings.RECORD_FPS)
+            ),
             'sync_tolerance_ms': max(
                 0,
                 self._to_int(cfg_map.get('sync_tolerance_ms', ''), 400),
@@ -370,6 +391,128 @@ class PipelineService:
         timed = snapshot.get(int(camera_id))
         return timed.frame if timed is not None else None
 
+    @staticmethod
+    def _utc_staging_day() -> str:
+        return datetime.datetime.now(datetime.timezone.utc).strftime('%d-%m-%Y')
+
+    def _lookup_track_ids(self, track_id: str) -> list[str]:
+        if self._reid_manager is not None:
+            return self._reid_manager.resolve_lookup_track_ids(str(track_id))
+        return [str(track_id)]
+
+    def _recording_fused_media_sample(self, fused: Any, tracks: list[Any]) -> None:
+        if fused is None or getattr(fused, 'size', 0) == 0:
+            return
+        with self._latest_fused_lock:
+            self._latest_fused_bgr = fused.copy()
+        for t in tracks:
+            if getattr(t, 'state', None) != TrackState.CONFIRMED:
+                continue
+            tid = str(t.track_id)
+            conf = float(t.conf)
+            self._media_collector.update_fused_detection(tid, conf, fused)
+            cam = int(getattr(t, 'camera_id', None) or 0)
+            self._media_collector.update_single_detection(tid, conf, cam, fused)
+
+    def _recording_single_media_sample(
+        self,
+        camera_id: int,
+        overlay: Any,
+        tracks: list[Any],
+    ) -> None:
+        for t in tracks:
+            if getattr(t, 'state', None) != TrackState.CONFIRMED:
+                continue
+            self._media_collector.update_single_detection(
+                str(t.track_id),
+                float(t.conf),
+                int(camera_id),
+                overlay,
+            )
+
+    def _recording_yolo_single_overlay(self, overlay: Any, tracks: list[Any]) -> None:
+        if overlay is None or getattr(overlay, 'size', 0) == 0:
+            return
+        with self._latest_fused_lock:
+            self._latest_fused_bgr = overlay.copy()
+        for t in tracks:
+            if getattr(t, 'state', None) != TrackState.CONFIRMED:
+                continue
+            tid = str(t.track_id)
+            conf = float(t.conf)
+            cam = int(t.camera_id) if getattr(t, 'camera_id', None) is not None else 0
+            self._media_collector.update_fused_detection(tid, conf, overlay)
+            self._media_collector.update_single_detection(tid, conf, cam, overlay)
+
+    def _on_ocr_track_media(
+        self,
+        track_id: str,
+        frame: Any,
+        ocr_conf: float,
+        ship_id: str,
+        camera_id: int | None,
+    ) -> None:
+        fused = None
+        with self._latest_fused_lock:
+            if self._latest_fused_bgr is not None:
+                fused = self._latest_fused_bgr.copy()
+        self._media_collector.update_ocr(
+            track_id,
+            ocr_conf,
+            ship_id,
+            frame,
+            fused if fused is not None else frame,
+            camera_id,
+        )
+
+    def _promote_staging_video(
+        self,
+        src_uri: str,
+        day_key: str,
+        detection_id: int,
+        dest_fname: str | None = None,
+    ) -> str:
+        """
+        Copy staging object → detections/{day}/{id}/videos/{dest_fname} then remove staging.
+        dest_fname lets callers inject track_id into the final filename.
+        On failure returns src_uri (staging kept for retry/debug).
+        """
+        ref = parse_minio_uri(src_uri)
+        if ref is None:
+            return src_uri
+        fname = dest_fname or ref.object_key.rsplit('/', 1)[-1]
+        dest_key = final_video_key(day_key, int(detection_id), fname)
+        if ref.object_key == dest_key:
+            return src_uri
+        if 'detections/staging/' not in ref.object_key:
+            try:
+                copy_object_same_bucket(
+                    bucket=ref.bucket,
+                    src_key=ref.object_key,
+                    dest_key=dest_key,
+                )
+                _log.info('Copied finalized video → %s', dest_key)
+                return f'minio://{ref.bucket}/{dest_key}'
+            except Exception:
+                _log.exception('Failed to copy finalized video to detection layout')
+                return src_uri
+        try:
+            copy_object_same_bucket(
+                bucket=ref.bucket,
+                src_key=ref.object_key,
+                dest_key=dest_key,
+            )
+            remove_object(bucket=ref.bucket, object_key=ref.object_key)
+            _log.info(
+                'MinIO promoted video s3://%s/%s (staging removed)',
+                ref.bucket,
+                dest_key,
+            )
+            return f'minio://{ref.bucket}/{dest_key}'
+        except Exception:
+            _log.exception('Failed to promote staging video to detection layout')
+            return src_uri
+
     def _upload_captured_image(
         self,
         track_id: str | None,
@@ -378,75 +521,253 @@ class PipelineService:
         filename: str,
         remember_for_detection: bool,
     ) -> None:
-        ok, encoded = cv2.imencode('.jpg', image_bgr)
-        if not ok:
-            _log.warning('Failed to encode captured %s image for track_id=%s', media_type, track_id)
-            return
+        """
+        Legacy OCR capture hook. Final images use TrackMediaCollector →
+        detections/{DD-MM-YYYY}/{detection_id}/images/ on persist (no staging OCR tree).
+        """
+        _ = (track_id, media_type, image_bgr, filename, remember_for_detection)
+        return
 
-        day = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-        track_segment = _safe_key_segment(track_id or 'untracked')
-        object_key = _make_minio_key(
-            'detections',
-            'staging',
-            day,
-            track_segment,
-            media_type,
-            filename,
-        )
-        try:
-            uri = _upload_bytes_to_minio(
-                data=encoded.tobytes(),
-                object_key=object_key,
-                content_type='image/jpeg',
-            )
-        except Exception:
-            _log.exception('Failed to upload captured %s image to MinIO', media_type)
-            return
-
-        if remember_for_detection and track_id:
-            with self._media_lock:
-                self._track_snapshot_media[str(track_id)] = {
-                    'uri': uri,
-                    'size': int(len(encoded)),
-                    'created_at': time.time(),
-                }
-
-    def _upload_recorded_video(self, local_path: str) -> None:
+    def _upload_recorded_video(
+        self,
+        local_path: str,
+        track_ids: frozenset[str] = frozenset(),
+        started_at: float = 0.0,
+        ended_at: float = 0.0,
+    ) -> None:
         path = Path(local_path)
         if not path.exists():
             return
 
-        day = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
-        object_key = _make_minio_key('detections', 'staging', day, 'videos', path.name)
+        day = self._utc_staging_day()
+        fname = path.name
+        if not fname.startswith('fused_'):
+            fname = f'fused_{fname}'
+        object_key = staging_video_key(day, fname)
+        uploaded = False
+        uri: str | None = None
+        size = 0
         try:
             uri = _upload_file_to_minio(local_path=str(path), object_key=object_key)
             size = path.stat().st_size
-            with self._media_lock:
-                self._video_media.append(
-                    {
-                        'uri': uri,
-                        'size': size,
-                        'created_at': time.time(),
-                    }
-                )
-                self._video_media = self._video_media[-20:]
+            record = RecordedVideo(
+                uri=uri,
+                size=size,
+                created_at=time.time(),
+                started_at=float(started_at) or time.time(),
+                ended_at=float(ended_at) or time.time(),
+                track_ids=track_ids,
+            )
+            self._video_registry.register_fused(record)
+            uploaded = True
+            _log.info(
+                'MinIO staging fused video s3://%s/%s tracks=%s',
+                settings.MINIO_BUCKET,
+                object_key,
+                sorted(track_ids),
+            )
+            self._late_attach_videos(track_ids, record, fused=True)
         except Exception:
             _log.exception('Failed to upload recorded video to MinIO: %s', str(path))
         finally:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                _log.warning('Failed to remove runtime video temp file: %s', str(path))
+            if uploaded:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    _log.warning('Failed to remove runtime video temp file: %s', str(path))
+            else:
+                _log.warning(
+                    'Keeping local recording after failed or skipped MinIO upload: %s',
+                    str(path),
+                )
 
-    def _pop_track_snapshot_media(self, track_id: str) -> MediaInfo | None:
-        with self._media_lock:
-            return self._track_snapshot_media.pop(str(track_id), None)
+    def _upload_recorded_single_video(
+        self,
+        local_path: str,
+        camera_id: int,
+        track_ids: frozenset[str] = frozenset(),
+        started_at: float = 0.0,
+        ended_at: float = 0.0,
+    ) -> None:
+        path = Path(local_path)
+        if not path.exists():
+            return
 
-    def _latest_video_media(self) -> MediaInfo | None:
-        with self._media_lock:
-            if not self._video_media:
-                return None
-            return dict(self._video_media[-1])
+        day = self._utc_staging_day()
+        fname = path.name
+        prefix = f'single_{int(camera_id)}_'
+        if not fname.startswith(prefix):
+            fname = f'{prefix}{fname}'
+        object_key = staging_video_key(day, fname)
+        uploaded = False
+        try:
+            uri = _upload_file_to_minio(local_path=str(path), object_key=object_key)
+            size = path.stat().st_size
+            record = RecordedVideo(
+                uri=uri,
+                size=size,
+                created_at=time.time(),
+                started_at=float(started_at) or time.time(),
+                ended_at=float(ended_at) or time.time(),
+                track_ids=track_ids,
+            )
+            self._video_registry.register_single(record)
+            uploaded = True
+            _log.info(
+                'MinIO staging single video s3://%s/%s tracks=%s',
+                settings.MINIO_BUCKET,
+                object_key,
+                sorted(track_ids),
+            )
+            self._late_attach_videos(track_ids, record, fused=False)
+        except Exception:
+            _log.exception(
+                'Failed to upload single-camera recorded video to MinIO: %s',
+                str(path),
+            )
+        finally:
+            if uploaded:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    _log.warning('Failed to remove runtime single-video temp file: %s', str(path))
+            else:
+                _log.warning(
+                    'Keeping local single-camera recording after failed MinIO upload: %s',
+                    str(path),
+                )
+
+    def _late_attach_videos(
+        self,
+        track_ids: frozenset[str],
+        record: RecordedVideo,
+        *,
+        fused: bool,
+    ) -> None:
+        """If detection was persisted before upload finished, attach video now."""
+        if not track_ids:
+            return
+        db = SessionLocal()
+        try:
+            seen_det: set[int] = set()
+            for tid in track_ids:
+                for lookup_id in self._lookup_track_ids(str(tid)):
+                    det = detection_repo.get_by_track_id(db, lookup_id)
+                    if det is None or det.id in seen_det:
+                        continue
+                    seen_det.add(det.id)
+                    if fused:
+                        if det.video_path:
+                            continue
+                    else:
+                        has_single = (
+                            db.query(DetectionMedia)
+                            .filter(
+                                DetectionMedia.detection_id == det.id,
+                                DetectionMedia.media_type == 'video',
+                                DetectionMedia.file_path.like('%/single_%'),
+                            )
+                            .first()
+                            is not None
+                        )
+                        if has_single:
+                            continue
+                    self._attach_video_to_detection(db, det, record, fused=fused)
+        except Exception:
+            _log.exception('Late video attach failed for tracks=%s', sorted(track_ids))
+        finally:
+            db.close()
+
+    def _attach_video_to_detection(
+        self,
+        db: Session,
+        det: Detection,
+        record: RecordedVideo,
+        *,
+        fused: bool,
+    ) -> None:
+        safe_t = _safe_key_segment(str(det.track_id))
+        start_dt = det.start_time
+        if start_dt is None:
+            return
+        day_bucket = start_dt.strftime('%d-%m-%Y')
+
+        if fused:
+            raw_fname = record.uri.rsplit('/', 1)[-1]
+            ts_part = raw_fname[len('fused_'):] if raw_fname.startswith('fused_') else raw_fname
+            dest_fname = f'fused_{safe_t}_{ts_part}'
+            video_uri = self._promote_staging_video(
+                record.uri,
+                day_bucket,
+                det.id,
+                dest_fname=dest_fname,
+            )
+            exists = (
+                db.query(DetectionMedia)
+                .filter(
+                    DetectionMedia.detection_id == det.id,
+                    DetectionMedia.media_type == 'video',
+                    DetectionMedia.file_path == video_uri,
+                )
+                .first()
+                is not None
+            )
+            if not exists:
+                detection_media_repo.create(
+                    db,
+                    {
+                        'detection_id': det.id,
+                        'media_type': 'video',
+                        'file_path': video_uri,
+                        'file_size': record.size,
+                    },
+                )
+            det_row = db.query(Detection).filter(Detection.id == det.id).first()
+            if det_row is not None and not det_row.video_path:
+                det_row.video_path = video_uri
+                db.add(det_row)
+            db.commit()
+            return
+
+        raw_fname = record.uri.rsplit('/', 1)[-1]
+        if raw_fname.startswith('single_'):
+            parts = raw_fname[len('single_'):]
+            first_under = parts.find('_')
+            if first_under != -1:
+                cam_prefix = parts[:first_under]
+                ts_part = parts[first_under + 1:]
+                dest_fname = f'single_{cam_prefix}_{safe_t}_{ts_part}'
+            else:
+                dest_fname = f'single_{safe_t}_{parts}'
+        else:
+            dest_fname = f'single_{safe_t}_{raw_fname}'
+        single_uri = self._promote_staging_video(
+            record.uri,
+            day_bucket,
+            det.id,
+            dest_fname=dest_fname,
+        )
+        exists_single = (
+            db.query(DetectionMedia)
+            .filter(
+                DetectionMedia.detection_id == det.id,
+                DetectionMedia.media_type == 'video',
+                DetectionMedia.file_path == single_uri,
+            )
+            .first()
+            is not None
+        )
+        if not exists_single:
+            detection_media_repo.create(
+                db,
+                {
+                    'detection_id': det.id,
+                    'media_type': 'video',
+                    'file_path': single_uri,
+                    'file_size': record.size,
+                },
+            )
+        db.commit()
 
     def _persist_track_removed(self, db: Session, tb: Any, hist: list[tuple[str, float]]) -> None:
         """Persist finalized track to DB tables: vessel, detection, and port_log."""
@@ -455,19 +776,30 @@ class PipelineService:
             ship_id = (tb.ship_id or "UNKNOWN").strip().upper()
             start_dt_utc = datetime.datetime.fromtimestamp(tb.first_seen_ts, tz=datetime.timezone.utc)
             end_dt_utc = datetime.datetime.fromtimestamp(tb.last_seen_ts, tz=datetime.timezone.utc)
-            # 1. Tìm hoặc tạo Vessel
+            day_bucket = start_dt_utc.strftime('%d-%m-%Y')
+            safe_t = _safe_key_segment(str(tb.track_id))
+
             vessel = vessel_repo.get_by_ship_id_normalized(db, ship_id)
             if not vessel:
                 vessel = vessel_repo.create(db, VesselCreate(ship_id=ship_id))
             else:
                 vessel_repo.update_last_seen(db, vessel.id)
 
-            snapshot_media = self._pop_track_snapshot_media(str(tb.track_id))
-            video_media = self._latest_video_media()
-            snapshot_uri = snapshot_media['uri'] if snapshot_media else None
-            video_uri = video_media['uri'] if video_media else None
+            lookup_ids = self._lookup_track_ids(str(tb.track_id))
+            snap = self._media_collector.pop_any(lookup_ids)
+            fused_video = self._video_registry.take_for_any_track_ids(
+                lookup_ids,
+                float(tb.first_seen_ts),
+                float(tb.last_seen_ts),
+                fused=True,
+            )
+            single_video = self._video_registry.take_for_any_track_ids(
+                lookup_ids,
+                float(tb.first_seen_ts),
+                float(tb.last_seen_ts),
+                fused=False,
+            )
 
-            # 2. Lưu Detection record
             try:
                 det = detection_repo.create(
                     db,
@@ -476,50 +808,97 @@ class PipelineService:
                         track_id=tb.track_id,
                         start_time=start_dt_utc,
                         end_time=end_dt_utc,
-                        video_path=video_uri,
-                        audit_image_path=snapshot_uri,
+                        video_path=None,
+                        audit_image_path=None,
                         ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
                         confidence=tb.conf,
                     ),
                 )
             except IntegrityError:
-                # Defense-in-depth: if track_id collides (e.g., after restart), reuse the existing detection
                 db.rollback()
                 det = detection_repo.get_by_track_id(db, str(tb.track_id))
                 if det is None:
                     raise
+
             det_id_for_invoice = det.id
-            # 2b. Attach media rows. Prefer MinIO URIs (presigned at read time) for FE playback.
-            if snapshot_uri:
-                file_path = snapshot_uri
-                exists = (
-                    db.query(DetectionMedia)
-                    .filter(
-                        DetectionMedia.detection_id == det.id,
-                        DetectionMedia.media_type == 'image',
-                        DetectionMedia.file_path == file_path,
-                    )
-                    .first()
-                    is not None
+
+            video_uri: str | None = None
+            if fused_video is not None:
+                raw_fname = fused_video.uri.rsplit('/', 1)[-1]
+                ts_part = raw_fname[len('fused_'):] if raw_fname.startswith('fused_') else raw_fname
+                fused_dest = f'fused_{safe_t}_{ts_part}'
+                video_uri = self._promote_staging_video(
+                    fused_video.uri,
+                    day_bucket,
+                    det.id,
+                    dest_fname=fused_dest,
                 )
-                if not exists:
+
+            single_video_uri: str | None = None
+            if single_video is not None:
+                raw_fname = single_video.uri.rsplit('/', 1)[-1]
+                if raw_fname.startswith('single_'):
+                    parts = raw_fname[len('single_'):]
+                    first_under = parts.find('_')
+                    if first_under != -1:
+                        cam_prefix = parts[:first_under]
+                        ts_part = parts[first_under + 1:]
+                        single_dest = f'single_{cam_prefix}_{safe_t}_{ts_part}'
+                    else:
+                        single_dest = f'single_{safe_t}_{parts}'
+                else:
+                    single_dest = f'single_{safe_t}_{raw_fname}'
+                single_video_uri = self._promote_staging_video(
+                    single_video.uri,
+                    day_bucket,
+                    det.id,
+                    dest_fname=single_dest,
+                )
+
+            audit_uri: str | None = None
+            if snap is not None:
+                cam_det = snap.single_best_camera_id if snap.single_best_camera_id is not None else 0
+                cam_ocr = snap.single_best_ocr_camera_id if snap.single_best_ocr_camera_id is not None else 0
+                uploads: list[tuple[bytes | None, str]] = [
+                    (snap.fused_best_detection_jpeg, f'fused_best_detection_{safe_t}.jpg'),
+                    (snap.fused_best_ocr_jpeg, f'fused_best_ocr_{safe_t}.jpg'),
+                    (snap.single_best_detection_jpeg, f'single_best_detection_{cam_det}_{safe_t}.jpg'),
+                    (snap.single_best_ocr_jpeg, f'single_best_ocr_{cam_ocr}_{safe_t}.jpg'),
+                ]
+                for jpeg_bytes, fname in uploads:
+                    if not jpeg_bytes:
+                        continue
+                    object_key = final_image_key(day_bucket, int(det.id), fname)
+                    uri = _upload_bytes_to_minio(
+                        data=jpeg_bytes,
+                        object_key=object_key,
+                        content_type='image/jpeg',
+                    )
+                    _log.info(
+                        'MinIO final image s3://%s/%s detection_id=%s',
+                        settings.MINIO_BUCKET,
+                        object_key,
+                        det.id,
+                    )
+                    if audit_uri is None:
+                        audit_uri = uri
                     detection_media_repo.create(
                         db,
                         {
                             'detection_id': det.id,
                             'media_type': 'image',
-                            'file_path': file_path,
-                            'file_size': snapshot_media.get('size') if snapshot_media else None,
+                            'file_path': uri,
+                            'file_size': len(jpeg_bytes),
                         },
                     )
+
             if video_uri:
-                file_path = video_uri
                 exists = (
                     db.query(DetectionMedia)
                     .filter(
                         DetectionMedia.detection_id == det.id,
                         DetectionMedia.media_type == 'video',
-                        DetectionMedia.file_path == file_path,
+                        DetectionMedia.file_path == video_uri,
                     )
                     .first()
                     is not None
@@ -530,10 +909,39 @@ class PipelineService:
                         {
                             'detection_id': det.id,
                             'media_type': 'video',
-                            'file_path': file_path,
-                            'file_size': video_media.get('size') if video_media else None,
+                            'file_path': video_uri,
+                            'file_size': fused_video.size if fused_video else None,
                         },
                     )
+
+            if single_video_uri:
+                exists_single = (
+                    db.query(DetectionMedia)
+                    .filter(
+                        DetectionMedia.detection_id == det.id,
+                        DetectionMedia.media_type == 'video',
+                        DetectionMedia.file_path == single_video_uri,
+                    )
+                    .first()
+                    is not None
+                )
+                if not exists_single:
+                    detection_media_repo.create(
+                        db,
+                        {
+                            'detection_id': det.id,
+                            'media_type': 'video',
+                            'file_path': single_video_uri,
+                            'file_size': single_video.size if single_video else None,
+                        },
+                    )
+
+            det_row = db.query(Detection).filter(Detection.id == det.id).first()
+            if det_row is not None:
+                det_row.video_path = video_uri
+                det_row.audit_image_path = audit_uri
+                db.add(det_row)
+                db.commit()
 
             # 3. Tự động hoàn thành đơn hàng nếu có
             pending_order = order_repo.get_pending_by_vessel(db, vessel.id)
@@ -651,6 +1059,7 @@ class PipelineService:
             ocr_cache=self.ocr_cache, ocr_lock=self.ocr_lock, ocr_label_ttl=ocr_label_ttl,
             record_overlay_resize_scale=runtime_cfg['resize_scale'],
             enable_preview_stream=True,
+            on_overlay_media_sample=self._recording_yolo_single_overlay,
         )
 
         if ocr_active:
@@ -662,6 +1071,7 @@ class PipelineService:
                 runs_base=str(self._runtime_media_base / 'detect'),
                 save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
                 on_image_captured=self._upload_captured_image,
+                on_ocr_track_media=self._on_ocr_track_media,
             )
 
         if runtime_cfg['record_enable']:
@@ -767,6 +1177,9 @@ class PipelineService:
         combined_on_removed,
     ) -> None:
         camera_order = self._resolve_group_camera_order(group, enabled_members)
+        self._primary_record_camera_id = int(camera_order[0]) if camera_order else None
+        record_enabled = bool(runtime_cfg['record_enable'])
+        multi_cam = len(camera_order) > 1
         members_by_camera_id = {int(member.camera_id): member for member in enabled_members}
         ordered_members = [members_by_camera_id[camera_id] for camera_id in camera_order]
         self._reid_manager = CrossCameraReIdManager(
@@ -798,7 +1211,7 @@ class PipelineService:
         except Exception:
             pass
 
-        if runtime_cfg['record_enable']:
+        if record_enabled:
             self._video_worker = VideoRecorderThread(
                 self._video_queue,
                 self._stop,
@@ -809,6 +1222,24 @@ class PipelineService:
                 on_video_saved=self._upload_recorded_video,
             )
             self._video_worker.start()
+
+        if record_enabled and multi_cam and self._primary_record_camera_id is not None:
+            primary_cam = self._primary_record_camera_id
+            self._single_video_worker = VideoRecorderThread(
+                self._single_video_queue,
+                self._stop,
+                max_duration_sec=runtime_cfg['record_max_duration_min'] * 60,
+                gap_sec=runtime_cfg['record_no_boat_gap_sec'],
+                record_fps=runtime_cfg['record_fps'],
+                runs_base=str(self._runtime_media_base / 'detect'),
+                on_video_saved=(
+                    lambda p, ids, s, e, cid=primary_cam: self._upload_recorded_single_video(
+                        p, cid, ids, s, e
+                    )
+                ),
+                exclusive_single_track=True,
+            )
+            self._single_video_worker.start()
 
         if ocr_active:
             recognizer = ShipIdRecognizer()
@@ -824,6 +1255,7 @@ class PipelineService:
                 runs_base=str(self._runtime_media_base / 'detect'),
                 save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
                 on_image_captured=self._upload_captured_image,
+                on_ocr_track_media=self._on_ocr_track_media,
             )
             self._ocr_worker.start()
 
@@ -836,11 +1268,23 @@ class PipelineService:
             distribute_per_camera=True,
             bg_registry=self._bg_registry,
             seam_anchor_verifier=self._seam_anchor_verifier,
+            on_fused_media_sample=self._recording_fused_media_sample,
         )
 
         self._per_camera_pipelines = []
+        primary = self._primary_record_camera_id
         for member in ordered_members:
             camera_id = int(member.camera_id)
+            single_cam_q = (
+                self._single_video_queue
+                if (
+                    record_enabled
+                    and multi_cam
+                    and primary is not None
+                    and camera_id == primary
+                )
+                else None
+            )
             pipeline_config = PerCameraPipelineConfig(
                 camera_id=camera_id,
                 source=member.camera.rtsp_url,
@@ -875,8 +1319,10 @@ class PipelineService:
                     ocr_lock=self.ocr_lock,
                     runs_base=str(self._runtime_media_base / 'detect'),
                     on_image_captured=self._upload_captured_image,
+                    on_overlay_media_sample=self._recording_single_media_sample,
                     input_frame_queue=self._group_frame_hub.queue_for_camera(camera_id),
                     shared_ocr_queue=self._ocr_queue if ocr_active else None,
+                    single_camera_video_queue=single_cam_q,
                 )
             )
 
@@ -888,9 +1334,13 @@ class PipelineService:
             pipeline.start()
 
         _log.info(
-            'Hybrid pipeline started with camera_group_id=%s camera_order=%s embedding_backend=%s',
+            'Hybrid pipeline started with camera_group_id=%s camera_order=%s record_fps=%s single_record_camera_id=%s embedding_backend=%s',
             group.id,
             camera_order,
+            runtime_cfg['record_fps'],
+            self._primary_record_camera_id
+            if record_enabled and multi_cam
+            else None,
             embedding_extractor.backend,
         )
 
@@ -968,6 +1418,7 @@ class PipelineService:
             video_queue=self._video_queue if runtime_cfg['record_enable'] else None,
             yolo_frame_queue=self._frame_queue,
             distribute_per_camera=False,
+            on_fused_media_sample=self._recording_fused_media_sample,
         )
         self._group_frame_hub.set_track_providers([self._boat_tracker.confirmed_boats])
         try:
@@ -1006,6 +1457,7 @@ class PipelineService:
                 runs_base=str(self._runtime_media_base / 'detect'),
                 save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
                 on_image_captured=self._upload_captured_image,
+                on_ocr_track_media=self._on_ocr_track_media,
             )
 
         if runtime_cfg['record_enable']:
@@ -1043,6 +1495,8 @@ class PipelineService:
             self._ocr_worker.join(timeout=2.0)
         if self._video_worker:
             self._video_worker.join(timeout=2.0)
+        if self._single_video_worker:
+            self._single_video_worker.join(timeout=2.0)
         for pipeline in self._per_camera_pipelines:
             pipeline.join(timeout=2.0)
         
@@ -1055,6 +1509,7 @@ class PipelineService:
             self._boat_tracker.flush_shutdown_logs()
             
         self._reader = self._yolo_worker = self._ocr_worker = self._video_worker = None
+        self._single_video_worker = None
         self._group_frame_hub = None
         self._per_camera_pipelines = []
         self._reid_manager = None

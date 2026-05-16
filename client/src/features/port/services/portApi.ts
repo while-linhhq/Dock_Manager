@@ -104,4 +104,7 @@ export const portApi = {
   stopPipeline: async (): Promise<{ message: string }> => {
     return httpClient.post('/pipeline/stop');
   },
+  getSepayWebhookUrl: async (): Promise<{ webhook_url: string }> => {
+    return httpClient.get<{ webhook_url: string }>('/sepay/webhook-url');
+  },
 };

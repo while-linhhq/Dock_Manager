@@ -31,7 +31,7 @@ _COLOR_LOST = (0, 165, 255)
 class PerCameraPipelineConfig:
     camera_id: int
     source: str | int
-    record_fps: int
+    record_fps: float
     enable_ocr: bool
     ocr_interval_frames: int
     ocr_label_ttl_sec: float
@@ -65,8 +65,10 @@ class PerCameraPipeline(threading.Thread):
         ocr_lock: threading.RLock,
         runs_base: str,
         on_image_captured=None,
+        on_overlay_media_sample=None,
         input_frame_queue: queue.Queue | None = None,
         shared_ocr_queue: queue.Queue | None = None,
+        single_camera_video_queue: queue.Queue | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -75,9 +77,12 @@ class PerCameraPipeline(threading.Thread):
         self._reid_manager = reid_manager
         self._embedding_extractor = embedding_extractor
         self._video_queue = video_queue
+        self._single_camera_video_queue = single_camera_video_queue
         self._stop_event = stop_event
         self._ocr_cache = ocr_cache
         self._ocr_lock = ocr_lock
+        self._runs_base = runs_base
+        self._on_overlay_media_sample = on_overlay_media_sample
         self._uses_external_frames = input_frame_queue is not None
         self._frame_queue = input_frame_queue or queue.Queue(maxsize=3)
         self._reader: FrameReaderThread | None = None
@@ -202,6 +207,20 @@ class PerCameraPipeline(threading.Thread):
             fps_est,
             1.0,
         )
+        if self._on_overlay_media_sample is not None:
+            try:
+                self._on_overlay_media_sample(
+                    int(self.config.camera_id),
+                    overlay_frame,
+                    tracked_boats,
+                )
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    'on_overlay_media_sample failed for camera_id=%s',
+                    self.config.camera_id,
+                )
         if self.config.enable_preview_stream:
             display_frame = overlay_frame
             if self.config.resize_scale != 1.0:
@@ -215,7 +234,10 @@ class PerCameraPipeline(threading.Thread):
                     self.config.resize_scale,
                 )
             pipeline_preview.push_bgr_frame(display_frame)
-        if self._video_queue is not None:
+        record_queues = (
+            self._video_queue is not None or self._single_camera_video_queue is not None
+        )
+        if record_queues:
             video_frame = overlay_frame
             if self.config.resize_scale != 1.0:
                 video_frame = draw_ship_detection_overlay(
@@ -227,7 +249,11 @@ class PerCameraPipeline(threading.Thread):
                     fps_est,
                     self.config.resize_scale,
                 )
-            put_queue_drop_oldest(self._video_queue, (video_frame, tracked_boats))
+            item = (video_frame, tracked_boats)
+            if self._video_queue is not None:
+                put_queue_drop_oldest(self._video_queue, item)
+            if self._single_camera_video_queue is not None:
+                put_queue_drop_oldest(self._single_camera_video_queue, item)
 
         self._queue_ocr(raw_frame, tracked_boats)
 

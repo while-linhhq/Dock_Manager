@@ -13,9 +13,15 @@ import { PortDetectionsSection } from '../components/PortDetectionsSection';
 import { PortConfigsSection } from '../components/PortConfigsSection';
 import { PortPipelineSection } from '../components/PortPipelineSection';
 import { PortSeamAnchorSection } from '../components/PortSeamAnchorSection';
+import {
+  PortPaymentConfigSection,
+  SEPAY_PORT_CONFIG_KEYS,
+} from '../components/PortPaymentConfigSection';
 import { PortModals } from '../components/PortModals';
 
-const PORT_TAB_IDS: PortMainTab[] = ['detections', 'configs', 'pipeline', 'seam-anchor'];
+const PORT_TAB_IDS: PortMainTab[] = ['detections', 'configs', 'payment', 'pipeline', 'seam-anchor'];
+
+const SEPAY_CONFIG_KEY_SET = new Set<string>(SEPAY_PORT_CONFIG_KEYS);
 
 function parsePortTab(value: string | null): PortMainTab {
   if (value && PORT_TAB_IDS.includes(value as PortMainTab)) {
@@ -93,8 +99,9 @@ export const PortView: React.FC = () => {
   useEffect(() => {
     if (activeTab === 'detections') fetchDetections();
     if (activeTab === 'pipeline') fetchCameras();
-    if (activeTab === 'configs') fetchConfigs();
-    if (activeTab === 'seam-anchor') fetchConfigs();
+    if (activeTab === 'configs' || activeTab === 'payment' || activeTab === 'seam-anchor') {
+      fetchConfigs();
+    }
   }, [activeTab, fetchDetections, fetchCameras, fetchConfigs]);
 
   useEffect(() => {
@@ -176,6 +183,9 @@ export const PortView: React.FC = () => {
 
   const filteredConfigs = useMemo(() => {
     return configs.filter((cfg) => {
+      if (SEPAY_CONFIG_KEY_SET.has(cfg.key)) {
+        return false;
+      }
       if (!matchesAnyField(cfgKeyQ, cfg.key)) {
         return false;
       }
@@ -313,6 +323,20 @@ export const PortView: React.FC = () => {
           vesselTypes={filterVesselTypes}
           onVerify={(id, data) => verifyDetection(id, data)}
           onDeleteDetection={handleDeleteDetection}
+        />
+      )}
+
+      {activeTab === 'payment' && (
+        <PortPaymentConfigSection
+          configs={configs}
+          isLoading={isLoading}
+          onUpdateConfig={(key, value, description) =>
+            upsertConfig(key, { value, description })
+          }
+          onCreateConfig={(key, value, description) =>
+            upsertConfig(null, { key, value, description })
+          }
+          onRefresh={fetchConfigs}
         />
       )}
 

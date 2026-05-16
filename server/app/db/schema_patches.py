@@ -437,12 +437,144 @@ def _ensure_anchored_identities() -> None:
         raise
 
 
+def _ensure_sepay_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    from app.services.sepay_config_service import SEPAY_CONFIG_DEFAULTS
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed sepay port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in SEPAY_CONFIG_DEFAULTS.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        logger.info('schema_patches: ensured sepay port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed sepay port_configs: %s', err)
+        raise
+
+
+def _ensure_fee_configs_berth_limit() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('fee_configs'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('fee_configs')}
+        if 'berth_limit_count' in cols and 'berth_limit_unit' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect fee_configs table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        stmts = [
+            text('ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS berth_limit_count INTEGER'),
+            text('ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS berth_limit_unit VARCHAR(10)'),
+        ]
+    elif dialect == 'sqlite':
+        if 'berth_limit_count' not in cols:
+            stmts.append(text('ALTER TABLE fee_configs ADD COLUMN berth_limit_count INTEGER'))
+        if 'berth_limit_unit' not in cols:
+            stmts.append(text('ALTER TABLE fee_configs ADD COLUMN berth_limit_unit VARCHAR(10)'))
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add fee_configs berth limit columns manually',
+            dialect,
+        )
+        return
+
+    if not stmts:
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        logger.info('schema_patches: ensured fee_configs berth limit columns')
+    except Exception as err:
+        logger.error('schema_patches: failed to add fee_configs berth limit columns: %s', err)
+        raise
+
+
+def _ensure_invoices_is_over_berth_limit() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('invoices'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('invoices')}
+        if 'is_over_berth_limit' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect invoices table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmt = None
+    if dialect == 'postgresql':
+        stmt = text(
+            'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS is_over_berth_limit BOOLEAN NOT NULL DEFAULT FALSE'
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            'ALTER TABLE invoices ADD COLUMN is_over_berth_limit BOOLEAN NOT NULL DEFAULT 0'
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add invoices.is_over_berth_limit manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        logger.info('schema_patches: added invoices.is_over_berth_limit')
+    except Exception as err:
+        logger.error('schema_patches: failed to add invoices.is_over_berth_limit: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
     _ensure_orders_total_amount()
     _ensure_invoices_creation_source()
     _ensure_detections_audit_image_path()
+    _ensure_fee_configs_berth_limit()
+    _ensure_invoices_is_over_berth_limit()
     _ensure_camera_groups()
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()
+    _ensure_sepay_port_configs()

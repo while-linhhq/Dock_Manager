@@ -41,8 +41,7 @@ class FeeConfigRepository:
         if not db_obj:
             return None
         for key, value in data.items():
-            if value is not None:
-                setattr(db_obj, key, value)
+            setattr(db_obj, key, value)
         db.commit()
         db.refresh(db_obj)
         return db_obj

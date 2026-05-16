@@ -6,6 +6,7 @@ from app.repositories.invoice_item_repository import invoice_item_repo
 from app.repositories.port_config_repository import port_config_repo
 from app.schemas.invoice import InvoiceCreate
 from app.models.invoice import Invoice
+from app.services.berth_limit_service import compute_invoice_over_berth_limit
 
 
 class InvoiceService:
@@ -44,9 +45,14 @@ class InvoiceService:
                 item['invoice_id'] = invoice.id
             invoice_item_repo.create_bulk(db, items_data)
 
+        db.flush()
+        refreshed = invoice_repo.get(db, invoice.id)
+        if refreshed:
+            refreshed.is_over_berth_limit = compute_invoice_over_berth_limit(db, refreshed)
+
         db.commit()
         db.refresh(invoice)
-        return invoice
+        return invoice_repo.get(db, invoice.id) or invoice
 
 
 invoice_service = InvoiceService()

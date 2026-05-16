@@ -6,13 +6,21 @@ from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.invoice import InvoiceCreate, InvoiceRead, InvoiceUpdate
 from app.schemas.payment import PaymentCreate, PaymentRead
+from app.schemas.sepay import InvoicePaymentStatusRead
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.order_repository import order_repo
 from app.repositories.payment_repository import payment_repo
 from app.services.detection_invoice_service import backfill_missing_ai_invoices
 from app.services.invoice_service import invoice_service
+from app.services.berth_limit_service import compute_invoice_over_berth_limit
 
 router = APIRouter()
+
+
+def _invoice_to_read(db: Session, inv) -> InvoiceRead:
+    payload = InvoiceRead.model_validate(inv)
+    over = compute_invoice_over_berth_limit(db, inv)
+    return payload.model_copy(update={'is_over_berth_limit': over})
 
 
 @router.get('/', response_model=List[InvoiceRead])
@@ -33,7 +41,7 @@ def list_invoices(
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    return invoice_repo.get_all(
+    rows = invoice_repo.get_all(
         db,
         skip=skip,
         limit=limit,
@@ -43,6 +51,22 @@ def list_invoices(
         creation_source=creation_source,
         exclude_creation_source=exclude_creation_source,
     )
+    return [_invoice_to_read(db, inv) for inv in rows]
+
+
+@router.get('/{invoice_id}/payment-status', response_model=InvoicePaymentStatusRead)
+def get_invoice_payment_status(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    obj = invoice_repo.get(db, invoice_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    return InvoicePaymentStatusRead(
+        payment_status=obj.payment_status or 'UNPAID',
+        paid_at=obj.paid_at,
+    )
 
 
 @router.get('/{invoice_id}', response_model=InvoiceRead)
@@ -50,7 +74,7 @@ def get_invoice(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_cu
     obj = invoice_repo.get(db, invoice_id)
     if not obj:
         raise HTTPException(status_code=404, detail='Invoice not found')
-    return obj
+    return _invoice_to_read(db, obj)
 
 
 @router.post('/backfill-ai')
@@ -86,7 +110,8 @@ def create_invoice(data: InvoiceCreate, db: Session = Depends(get_db), current_u
             'creation_source': 'USER',
         },
     )
-    return invoice_service.create_with_items(db, payload)
+    created = invoice_service.create_with_items(db, payload)
+    return _invoice_to_read(db, created)
 
 
 @router.put('/{invoice_id}', response_model=InvoiceRead)
@@ -101,11 +126,11 @@ def update_invoice(
         obj = invoice_repo.get(db, invoice_id)
         if not obj:
             raise HTTPException(status_code=404, detail='Invoice not found')
-        return obj
+        return _invoice_to_read(db, obj)
     updated = invoice_repo.update(db, invoice_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail='Invoice not found')
-    return updated
+    return _invoice_to_read(db, updated)
 
 
 @router.delete('/{invoice_id}', status_code=204)

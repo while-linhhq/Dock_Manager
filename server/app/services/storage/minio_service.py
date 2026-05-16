@@ -115,3 +115,18 @@ def put_bytes(
     )
     return res.etag, getattr(res, 'version_id', None)
 
+
+def copy_object_same_bucket(*, bucket: str, src_key: str, dest_key: str) -> None:
+    """Server-side copy within the same bucket (S3 CopyObject)."""
+    if src_key == dest_key:
+        return
+    from minio.commonconfig import CopySource
+
+    client = get_minio_client()
+    client.copy_object(bucket, dest_key, CopySource(bucket, src_key))
+
+
+def remove_object(*, bucket: str, object_key: str) -> None:
+    client = get_minio_client()
+    client.remove_object(bucket, object_key)
+

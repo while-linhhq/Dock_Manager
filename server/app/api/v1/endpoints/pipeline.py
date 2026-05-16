@@ -16,6 +16,7 @@ from app.services import pipeline_preview
 from app.services.ai import seam_anchor_baseline
 from app.services.ai.multi_frame_reader import capture_snapshot
 from app.services.pipeline_service import pipeline_service
+from app.utils.ws_safe import SafeWebSocket
 
 router = APIRouter()
 
@@ -135,9 +136,11 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
     finally:
         db.close()
 
-    await websocket.accept()
+    ws = SafeWebSocket(websocket)
+    await ws.accept()
+    loop = asyncio.get_running_loop()
     try:
-        last_sent = 0.0
+        last_sent = loop.time()
         last_sequence = 0
         while True:
             sequence, jpeg = await asyncio.to_thread(
@@ -147,12 +150,12 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
             )
             if jpeg and sequence > last_sequence:
                 last_sequence = sequence
-                await websocket.send_bytes(jpeg)
-                last_sent = asyncio.get_event_loop().time()
+                await ws.send_bytes(jpeg)
+                last_sent = loop.time()
             else:
-                now = asyncio.get_event_loop().time()
+                now = loop.time()
                 if now - last_sent > 15.0:
-                    await websocket.send_text('ka')
+                    await ws.send_text('ka')
                     last_sent = now
     except WebSocketDisconnect:
         pass

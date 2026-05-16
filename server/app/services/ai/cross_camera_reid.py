@@ -266,6 +266,30 @@ class CrossCameraReIdManager:
             identity = self._identity_for_track((int(camera_id), str(track_id)))
             return identity.ship_id if identity is not None else None
 
+    def resolve_lookup_track_ids(self, track_id: str) -> list[str]:
+        """
+        IDs usable for TrackMediaCollector / video registry lookup.
+        Persist uses global_id (gid_*); recorder/collector use per-camera trk_*.
+        """
+        needle = str(track_id)
+        with self._lock:
+            if needle in self._identities:
+                identity = self._identities[needle]
+            else:
+                identity = None
+                for ident in self._identities.values():
+                    if needle in ident.camera_tracks.values():
+                        identity = ident
+                        break
+            if identity is None:
+                return [needle]
+            out: list[str] = []
+            for candidate in (identity.global_id, *identity.camera_tracks.values()):
+                c = str(candidate)
+                if c and c not in out:
+                    out.append(c)
+            return out
+
     def flush_all(self) -> None:
         with self._lock:
             for identity in list(self._identities.values()):

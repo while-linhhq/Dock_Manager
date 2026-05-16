@@ -14,6 +14,17 @@ class PaymentRepository:
     def get_by_invoice(self, db: Session, invoice_id: int) -> List[Payment]:
         return db.query(Payment).filter(Payment.invoice_id == invoice_id).all()
 
+    def exists_by_reference(self, db: Session, payment_reference: str) -> bool:
+        ref = (payment_reference or '').strip()
+        if not ref:
+            return False
+        return (
+            db.query(Payment.id)
+            .filter(Payment.payment_reference == ref)
+            .first()
+            is not None
+        )
+
     def create(self, db: Session, invoice_id: int, amount: Decimal, payment_method: Optional[str] = None, payment_reference: Optional[str] = None, notes: Optional[str] = None, created_by: Optional[int] = None) -> Payment:
         db_obj = Payment(
             invoice_id=invoice_id,

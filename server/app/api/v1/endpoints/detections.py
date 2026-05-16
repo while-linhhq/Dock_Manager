@@ -12,6 +12,7 @@ from app.schemas.detection_media import DetectionMediaRead
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.services.storage.minio_service import presign_get, parse_minio_uri
+from app.services.berth_limit_service import compute_detection_over_berth_limit
 
 router = APIRouter()
 
@@ -28,6 +29,13 @@ def _with_presigned_detection_paths(obj):
     return obj
 
 
+def _detection_to_read(db: Session, obj) -> DetectionRead:
+    row = _with_presigned_detection_paths(obj)
+    payload = DetectionRead.model_validate(row)
+    over = compute_detection_over_berth_limit(db, obj)
+    return payload.model_copy(update={'is_over_berth_limit': over})
+
+
 @router.post('/', response_model=DetectionRead, status_code=201)
 def create_detection(
     data: DetectionCreate,
@@ -41,7 +49,8 @@ def create_detection(
         payload['track_id'] = tid
     if detection_repo.get_by_track_id(db, tid):
         raise HTTPException(status_code=409, detail='track_id already exists')
-    return _with_presigned_detection_paths(detection_repo.create(db, payload))
+    created = detection_repo.create(db, payload)
+    return _detection_to_read(db, created)
 
 
 @router.get('/', response_model=List[DetectionRead])
@@ -62,7 +71,7 @@ def list_detections(
         ship_id=ship_id,
         event_date=event_date,
     )
-    return [_with_presigned_detection_paths(row) for row in rows]
+    return [_detection_to_read(db, row) for row in rows]
 
 
 @router.get('/{detection_id}', response_model=DetectionRead)
@@ -70,7 +79,7 @@ def get_detection(detection_id: int, db: Session = Depends(get_db), _=Depends(ge
     obj = detection_repo.get(db, detection_id)
     if not obj:
         raise HTTPException(status_code=404, detail='Detection not found')
-    return _with_presigned_detection_paths(obj)
+    return _detection_to_read(db, obj)
 
 
 @router.post('/{detection_id}/verify', response_model=DetectionRead)
@@ -89,7 +98,7 @@ def verify_detection(
     )
     if not updated:
         raise HTTPException(status_code=404, detail='Detection not found')
-    return _with_presigned_detection_paths(updated)
+    return _detection_to_read(db, updated)
 
 
 @router.delete('/{detection_id}', status_code=204)

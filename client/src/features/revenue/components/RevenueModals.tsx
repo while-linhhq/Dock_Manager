@@ -25,6 +25,8 @@ export type RevenueModalsProps = {
   onClosePayment: () => void;
   paymentForm: UseFormReturn<PaymentCreate>;
   onPaymentSubmit: (data: PaymentCreate) => void | Promise<void>;
+  paymentModalTitle?: string;
+  lockPaymentMethod?: 'cash';
   isFeeModalOpen: boolean;
   onCloseFee: () => void;
   feeForm: UseFormReturn<FeeFormValues>;
@@ -45,6 +47,8 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
   onClosePayment,
   paymentForm,
   onPaymentSubmit,
+  paymentModalTitle = 'Ghi Nhận Thanh Toán',
+  lockPaymentMethod,
   isFeeModalOpen,
   onCloseFee,
   feeForm,
@@ -129,7 +133,7 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
         </form>
       </Modal>
 
-      <Modal isOpen={isPaymentModalOpen} onClose={onClosePayment} title="Ghi Nhận Thanh Toán">
+      <Modal isOpen={isPaymentModalOpen} onClose={onClosePayment} title={paymentModalTitle}>
         <form onSubmit={paymentForm.handleSubmit(onPaymentSubmit)} className="space-y-4">
           <Input
             label="Số Tiền"
@@ -137,24 +141,37 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
             {...paymentForm.register('amount', { valueAsNumber: true })}
             error={paymentForm.formState.errors.amount?.message}
           />
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
-              Phương Thức
-            </label>
-            <select
-              {...paymentForm.register('payment_method')}
-              className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm font-mono dark:text-white transition-all"
-            >
-              <option value="transfer">Chuyển Khoản</option>
-              <option value="cash">Tiền Mặt</option>
-              <option value="card">Thẻ Tín Dụng</option>
-            </select>
-          </div>
-          <Input
-            label="Mã Tham Chiếu"
-            placeholder="VD: Mã giao dịch ngân hàng"
-            {...paymentForm.register('reference_number')}
-          />
+          {lockPaymentMethod === 'cash' ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                Phương thức
+              </p>
+              <p className="mt-1 text-sm font-bold text-emerald-700 dark:text-emerald-400">
+                Tiền mặt
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
+                Phương Thức
+              </label>
+              <select
+                {...paymentForm.register('payment_method')}
+                className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm font-mono dark:text-white transition-all"
+              >
+                <option value="transfer">Chuyển Khoản</option>
+                <option value="cash">Tiền Mặt</option>
+                <option value="card">Thẻ Tín Dụng</option>
+              </select>
+            </div>
+          )}
+          {lockPaymentMethod !== 'cash' ? (
+            <Input
+              label="Mã Tham Chiếu"
+              placeholder="VD: Mã giao dịch ngân hàng"
+              {...paymentForm.register('reference_number')}
+            />
+          ) : null}
           <div className="pt-4 flex space-x-3">
             <Button type="button" variant="outline" onClick={onClosePayment} className="flex-1">
               Hủy
@@ -233,6 +250,51 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
               Mức phí cố định 0 — áp dụng cho tàu công ty / miễn phí.
             </p>
           )}
+          <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 space-y-3">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+              Giới hạn neo đậu
+            </p>
+            <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
+              Số lần tàu được cập bến trong kỳ (đếm mọi lượt nhận diện). Để trống = không giới hạn.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
+                  Số lượng
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  placeholder="Không giới hạn"
+                  {...feeForm.register('berth_limit_count', { valueAsNumber: true })}
+                  className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm dark:text-white transition-all"
+                />
+                {feeForm.formState.errors.berth_limit_count && (
+                  <p className="text-[10px] text-red-500 font-bold uppercase tracking-tighter ml-1">
+                    {feeForm.formState.errors.berth_limit_count.message}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
+                  Đơn vị
+                </label>
+                <select
+                  {...feeForm.register('berth_limit_unit')}
+                  className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm dark:text-white transition-all"
+                >
+                  <option value="">—</option>
+                  <option value="day">Theo ngày</option>
+                  <option value="month">Theo tháng</option>
+                </select>
+                {feeForm.formState.errors.berth_limit_unit && (
+                  <p className="text-[10px] text-red-500 font-bold uppercase tracking-tighter ml-1">
+                    {feeForm.formState.errors.berth_limit_unit.message}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
           <div className="space-y-1.5 ml-1">
             <div className="flex items-center space-x-2">
               <input

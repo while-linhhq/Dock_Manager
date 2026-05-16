@@ -15,6 +15,8 @@ class FeeConfig(Base):
     is_active = Column(Boolean, default=True)
     effective_from = Column(Date, nullable=True)
     effective_to = Column(Date, nullable=True)
+    berth_limit_count = Column(Integer, nullable=True)
+    berth_limit_unit = Column(String(10), nullable=True)  # day | month
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

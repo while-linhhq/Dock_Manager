@@ -23,6 +23,7 @@ import type { InvoiceSubTab } from '../store/revenueStore';
 import {
   formatInvoiceTotalCell,
   normInvoicePaymentStatus,
+  OverBerthLimitBadge,
   paymentStatusColors,
   paymentStatusLabels,
   renderInvoiceRefFeesCell,
@@ -305,7 +306,12 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                       key={inv.id}
                       className="hover:bg-gray-50 dark:hover:bg-white/2 transition-colors"
                     >
-                      <td className={cn(dt.pad, dt.monoAccent)}>{inv.invoice_number}</td>
+                      <td className={cn(dt.pad, dt.monoAccent)}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>{inv.invoice_number}</span>
+                          {inv.is_over_berth_limit ? <OverBerthLimitBadge /> : null}
+                        </div>
+                      </td>
                       <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
                         {isAutoInvoiceTab
                           ? (inv.vessel_ship_id ?? '—')

@@ -16,7 +16,8 @@ _latest_frame: np.ndarray | None = None
 _latest_frame_seq = 0
 _encoded_frame_seq = 0
 _jpeg: bytes | None = None
-_min_interval_sec = 0.05
+# Default encode cadence (~30 FPS cap) until set_target_fps runs after pipeline start.
+_min_interval_sec = 1.0 / 30.0
 _jpeg_quality = 58
 _max_width = 960
 
@@ -132,7 +133,8 @@ def get_jpeg_with_sequence() -> tuple[int, bytes | None]:
 
 
 def clear() -> None:
-    global _jpeg, _latest_frame, _latest_frame_seq, _encoded_frame_seq, _encoder_thread
+    global _jpeg, _latest_frame, _latest_frame_seq, _encoded_frame_seq, _encoder_thread, _min_interval_sec
+    _min_interval_sec = 1.0 / 30.0
     _stop_event.set()
     with _frame_ready:
         _jpeg = None

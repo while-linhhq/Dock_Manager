@@ -5,6 +5,8 @@ import queue
 import threading
 import time
 
+from typing import Any, Callable, Optional
+
 import cv2
 
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
@@ -42,6 +44,7 @@ class YoloWorkerThread(threading.Thread):
         ocr_label_ttl: float = 5.0,
         record_overlay_resize_scale: float = 1.0,
         enable_preview_stream: bool = True,
+        on_overlay_media_sample: Optional[Callable[[Any, list[TrackedBoat]], None]] = None,
     ):
         super().__init__(daemon=True)
         self._detector = detector
@@ -59,6 +62,7 @@ class YoloWorkerThread(threading.Thread):
         self._ocr_label_ttl = ocr_label_ttl
         self._record_overlay_resize_scale = record_overlay_resize_scale
         self._enable_preview_stream = enable_preview_stream
+        self._on_overlay_media_sample = on_overlay_media_sample
         self._fps_t0: float | None = None
 
     def run(self):
@@ -110,6 +114,12 @@ class YoloWorkerThread(threading.Thread):
                 if self._enable_preview_stream:
                     try:
                         pipeline_preview.push_bgr_frame(overlay_frame)
+                    except Exception:
+                        pass
+
+                if self._on_overlay_media_sample is not None:
+                    try:
+                        self._on_overlay_media_sample(overlay_frame, tracked_boats)
                     except Exception:
                         pass
 

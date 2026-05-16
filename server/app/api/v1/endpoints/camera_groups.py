@@ -23,6 +23,7 @@ from app.schemas.camera_group import (
 from app.services.ai.frame_fusion import FrameFuser, FusionConfig, FusionMember, scaled_fusion_config
 from app.services.ai.multi_frame_reader import TimedFrame, capture_snapshot
 from app.services.editor_preview import editor_preview_manager
+from app.utils.ws_safe import SafeWebSocket
 from app.services.fused_preview_worker import FusedPreviewWorker
 
 router = APIRouter()
@@ -172,7 +173,8 @@ async def editor_fused_preview_stream(websocket: WebSocket) -> None:
     finally:
         db.close()
 
-    await websocket.accept()
+    ws = SafeWebSocket(websocket)
+    await ws.accept()
     acquired_camera_ids: set[int] = set()
     editor_preview_manager.set_target_fps(record_fps)
     worker = FusedPreviewWorker(target_fps=record_fps)
@@ -181,7 +183,7 @@ async def editor_fused_preview_stream(websocket: WebSocket) -> None:
     async def receive_configs() -> None:
         nonlocal acquired_camera_ids
         while True:
-            raw_config = await websocket.receive_json()
+            raw_config = await ws.receive_json()
             preview_config = FusedPreviewRequest.model_validate(raw_config)
             acquired_camera_ids = _sync_editor_preview_readers(
                 preview_config,
@@ -191,8 +193,9 @@ async def editor_fused_preview_stream(websocket: WebSocket) -> None:
 
     receiver_task = asyncio.create_task(receive_configs())
 
+    loop = asyncio.get_running_loop()
     try:
-        last_sent_at = asyncio.get_event_loop().time()
+        last_sent_at = loop.time()
         last_sequence = 0
         while True:
             last_sequence, jpeg = await asyncio.to_thread(
@@ -201,12 +204,12 @@ async def editor_fused_preview_stream(websocket: WebSocket) -> None:
                 1.0,
             )
             if jpeg:
-                await websocket.send_bytes(jpeg)
-                last_sent_at = asyncio.get_event_loop().time()
+                await ws.send_bytes(jpeg)
+                last_sent_at = loop.time()
             else:
-                now = asyncio.get_event_loop().time()
+                now = loop.time()
                 if now - last_sent_at > 15.0:
-                    await websocket.send_text('ka')
+                    await ws.send_text('ka')
                     last_sent_at = now
     except WebSocketDisconnect:
         pass
@@ -264,20 +267,22 @@ async def editor_camera_preview_stream(websocket: WebSocket, camera_id: int) -> 
 
     editor_preview_manager.set_target_fps(record_fps)
     editor_preview_manager.acquire(camera_id, source)
-    await websocket.accept()
+    ws = SafeWebSocket(websocket)
+    await ws.accept()
+    loop = asyncio.get_running_loop()
     try:
-        last_sent = 0.0
+        last_sent = loop.time()
         last_sequence = 0
         while True:
             sequence, jpeg = editor_preview_manager.get_jpeg_with_sequence(camera_id)
             if jpeg and sequence > last_sequence:
                 last_sequence = sequence
-                await websocket.send_bytes(jpeg)
-                last_sent = asyncio.get_event_loop().time()
+                await ws.send_bytes(jpeg)
+                last_sent = loop.time()
             else:
-                now = asyncio.get_event_loop().time()
+                now = loop.time()
                 if now - last_sent > 15.0:
-                    await websocket.send_text('ka')
+                    await ws.send_text('ka')
                     last_sent = now
             await asyncio.sleep(0.05)
     except WebSocketDisconnect:

@@ -35,6 +35,7 @@ class DetectionRead(DetectionBase):
     created_at: datetime
     audit_image_url: Optional[str] = None
     video_url: Optional[str] = None
+    is_over_berth_limit: bool = False
 
     model_config = {'from_attributes': True}
 

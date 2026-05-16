@@ -29,4 +29,4 @@ python -m app.db.init_db
 
 # Start FastAPI server
 echo "Starting uvicorn..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1
+exec python run_prod.py

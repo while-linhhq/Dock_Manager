@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Callable
 
+VideoSavedCallback = Callable[[str, frozenset[str], float, float], None]
+
 import cv2
 
 from app.services.ai.boat_tracker import TrackState, TrackedBoat
@@ -25,11 +27,21 @@ def _n_confirmed(tracked_boats: list) -> int:
     )
 
 
+def _confirmed_track_ids(tracked_boats: list) -> frozenset[str]:
+    return frozenset(
+        str(t.track_id)
+        for t in tracked_boats
+        if getattr(t, "state", None) == TrackState.CONFIRMED
+    )
+
+
 class VideoRecorderThread(threading.Thread):
     """
     Nhận (annotated_frame, tracked_boats) từ queue; ghi MP4 khi có tàu CONFIRMED.
     - Ngắt: hết max duration hoặc không có CONFIRMED liên tục >= gap (debounce nhiễu).
     - Restart file: số CONFIRMED tăng so với max_boat_count của session hiện tại.
+    - exclusive_single_track: chỉ ghi khi đúng 1 CONFIRMED; đổi track_id → session mới
+      (dùng cho video đối chiếu single-camera, tránh nhiều detection dùng chung 1 file).
     """
 
     def __init__(
@@ -40,7 +52,8 @@ class VideoRecorderThread(threading.Thread):
         gap_sec: float,
         record_fps: float,
         runs_base: str = RUNS_DETECT,
-        on_video_saved: Callable[[str], None] | None = None,
+        on_video_saved: VideoSavedCallback | None = None,
+        exclusive_single_track: bool = False,
     ):
         super().__init__(daemon=True)
         self._video_queue = video_queue
@@ -51,12 +64,17 @@ class VideoRecorderThread(threading.Thread):
         self._record_fps = max(1.0, float(record_fps))
         self._runs_base = runs_base
         self._on_video_saved = on_video_saved
+        self._exclusive_single_track = bool(exclusive_single_track)
 
         self._writer: cv2.VideoWriter | None = None
         self._current_path: str | None = None
         self._max_boat_count = 0
         self._start_ts = 0.0
         self._last_boat_ts = 0.0
+        # Monotonic ts of last VideoWriter.write — duplicate frames so fps matches real-time playback.
+        self._last_video_frame_mono: float | None = None
+        self._session_track_ids: set[str] = set()
+        self._session_start_wall = 0.0
 
     def _stop_recording(self) -> None:
         if self._writer is not None:
@@ -84,13 +102,19 @@ class VideoRecorderThread(threading.Thread):
                     print(f"[RECORD] faststart failed: {e}")
                 if self._on_video_saved is not None:
                     try:
-                        self._on_video_saved(path)
+                        self._on_video_saved(
+                            path,
+                            frozenset(self._session_track_ids),
+                            float(self._session_start_wall),
+                            time.time(),
+                        )
                     except Exception as e:
                         print(f"[RECORD] MinIO upload callback failed: {e}")
                 print(f"[RECORD] Saved: {self._current_path}")
             self._current_path = None
+            self._last_video_frame_mono = None
 
-    def _begin_session(self, frame, n_boats: int) -> None:
+    def _begin_session(self, frame, n_boats: int, tracked_boats: list) -> None:
         h, w = frame.shape[:2]
         out_dir = ensure_dir(videos_dir_for_today(self._runs_base))
         name = f"{timestamp_prefix()}.mp4"
@@ -109,8 +133,25 @@ class VideoRecorderThread(threading.Thread):
         now = time.monotonic()
         self._start_ts = now
         self._last_boat_ts = now
-        self._writer.write(frame)
+        self._last_video_frame_mono = None
+        self._session_track_ids = set(_confirmed_track_ids(tracked_boats))
+        self._session_start_wall = time.time()
+        self._write_frame_paced(frame, now)
         print(f"[RECORD] Started: {path} (confirmed={n_boats})")
+
+    def _write_frame_paced(self, frame, now: float) -> None:
+        """Write the same frame enough times to match record_fps wall-clock cadence."""
+        if self._writer is None:
+            return
+        last = self._last_video_frame_mono
+        if last is None:
+            n_write = 1
+        else:
+            elapsed = max(0.0, now - last)
+            n_write = max(1, int(round(elapsed * self._record_fps)))
+        for _ in range(n_write):
+            self._writer.write(frame)
+        self._last_video_frame_mono = now
 
     def _maybe_stop_on_timeout(self, now: float) -> None:
         if self._writer is None:
@@ -126,21 +167,45 @@ class VideoRecorderThread(threading.Thread):
     def _process_frame(self, frame, tracked_boats: list[TrackedBoat]) -> None:
         n = _n_confirmed(tracked_boats)
         now = time.monotonic()
+        current_ids = _confirmed_track_ids(tracked_boats)
+
+        if self._exclusive_single_track:
+            if n > 1:
+                if self._writer is not None:
+                    self._maybe_stop_on_timeout(now)
+                return
+            if self._writer is not None:
+                if n == 0:
+                    self._maybe_stop_on_timeout(now)
+                    return
+                if current_ids != frozenset(self._session_track_ids):
+                    self._stop_recording()
+                    self._begin_session(frame, 1, tracked_boats)
+                    return
+                self._write_frame_paced(frame, now)
+                self._last_boat_ts = now
+                self._maybe_stop_on_timeout(now)
+                return
+            if n == 1:
+                self._begin_session(frame, 1, tracked_boats)
+            return
 
         if self._writer is not None:
+            if n > 0:
+                self._session_track_ids.update(current_ids)
             if n > self._max_boat_count:
                 self._stop_recording()
-                self._begin_session(frame, n)
+                self._begin_session(frame, n, tracked_boats)
                 return
 
-            self._writer.write(frame)
+            self._write_frame_paced(frame, now)
             if n > 0:
                 self._last_boat_ts = now
             self._maybe_stop_on_timeout(now)
             return
 
         if n > 0:
-            self._begin_session(frame, n)
+            self._begin_session(frame, n, tracked_boats)
 
     def run(self) -> None:
         try:

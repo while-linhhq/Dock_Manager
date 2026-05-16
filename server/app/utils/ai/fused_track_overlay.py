@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import cv2
 import numpy as np
 
 from app.services.ai.boat_tracker import TrackState, TrackedBoat
+from app.services.ai.frame_fusion import FusionMember, map_detection_box_to_fused_layout
 from app.services.ai.multi_frame_reader import TimedFrame
 
 TrackProvider = Callable[[], list[TrackedBoat]]
@@ -25,32 +25,10 @@ def _color_for_track(track: TrackedBoat) -> tuple[int, int, int]:
     return _COLOR_CONFIRMED
 
 
-def _map_xyxy_to_fused(
-    box: np.ndarray,
-    member: Any,
-    source_h: int,
-    source_w: int,
-) -> tuple[int, int, int, int] | None:
-    if source_h <= 0 or source_w <= 0:
-        return None
-    tile_w = int(member.layout_w or source_w)
-    tile_h = int(member.layout_h or source_h)
-    scale_x = tile_w / float(source_w)
-    scale_y = tile_h / float(source_h)
-    layout_x = int(member.layout_x or 0)
-    layout_y = int(member.layout_y or 0)
-    x1, y1, x2, y2 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    fx1 = int(layout_x + x1 * scale_x)
-    fy1 = int(layout_y + y1 * scale_y)
-    fx2 = int(layout_x + x2 * scale_x)
-    fy2 = int(layout_y + y2 * scale_y)
-    return fx1, fy1, fx2, fy2
-
-
 def draw_fused_track_overlay(
     fused: np.ndarray,
     *,
-    members_by_camera: dict[int, Any],
+    members_by_camera: dict[int, FusionMember],
     batch: dict[int, TimedFrame],
     track_providers: list[TrackProvider],
 ) -> np.ndarray:
@@ -73,7 +51,12 @@ def draw_fused_track_overlay(
             if member is None or timed is None or timed.frame is None:
                 continue
             source_h, source_w = timed.frame.shape[:2]
-            mapped = _map_xyxy_to_fused(track.box, member, source_h, source_w)
+            mapped = map_detection_box_to_fused_layout(
+                track.box,
+                member,
+                source_h,
+                source_w,
+            )
             if mapped is None:
                 continue
             x1, y1, x2, y2 = mapped
