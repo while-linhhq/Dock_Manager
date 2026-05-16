@@ -14,7 +14,7 @@ export const OverBerthLimitBadge: React.FC<OverBerthLimitBadgeProps> = ({ classN
         'px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-orange-600 dark:text-orange-400',
         className,
       )}
-      title="Tàu đã vượt giới hạn neo đậu đã cấu hình"
+      title="Tàu này đã vượt giới hạn neo đậu (theo mã tàu) trong kỳ đã cấu hình"
     >
       <AlertTriangle className="h-3 w-3 shrink-0" />
       Quá giới hạn

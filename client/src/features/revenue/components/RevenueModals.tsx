@@ -255,7 +255,8 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
               Giới hạn neo đậu
             </p>
             <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
-              Số lần tàu được cập bến trong kỳ (đếm mọi lượt nhận diện). Để trống = không giới hạn.
+              Áp dụng cho từng tàu (theo mã tàu): số lần cập bến tối đa trong ngày/tháng, không
+              gộp cả loại tàu. Để trống = không giới hạn.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">

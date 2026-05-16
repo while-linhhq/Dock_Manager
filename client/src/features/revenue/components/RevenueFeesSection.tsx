@@ -170,7 +170,7 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                 </p>
                 {fee.berth_limit_count != null && fee.berth_limit_count > 0 && fee.berth_limit_unit ? (
                   <p className="text-[10px] text-orange-600 dark:text-orange-400 uppercase tracking-widest mt-1">
-                    Giới hạn: {fee.berth_limit_count} lần/
+                    Giới hạn mỗi tàu: {fee.berth_limit_count} lần/
                     {fee.berth_limit_unit === 'day' ? 'ngày' : 'tháng'}
                   </p>
                 ) : null}
