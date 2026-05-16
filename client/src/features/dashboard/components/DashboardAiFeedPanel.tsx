@@ -10,7 +10,6 @@ import type {
   DetectionRead,
 } from '../../../types/api.types';
 import { DashboardAiAnalyticsCharts } from './DashboardAiAnalyticsCharts';
-
 type AiPanelTab = 'live' | 'analytics';
 
 export type DashboardAiFeedPanelProps = {
@@ -33,23 +32,24 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
   onRefreshAnalytics,
 }) => {
   const [tab, setTab] = useState<AiPanelTab>('live');
-  const [pipelinePreviewUrl, setPipelinePreviewUrl] = useState<string | null>(null);
+  const [hasPreviewFrame, setHasPreviewFrame] = useState(false);
   const [previewReceivedFps, setPreviewReceivedFps] = useState(0);
   const [previewRenderFps, setPreviewRenderFps] = useState(0);
-  const previewObjectUrlRef = useRef<string | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const wsActive = tab === 'live' && Boolean(pipelineStatus?.is_running);
 
   useEffect(() => {
     if (!wsActive) {
-      if (previewObjectUrlRef.current) {
-        URL.revokeObjectURL(previewObjectUrlRef.current);
-        previewObjectUrlRef.current = null;
-      }
       const resetTimer = window.setTimeout(() => {
-        setPipelinePreviewUrl(null);
+        setHasPreviewFrame(false);
         setPreviewReceivedFps(0);
         setPreviewRenderFps(0);
+        const canvas = previewCanvasRef.current;
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
       }, 0);
       return () => window.clearTimeout(resetTimer);
     }
@@ -65,11 +65,12 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
     let attempt = 0;
     let watchdogTimer: ReturnType<typeof setInterval> | null = null;
     let lastMessageAt = Date.now();
-    let pendingPreviewUrl: string | null = null;
-    let animationFrame: number | null = null;
+    let latestBlob: Blob | null = null;
+    let decodeInFlight = false;
     let receivedCount = 0;
     let renderedCount = 0;
     let fpsWindowStartedAt = performance.now();
+    let activeBitmap: ImageBitmap | null = null;
 
     const clearReconnect = () => {
       if (reconnectTimer != null) {
@@ -85,35 +86,18 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       }
     };
 
-    const revokePreview = () => {
-      if (animationFrame != null) {
-        cancelAnimationFrame(animationFrame);
-        animationFrame = null;
+    const clearPreview = () => {
+      latestBlob = null;
+      if (activeBitmap) {
+        activeBitmap.close();
+        activeBitmap = null;
       }
-      if (pendingPreviewUrl) {
-        URL.revokeObjectURL(pendingPreviewUrl);
-        pendingPreviewUrl = null;
+      const canvas = previewCanvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (canvas && ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
-      if (previewObjectUrlRef.current) {
-        URL.revokeObjectURL(previewObjectUrlRef.current);
-        previewObjectUrlRef.current = null;
-      }
-      setPipelinePreviewUrl(null);
-    };
-
-    const flushPreviewFrame = () => {
-      animationFrame = null;
-      if (!pendingPreviewUrl) {
-        return;
-      }
-      const next = pendingPreviewUrl;
-      pendingPreviewUrl = null;
-      if (previewObjectUrlRef.current && previewObjectUrlRef.current !== next) {
-        URL.revokeObjectURL(previewObjectUrlRef.current);
-      }
-      previewObjectUrlRef.current = next;
-      setPipelinePreviewUrl(next);
-      renderedCount += 1;
+      setHasPreviewFrame(false);
     };
 
     const updateFps = () => {
@@ -126,6 +110,66 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       receivedCount = 0;
       renderedCount = 0;
       fpsWindowStartedAt = now;
+    };
+
+    const paintBitmap = (bitmap: ImageBitmap) => {
+      const canvas = previewCanvasRef.current;
+      const container = canvas?.parentElement;
+      if (!canvas || !container) {
+        bitmap.close();
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        bitmap.close();
+        return;
+      }
+      const viewW = Math.max(1, container.clientWidth);
+      const viewH = Math.max(1, container.clientHeight);
+      if (canvas.width !== viewW || canvas.height !== viewH) {
+        canvas.width = viewW;
+        canvas.height = viewH;
+      }
+      const scale = Math.min(viewW / bitmap.width, viewH / bitmap.height);
+      const drawW = bitmap.width * scale;
+      const drawH = bitmap.height * scale;
+      const offsetX = (viewW - drawW) * 0.5;
+      const offsetY = (viewH - drawH) * 0.5;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, viewW, viewH);
+      ctx.drawImage(bitmap, offsetX, offsetY, drawW, drawH);
+      if (activeBitmap) {
+        activeBitmap.close();
+      }
+      activeBitmap = bitmap;
+      setHasPreviewFrame(true);
+      renderedCount += 1;
+    };
+
+    const drainDecodeQueue = async () => {
+      if (decodeInFlight) {
+        return;
+      }
+      decodeInFlight = true;
+      while (!cancelled && latestBlob) {
+        const blob = latestBlob;
+        latestBlob = null;
+        try {
+          const bitmap = await createImageBitmap(blob);
+          if (cancelled) {
+            bitmap.close();
+            break;
+          }
+          paintBitmap(bitmap);
+        } catch {
+          // skip corrupt frame
+        }
+        updateFps();
+      }
+      decodeInFlight = false;
+      if (!cancelled && latestBlob) {
+        void drainDecodeQueue();
+      }
     };
 
     const hardResetSocket = () => {
@@ -162,20 +206,12 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       ws.onmessage = (ev: MessageEvent) => {
         lastMessageAt = Date.now();
         const blob = ev.data as Blob;
-        // Server may send text keepalive messages; ignore.
         if (!(blob instanceof Blob) || blob.size === 0) {
           return;
         }
-        const next = URL.createObjectURL(blob);
         receivedCount += 1;
-        if (pendingPreviewUrl) {
-          URL.revokeObjectURL(pendingPreviewUrl);
-        }
-        pendingPreviewUrl = next;
-        if (animationFrame == null) {
-          animationFrame = requestAnimationFrame(flushPreviewFrame);
-        }
-        updateFps();
+        latestBlob = blob;
+        void drainDecodeQueue();
       };
 
       ws.onerror = () => {
@@ -202,7 +238,7 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       clearReconnect();
       clearWatchdog();
       ws?.close();
-      revokePreview();
+      clearPreview();
     };
   }, [wsActive]);
 
@@ -273,17 +309,18 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       {tab === 'live' ? (
         <div className="aspect-video bg-black relative flex items-center justify-center group cursor-crosshair overflow-hidden">
           <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent pointer-events-none" />
-          {pipelinePreviewUrl ? (
-            <img
-              src={pipelinePreviewUrl}
-              alt=""
-              className="absolute inset-0 h-full w-full object-contain"
-            />
-          ) : (
+          <canvas
+            ref={previewCanvasRef}
+            className={cn(
+              'absolute inset-0 h-full w-full object-contain',
+              hasPreviewFrame ? 'opacity-100' : 'opacity-0',
+            )}
+          />
+          {!hasPreviewFrame ? (
             <Ship className="relative z-[1] w-20 h-20 text-white/5 group-hover:text-blue-500/10 transition-colors duration-500" />
-          )}
+          ) : null}
 
-          {pipelineStatus?.is_running && !pipelinePreviewUrl && (
+          {pipelineStatus?.is_running && !hasPreviewFrame && (
             <div className="absolute top-1/4 left-1/4 w-1/2 h-1/2 border-2 border-blue-500/50 rounded-sm z-[1]">
               <div className="absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 uppercase tracking-tighter rounded-t-sm">
                 Đang quét...
@@ -297,7 +334,7 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
             </div>
             {pipelineStatus?.is_running ? (
               <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
-                RX {previewReceivedFps} / UI {previewRenderFps} FPS
+                Nhận {previewReceivedFps} · Hiển thị {previewRenderFps} FPS
               </div>
             ) : null}
           </div>

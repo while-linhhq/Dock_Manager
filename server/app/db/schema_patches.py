@@ -351,6 +351,92 @@ def _ensure_camera_groups_layout_pipeline() -> None:
         raise
 
 
+def _ensure_anchored_identities() -> None:
+    try:
+        inspector = inspect(engine)
+        if inspector.has_table('anchored_identities'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect anchored_identities table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS anchored_identities (
+                id SERIAL PRIMARY KEY,
+                group_id INTEGER REFERENCES camera_groups(id) ON DELETE CASCADE,
+                global_id VARCHAR(80) UNIQUE NOT NULL,
+                ship_id VARCHAR(80),
+                track_id VARCHAR(100),
+                cam_a_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+                cam_b_id INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+                bbox_a JSONB NOT NULL,
+                bbox_b JSONB,
+                embedding BYTEA,
+                embedding_shape JSONB,
+                ocr_history JSONB,
+                first_seen_at TIMESTAMPTZ NOT NULL,
+                last_seen_at TIMESTAMPTZ NOT NULL,
+                anchored_at TIMESTAMPTZ NOT NULL,
+                last_track JSONB,
+                confidence DOUBLE PRECISION,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """
+        )
+        index_stmts = [
+            text('CREATE INDEX IF NOT EXISTS ix_anchored_identities_global_id ON anchored_identities(global_id)'),
+            text('CREATE INDEX IF NOT EXISTS ix_anchored_identities_group_id ON anchored_identities(group_id)'),
+            text('CREATE INDEX IF NOT EXISTS ix_anchored_identities_ship_id ON anchored_identities(ship_id)'),
+        ]
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS anchored_identities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER,
+                global_id VARCHAR(80) UNIQUE NOT NULL,
+                ship_id VARCHAR(80),
+                track_id VARCHAR(100),
+                cam_a_id INTEGER,
+                cam_b_id INTEGER,
+                bbox_a TEXT NOT NULL,
+                bbox_b TEXT,
+                embedding BLOB,
+                embedding_shape TEXT,
+                ocr_history TEXT,
+                first_seen_at TIMESTAMP NOT NULL,
+                last_seen_at TIMESTAMP NOT NULL,
+                anchored_at TIMESTAMP NOT NULL,
+                last_track TEXT,
+                confidence REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        index_stmts = []
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — create anchored_identities manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+            for index_stmt in index_stmts:
+                conn.execute(index_stmt)
+        logger.info('schema_patches: ensured anchored_identities table')
+    except Exception as err:
+        logger.error('schema_patches: failed to create anchored_identities: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
@@ -359,3 +445,4 @@ def apply_schema_patches() -> None:
     _ensure_detections_audit_image_path()
     _ensure_camera_groups()
     _ensure_camera_groups_layout_pipeline()
+    _ensure_anchored_identities()

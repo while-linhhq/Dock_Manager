@@ -102,7 +102,23 @@ def _run_seed_data() -> None:
         ('record_enable',                  'true',       'Enable video recording of detections'),
         ('record_max_duration_min',        '5',          'Max recording duration in minutes'),
         ('record_no_boat_gap_sec',         '20',         'Gap in seconds to stop recording after boat leaves'),
-        ('record_fps',                     '20',         'FPS for recorded video')
+        ('record_fps',                     '20',         'Global pipeline FPS (RTSP, AI, preview, video record)'),
+        ('seam_anchor_enabled',            'true',       'Bật seam anchor giữ ID khi tàu neo chia 2 camera'),
+        ('seam_roi_width_ratio',           '0.15',       'Tỉ lệ bề rộng vùng seam (theo width của camera kề)'),
+        ('seam_proximity_px',              '40',         'Khoảng cách (px) từ bbox tới cạnh để được anchor'),
+        ('bg_subtract_threshold',          '0.18',       'Ngưỡng tỉ lệ foreground để coi seam là OCCUPIED'),
+        ('bg_model_history',               '500',        'history của MOG2 background model'),
+        ('bg_var_threshold',               '25',         'varThreshold của MOG2'),
+        ('bg_min_seed_frames',             '100',        'Số frame seed trước khi bg model sẵn sàng'),
+        ('anchor_iou_resurrect_threshold', '0.3',        'IoU tối thiểu để resurrect anchor khi YOLO detect lại'),
+        ('anchor_embedding_match_enabled', 'true',       'Bật so khớp embedding khi re-validate / resurrect'),
+        ('anchor_embedding_sim_threshold', '0.65',       'Cosine similarity tối thiểu cho embedding match'),
+        ('anchor_revalidation_sec',        '5.0',        'Chu kỳ re-validate appearance (giây)'),
+        ('anchor_departed_grace_sec',      '30.0',       'Thời gian chờ trước khi coi tàu đã rời (giây)'),
+        ('anchor_max_duration_sec',        '172800',     'Tối đa giữ anchor (giây) để tránh kẹt vô hạn'),
+        ('anchor_db_update_debounce_sec',  '30.0',       'Debounce ghi last_seen vào DB cho anchor (giây)'),
+        ('anchor_min_stationary_sec',        '8.0',        'Thời gian tàu STATIC tối thiểu trước khi được anchor'),
+        ('anchor_color_hsv_tolerance_h',   '15',         'Dung sai Hue (độ) khi so màu re-validate anchor')
     ON CONFLICT (key) DO NOTHING;
     """
     with engine.connect() as conn:

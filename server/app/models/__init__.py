@@ -15,6 +15,7 @@ from app.models.audit_log import AuditLog
 from app.models.export_log import ExportLog
 from app.models.camera import Camera
 from app.models.camera_group import CameraGroup, CameraGroupMember
+from app.models.anchored_identity import AnchoredIdentity
 
 __all__ = [
     'Role',
@@ -35,4 +36,5 @@ __all__ = [
     'Camera',
     'CameraGroup',
     'CameraGroupMember',
+    'AnchoredIdentity',
 ]

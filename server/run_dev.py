@@ -32,8 +32,9 @@ def main() -> None:
 
     host = os.environ.get('HOST', '127.0.0.1')
     port = int(os.environ.get('PORT', '8000'))
-    reload = os.environ.get('UVICORN_RELOAD', '1').lower() not in ('0', 'false', 'no', 'off')
-    graceful = int(os.environ.get('GRACEFUL_SHUTDOWN', '5'))
+    # Hot-reload + GPU pipeline (YOLO/Paddle) often freezes the machine; use UVICORN_RELOAD=0 while testing AI.
+    reload = os.environ.get('UVICORN_RELOAD', '0').lower() not in ('0', 'false', 'no', 'off')
+    graceful = int(os.environ.get('GRACEFUL_SHUTDOWN', '15'))
 
     try:
         uvicorn.run(

@@ -16,9 +16,11 @@ def cache_key(b, idx):
     return f"{idx}_{b[0]}_{b[1]}_{b[2]}_{b[3]}"
 
 
-def ocr_cache_key_track(track_id: str | int) -> str:
+def ocr_cache_key_track(track_id: str | int, camera_id: int | None = None) -> str:
     """Stable OCR cache key across frames (replaces bbox-based key)."""
-    return f"t{track_id}"
+    if camera_id is not None:
+        return f'c{int(camera_id)}:t{track_id}'
+    return f't{track_id}'
 
 
 def put_queue_drop_oldest(q: "queue.Queue", payload):

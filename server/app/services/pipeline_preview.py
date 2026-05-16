@@ -1,4 +1,4 @@
-"""Latest-frame JPEG preview hub for WebSocket preview streams."""
+"""Latest-frame JPEG preview hub for dashboard WebSocket (/pipeline/preview-stream)."""
 
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ _latest_frame_seq = 0
 _encoded_frame_seq = 0
 _jpeg: bytes | None = None
 _min_interval_sec = 0.05
-_jpeg_quality = 72
+_jpeg_quality = 58
 _max_width = 960
 
 
 def set_target_fps(fps: float) -> None:
-    """Set preview JPEG encode cadence. This should mirror runtime record_fps."""
+    """Set preview JPEG encode cadence (same as record_fps — single global pipeline FPS)."""
     global _min_interval_sec
     try:
         f = float(fps)
@@ -31,6 +31,16 @@ def set_target_fps(fps: float) -> None:
     if f <= 0:
         return
     _min_interval_sec = max(0.0, 1.0 / f)
+
+
+def set_max_width(width: int) -> None:
+    global _max_width
+    try:
+        w = int(width)
+    except Exception:
+        return
+    if w > 0:
+        _max_width = w
 
 
 def _ensure_encoder_thread() -> None:
@@ -48,7 +58,7 @@ def _resize_for_preview(frame: np.ndarray) -> np.ndarray:
     if w <= _max_width:
         return frame
     scale = _max_width / float(w)
-    return cv2.resize(frame, (int(w * scale), int(h * scale)))
+    return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
 def _encoder_loop() -> None:
@@ -57,14 +67,14 @@ def _encoder_loop() -> None:
     while not _stop_event.is_set():
         with _frame_ready:
             while not _stop_event.is_set() and _latest_frame_seq <= _encoded_frame_seq:
-                _frame_ready.wait(timeout=0.5)
+                _frame_ready.wait(timeout=0.25)
             if _stop_event.is_set():
                 return
             wait_sec = next_encode - time.monotonic()
             if wait_sec > 0:
-                _frame_ready.wait(timeout=min(wait_sec, 0.05))
+                _frame_ready.wait(timeout=min(wait_sec, 0.02))
                 continue
-            frame = None if _latest_frame is None else _latest_frame.copy()
+            frame = None if _latest_frame is None else _latest_frame
             frame_seq = _latest_frame_seq
 
         if frame is None:
@@ -80,9 +90,10 @@ def _encoder_loop() -> None:
         if not ok:
             continue
 
-        with _lock:
+        with _frame_ready:
             _jpeg = buf.tobytes()
             _encoded_frame_seq = frame_seq
+            _frame_ready.notify_all()
 
 
 def push_bgr_frame(frame: np.ndarray) -> None:
@@ -91,9 +102,23 @@ def push_bgr_frame(frame: np.ndarray) -> None:
     _ensure_encoder_thread()
     global _latest_frame, _latest_frame_seq
     with _frame_ready:
-        _latest_frame = frame.copy()
+        _latest_frame = frame
         _latest_frame_seq += 1
         _frame_ready.notify_all()
+
+
+def wait_for_jpeg(last_sequence: int, timeout: float = 1.0) -> tuple[int, bytes | None]:
+    """Block until a newer JPEG is ready (used by dashboard WebSocket)."""
+    deadline = time.monotonic() + max(0.05, float(timeout))
+    with _frame_ready:
+        while not _stop_event.is_set():
+            if _encoded_frame_seq > last_sequence and _jpeg is not None:
+                return _encoded_frame_seq, _jpeg
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _frame_ready.wait(timeout=min(remaining, 0.05))
+        return _encoded_frame_seq, _jpeg if _encoded_frame_seq > last_sequence else None
 
 
 def get_jpeg() -> bytes | None:
@@ -117,6 +142,7 @@ def clear() -> None:
         _frame_ready.notify_all()
     if _encoder_thread is not None:
         _encoder_thread.join(timeout=1.0)
+    _stop_event.clear()
     with _lock:
         _encoder_thread = None
         _jpeg = None

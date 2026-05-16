@@ -15,8 +15,9 @@ from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
-from app.services.ai.motion_classifier import MotionClassifier
-from app.services.ai.ocr_worker import OcrWorkerThread
+from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
+from app.services.ai.seam_anchor_color import extract_dominant_hsv
+from app.services.ai.ocr_worker import OcrQueueItem, OcrWorkerThread
 from app.utils.ai.overlay import draw_ship_detection_overlay
 from app.utils.ai.pipeline_utils import clamp_box, put_queue_drop_oldest
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
@@ -65,6 +66,7 @@ class PerCameraPipeline(threading.Thread):
         runs_base: str,
         on_image_captured=None,
         input_frame_queue: queue.Queue | None = None,
+        shared_ocr_queue: queue.Queue | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -101,23 +103,28 @@ class PerCameraPipeline(threading.Thread):
             clip_limit=config.clahe_clip_limit,
             tile_grid_size=config.clahe_tile_size,
         )
-        self._ocr_queue: queue.Queue | None = queue.Queue(maxsize=5) if config.enable_ocr else None
+        self._shared_ocr_queue = shared_ocr_queue
+        self._ocr_queue: queue.Queue | None = None
         self._ocr_worker: OcrWorkerThread | None = None
-        if config.enable_ocr and self._ocr_queue is not None:
-            self._ocr_worker = OcrWorkerThread(
-                ShipIdRecognizer(),
-                self._ocr_queue,
-                self._ocr_cache,
-                self._ocr_lock,
-                self._stop_event,
-                config.ocr_label_ttl_sec,
-                config.save_min_interval_sec,
-                boat_tracker=self._tracker,
-                runs_base=runs_base,
-                save_ocr_audit_frames=config.ocr_audit_save_frames,
-                on_image_captured=on_image_captured,
-                on_ocr_result=self._on_ocr_result,
-            )
+        if config.enable_ocr:
+            if shared_ocr_queue is not None:
+                self._ocr_queue = shared_ocr_queue
+            else:
+                self._ocr_queue = queue.Queue(maxsize=5)
+                self._ocr_worker = OcrWorkerThread(
+                    ShipIdRecognizer(),
+                    self._ocr_queue,
+                    self._ocr_cache,
+                    self._ocr_lock,
+                    self._stop_event,
+                    config.ocr_label_ttl_sec,
+                    config.save_min_interval_sec,
+                    boat_tracker=self._tracker,
+                    runs_base=runs_base,
+                    save_ocr_audit_frames=config.ocr_audit_save_frames,
+                    on_image_captured=on_image_captured,
+                    on_ocr_result=self._on_ocr_result,
+                )
         self._frame_count = 0
         self._fps_started_at: float | None = None
 
@@ -193,13 +200,34 @@ class PerCameraPipeline(threading.Thread):
             self._ocr_lock,
             self.config.ocr_label_ttl_sec,
             fps_est,
-            self.config.resize_scale,
+            1.0,
         )
-
         if self.config.enable_preview_stream:
-            pipeline_preview.push_bgr_frame(overlay_frame)
+            display_frame = overlay_frame
+            if self.config.resize_scale != 1.0:
+                display_frame = draw_ship_detection_overlay(
+                    annotated,
+                    tracked_boats,
+                    self._ocr_cache,
+                    self._ocr_lock,
+                    self.config.ocr_label_ttl_sec,
+                    fps_est,
+                    self.config.resize_scale,
+                )
+            pipeline_preview.push_bgr_frame(display_frame)
         if self._video_queue is not None:
-            put_queue_drop_oldest(self._video_queue, (overlay_frame, tracked_boats))
+            video_frame = overlay_frame
+            if self.config.resize_scale != 1.0:
+                video_frame = draw_ship_detection_overlay(
+                    annotated,
+                    tracked_boats,
+                    self._ocr_cache,
+                    self._ocr_lock,
+                    self.config.ocr_label_ttl_sec,
+                    fps_est,
+                    self.config.resize_scale,
+                )
+            put_queue_drop_oldest(self._video_queue, (video_frame, tracked_boats))
 
         self._queue_ocr(raw_frame, tracked_boats)
 
@@ -211,6 +239,13 @@ class PerCameraPipeline(threading.Thread):
         crop = frame[y1:y2, x1:x2]
         embedding = self._embedding_extractor.extract(crop)
         motion_state = self._motion_classifier.classify(frame, track)
+        now = time.time()
+        if motion_state == MOTION_STATIC:
+            if track.static_since_ts is None:
+                track.static_since_ts = now
+        else:
+            track.static_since_ts = None
+        dominant_hsv = extract_dominant_hsv(frame, (x1, y1, x2 - x1, y2 - y1))
         self._tracker.update_track_metadata(
             str(track.track_id),
             embedding=embedding,
@@ -218,6 +253,7 @@ class PerCameraPipeline(threading.Thread):
         )
         track.embedding = embedding
         track.motion_state = motion_state
+        track.dominant_color_hsv = dominant_hsv
         self._reid_manager.report_track_update(
             int(self.config.camera_id),
             track,
@@ -243,7 +279,19 @@ class PerCameraPipeline(threading.Thread):
             return
 
         items = [(track.track_id, track.box.copy()) for track in confirmed]
-        put_queue_drop_oldest(self._ocr_queue, (frame.copy(), items))
+        if self._shared_ocr_queue is not None:
+            put_queue_drop_oldest(
+                self._ocr_queue,
+                OcrQueueItem(
+                    frame=frame.copy(),
+                    boxes_list=items,
+                    boat_tracker=self._tracker,
+                    on_ocr_result=self._on_ocr_result,
+                    camera_id=int(self.config.camera_id),
+                ),
+            )
+        else:
+            put_queue_drop_oldest(self._ocr_queue, (frame.copy(), items))
 
     def _on_ocr_result(self, track_id: str, ship_id: str, confidence: float) -> None:
         self._reid_manager.report_ocr_result(

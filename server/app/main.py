@@ -62,6 +62,14 @@ async def lifespan(app: FastAPI):
         logger.exception('Schema patches failed — fix DB or run app/db/add_invoice_deleted_at.sql')
         raise
     yield
+    from app.services.pipeline_service import pipeline_service
+
+    if pipeline_service.is_running:
+        logger.info('Shutting down: stopping AI pipeline before process exit')
+        try:
+            pipeline_service.stop()
+        except Exception:
+            logger.exception('Pipeline stop failed during shutdown')
 
 
 app = FastAPI(title=settings.PROJECT_NAME, version='0.1.0', lifespan=lifespan)

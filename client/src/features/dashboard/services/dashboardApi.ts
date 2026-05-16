@@ -7,9 +7,25 @@ import type {
   DetectionRead,
 } from '../../../types/api.types';
 
+export type GpuRuntimeStatus = {
+  nvidia_smi?: boolean;
+  torch_cuda_available?: boolean;
+  paddle_cuda_count?: number;
+  paddle_gpu_ok?: boolean;
+  recommended_ocr_device?: string;
+  device_label?: string | null;
+  torch_device?: string | null;
+  vram_used_mib?: string;
+  vram_total_mib?: string;
+  errors?: string[];
+};
+
 export type PipelineStatus = {
   is_running: boolean;
   ocr_cache_size: number;
+  active_group_id?: number | null;
+  seam_anchor_active?: boolean;
+  gpu?: GpuRuntimeStatus;
 };
 
 export const dashboardApi = {

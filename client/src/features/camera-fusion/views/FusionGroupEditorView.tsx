@@ -11,6 +11,7 @@ import type { CameraGroupMember, PipelineMode } from '../types/fusion.types';
 import { FusionCanvas } from '../components/FusionCanvas';
 import { MemberList } from '../components/MemberList';
 import { BeFusedPreview } from '../components/BeFusedPreview';
+import { LockBackgroundButton } from '../../seam-anchor';
 import {
   moveMemberInCameraOrder,
   normalizeMemberPriorities,
@@ -56,6 +57,13 @@ export const FusionGroupEditorView: React.FC = () => {
   }, [id, isNew, setSelectedMemberCameraId]);
 
   const orderedMembers = useMemo(() => sortMembersByCameraOrder(members), [members]);
+  const groupIdNumber = useMemo(() => {
+    if (isNew || !id) {
+      return null;
+    }
+    const parsed = Number(id);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [id, isNew]);
 
   const moveMember = (cameraId: number, direction: -1 | 1) => {
     setMembers((current) => moveMemberInCameraOrder(current, cameraId, direction));
@@ -164,6 +172,7 @@ export const FusionGroupEditorView: React.FC = () => {
               onMembersChange={setMembers}
             />
             <CameraOrderPanel members={orderedMembers} onMove={moveMember} />
+            <SeamAnchorPanel groupId={groupIdNumber} members={orderedMembers} />
             <BeFusedPreview
               canvasWidth={canvasWidth}
               canvasHeight={canvasHeight}
@@ -171,6 +180,51 @@ export const FusionGroupEditorView: React.FC = () => {
             />
           </div>
         </div>
+      </div>
+    </div>
+  );
+};
+
+const SeamAnchorPanel: React.FC<{
+  groupId: number | null;
+  members: CameraGroupMember[];
+}> = ({ groupId, members }) => {
+  const cameraIds = members.map((member) => Number(member.camera_id));
+  const groupSaved = groupId !== null;
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-white/10 dark:bg-[#121214]">
+      <div className="mb-4">
+        <p className="text-xs font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+          Seam Anchor — nền cảng tham chiếu
+        </p>
+        <p className="text-xs text-gray-500">
+          Chụp frame "cảng trống không có tàu" làm background. Khi tàu neo bị chia 2 camera ở vùng giáp ranh,
+          mô hình so sánh với nền này để giữ ID đang neo và tính thời gian đúng.
+        </p>
+      </div>
+      {!groupSaved ? (
+        <p className="mb-2 text-xs text-amber-600 dark:text-amber-400">
+          Lưu group trước, sau đó quay lại để chụp nền tham chiếu.
+        </p>
+      ) : null}
+      <div className="flex flex-wrap items-start gap-3">
+        <LockBackgroundButton
+          groupId={groupId ?? undefined}
+          forceCapture
+          disabled={!groupSaved || cameraIds.length === 0}
+          label="Lock all in group"
+        />
+        {members.map((member) => (
+          <LockBackgroundButton
+            key={member.camera_id}
+            groupId={groupId ?? undefined}
+            cameraIds={[Number(member.camera_id)]}
+            forceCapture
+            disabled={!groupSaved}
+            size="sm"
+            label={member.camera?.camera_name ?? `Camera ${member.camera_id}`}
+          />
+        ))}
       </div>
     </div>
   );

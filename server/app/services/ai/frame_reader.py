@@ -4,6 +4,10 @@ import queue
 import threading
 import time
 
+from app.utils.ai.ffmpeg_log import suppress_ffmpeg_decoder_logs
+
+suppress_ffmpeg_decoder_logs()
+
 import cv2
 
 try:

@@ -21,4 +21,4 @@ INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (269, 'record_enable', 'true', 'Enable video recording of detections', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (270, 'record_max_duration_min', '5', 'Max recording duration in minutes', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (271, 'record_no_boat_gap_sec', '20', 'Gap in seconds to stop recording after boat leaves', NULL, '2026-04-10 16:02:06.80794+00');
-INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (272, 'record_fps', '20', 'FPS for recorded video', NULL, '2026-04-10 16:02:06.80794+00');
+INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (272, 'record_fps', '20', 'Global pipeline FPS (RTSP, AI, preview, video record)', NULL, '2026-04-10 16:02:06.80794+00');

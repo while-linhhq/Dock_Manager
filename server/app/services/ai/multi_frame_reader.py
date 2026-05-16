@@ -5,6 +5,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from app.utils.ai.ffmpeg_log import suppress_ffmpeg_decoder_logs
+
+suppress_ffmpeg_decoder_logs()
+
 import cv2
 
 from app.services.ai.frame_reader import open_rtsp

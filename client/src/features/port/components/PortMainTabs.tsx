@@ -1,13 +1,14 @@
 import React from 'react';
-import { Settings, Cpu, ShieldCheck } from 'lucide-react';
+import { Settings, Cpu, ShieldCheck, Anchor } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 
-export type PortMainTab = 'detections' | 'configs' | 'pipeline';
+export type PortMainTab = 'detections' | 'configs' | 'pipeline' | 'seam-anchor';
 
 const TABS: { id: PortMainTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'detections', label: 'Nhận Diện', icon: ShieldCheck },
   { id: 'configs', label: 'Cấu Hình', icon: Settings },
   { id: 'pipeline', label: 'AI Pipeline', icon: Cpu },
+  { id: 'seam-anchor', label: 'Seam Anchor', icon: Anchor },
 ];
 
 export type PortMainTabsProps = {

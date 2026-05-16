@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.services.storage.minio_service import put_bytes, put_file
 
 from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
+from app.services.ai.background_model import BackgroundModelConfig, BackgroundModelRegistry
 from app.services.ai.boat_tracker import BoatTracker
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
@@ -28,8 +29,10 @@ from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.group_frame_hub import GroupFrameHub
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
+from app.services.ai.seam_anchor_verifier import SeamAnchorConfig, SeamAnchorVerifier
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 from app.services.ai.video_recorder import VideoRecorderThread
+from app.utils.ai.gpu_probe import log_gpu_runtime_status
 from app.utils.ai.yolo_detector import load_yolo_detector
 from app.services.ai.yolo_worker import YoloWorkerThread
 from app.services import pipeline_preview
@@ -107,7 +110,16 @@ class PipelineService:
         self._detector_lock = threading.Lock()
         self._detector_signature: tuple[str, str, float] | None = None
         self._boat_tracker: BoatTracker = BoatTracker()
+        self._bg_registry: BackgroundModelRegistry | None = None
+        self._seam_anchor_verifier: SeamAnchorVerifier | None = None
+        self._active_group_id: int | None = None
         self._db: Session | None = None
+        self._gpu_status: dict[str, Any] | None = None
+
+    @staticmethod
+    def _configure_dashboard_preview(runtime_cfg: dict[str, Any]) -> None:
+        pipeline_preview.set_target_fps(max(1, int(runtime_cfg['record_fps'])))
+        pipeline_preview.set_max_width(int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)))
 
     def _reset_runtime_queues(self) -> None:
         self._frame_queue = queue.Queue(maxsize=5)
@@ -262,6 +274,70 @@ class PipelineService:
                     int(settings.FUSED_FRAME_MAX_HEIGHT),
                 ),
             ),
+            'seam_anchor_enabled': self._to_bool(
+                cfg_map.get('seam_anchor_enabled', ''),
+                bool(settings.SEAM_ANCHOR_ENABLED),
+            ),
+            'seam_roi_width_ratio': self._to_float(
+                cfg_map.get('seam_roi_width_ratio', ''),
+                float(settings.SEAM_ROI_WIDTH_RATIO),
+            ),
+            'seam_proximity_px': max(
+                1,
+                self._to_int(cfg_map.get('seam_proximity_px', ''), int(settings.SEAM_PROXIMITY_PX)),
+            ),
+            'bg_subtract_threshold': self._to_float(
+                cfg_map.get('bg_subtract_threshold', ''),
+                float(settings.BG_SUBTRACT_THRESHOLD),
+            ),
+            'bg_model_history': max(
+                10,
+                self._to_int(cfg_map.get('bg_model_history', ''), int(settings.BG_MODEL_HISTORY)),
+            ),
+            'bg_var_threshold': self._to_float(
+                cfg_map.get('bg_var_threshold', ''),
+                float(settings.BG_VAR_THRESHOLD),
+            ),
+            'bg_min_seed_frames': max(
+                1,
+                self._to_int(cfg_map.get('bg_min_seed_frames', ''), int(settings.BG_MIN_SEED_FRAMES)),
+            ),
+            'anchor_iou_resurrect_threshold': self._to_float(
+                cfg_map.get('anchor_iou_resurrect_threshold', ''),
+                float(settings.ANCHOR_IOU_RESURRECT_THRESHOLD),
+            ),
+            'anchor_embedding_match_enabled': self._to_bool(
+                cfg_map.get('anchor_embedding_match_enabled', ''),
+                bool(settings.ANCHOR_EMBEDDING_MATCH_ENABLED),
+            ),
+            'anchor_embedding_sim_threshold': self._to_float(
+                cfg_map.get('anchor_embedding_sim_threshold', ''),
+                float(settings.ANCHOR_EMBEDDING_SIM_THRESHOLD),
+            ),
+            'anchor_revalidation_sec': self._to_float(
+                cfg_map.get('anchor_revalidation_sec', ''),
+                float(settings.ANCHOR_REVALIDATION_SEC),
+            ),
+            'anchor_departed_grace_sec': self._to_float(
+                cfg_map.get('anchor_departed_grace_sec', ''),
+                float(settings.ANCHOR_DEPARTED_GRACE_SEC),
+            ),
+            'anchor_max_duration_sec': self._to_float(
+                cfg_map.get('anchor_max_duration_sec', ''),
+                float(settings.ANCHOR_MAX_DURATION_SEC),
+            ),
+            'anchor_db_update_debounce_sec': self._to_float(
+                cfg_map.get('anchor_db_update_debounce_sec', ''),
+                float(settings.ANCHOR_DB_UPDATE_DEBOUNCE_SEC),
+            ),
+            'anchor_min_stationary_sec': self._to_float(
+                cfg_map.get('anchor_min_stationary_sec', ''),
+                float(settings.ANCHOR_MIN_STATIONARY_SEC),
+            ),
+            'anchor_color_hsv_tolerance_h': self._to_int(
+                cfg_map.get('anchor_color_hsv_tolerance_h', ''),
+                int(settings.ANCHOR_COLOR_HSV_TOLERANCE_H),
+            ),
         }
 
     @property
@@ -270,6 +346,29 @@ class PipelineService:
         hybrid_running = any(pipeline.is_alive() for pipeline in self._per_camera_pipelines)
         hub_running = self._group_frame_hub is not None and self._group_frame_hub.is_alive()
         return single_running or hub_running or hybrid_running
+
+    @property
+    def active_group_id(self) -> int | None:
+        return self._active_group_id
+
+    @property
+    def seam_anchor_verifier(self) -> SeamAnchorVerifier | None:
+        return self._seam_anchor_verifier
+
+    @property
+    def bg_registry(self) -> BackgroundModelRegistry | None:
+        return self._bg_registry
+
+    def get_latest_camera_frame(self, camera_id: int):
+        if self._group_frame_hub is None:
+            return None
+        try:
+            snapshot = self._group_frame_hub.frame_buffer.snapshot(copy_frames=True)
+        except Exception:
+            _log.exception('get_latest_camera_frame: snapshot failed')
+            return None
+        timed = snapshot.get(int(camera_id))
+        return timed.frame if timed is not None else None
 
     def _upload_captured_image(
         self,
@@ -493,6 +592,7 @@ class PipelineService:
             _log.warning("Pipeline is already running")
             return
 
+        self._gpu_status = log_gpu_runtime_status('pipeline_start_single')
         self._stop.clear()
         self._reset_runtime_queues()
         pipeline_preview.clear()
@@ -542,7 +642,7 @@ class PipelineService:
             target_fps=runtime_cfg['record_fps'],
         )
         try:
-            pipeline_preview.set_target_fps(runtime_cfg['record_fps'])
+            self._configure_dashboard_preview(runtime_cfg)
         except Exception:
             pass
         self._yolo_worker = YoloWorkerThread(
@@ -597,6 +697,67 @@ class PipelineService:
                 ordered.append(camera_key)
         return ordered
 
+    def _build_seam_anchor(
+        self,
+        *,
+        camera_order: list[int],
+        runtime_cfg: dict[str, Any],
+        group_id: int | None,
+        embedding_extractor: EmbeddingExtractor | None,
+        on_release: Any,
+    ) -> tuple[BackgroundModelRegistry | None, SeamAnchorVerifier | None]:
+        if not runtime_cfg.get('seam_anchor_enabled', True) or len(camera_order) < 2:
+            return None, None
+
+        from app.repositories.anchored_identity_repository import anchored_identity_repo
+        from app.services.ai import seam_anchor_baseline
+
+        bg_cfg = BackgroundModelConfig(
+            history=int(runtime_cfg['bg_model_history']),
+            var_threshold=float(runtime_cfg['bg_var_threshold']),
+            min_seed_frames=int(runtime_cfg['bg_min_seed_frames']),
+        )
+        bg_registry = BackgroundModelRegistry(bg_cfg)
+        for camera_id in camera_order:
+            model = bg_registry.ensure(int(camera_id))
+            baseline = seam_anchor_baseline.load_baseline(group_id, int(camera_id))
+            if baseline is not None:
+                model.lock_from_frame(baseline)
+                _log.info(
+                    'seam_anchor: restored baseline for camera_id=%s group_id=%s',
+                    camera_id,
+                    group_id,
+                )
+
+        anchor_cfg = SeamAnchorConfig(
+            enabled=True,
+            seam_roi_width_ratio=float(runtime_cfg['seam_roi_width_ratio']),
+            seam_proximity_px=int(runtime_cfg['seam_proximity_px']),
+            bg_subtract_threshold=float(runtime_cfg['bg_subtract_threshold']),
+            iou_resurrect_threshold=float(runtime_cfg['anchor_iou_resurrect_threshold']),
+            embedding_match_enabled=bool(runtime_cfg['anchor_embedding_match_enabled']),
+            embedding_sim_threshold=float(runtime_cfg['anchor_embedding_sim_threshold']),
+            revalidation_sec=float(runtime_cfg['anchor_revalidation_sec']),
+            departed_grace_sec=float(runtime_cfg['anchor_departed_grace_sec']),
+            max_duration_sec=float(runtime_cfg['anchor_max_duration_sec']),
+            db_update_debounce_sec=float(runtime_cfg['anchor_db_update_debounce_sec']),
+            min_stationary_sec=float(runtime_cfg['anchor_min_stationary_sec']),
+            color_hsv_tolerance_h=int(runtime_cfg['anchor_color_hsv_tolerance_h']),
+        )
+        verifier = SeamAnchorVerifier(
+            bg_registry=bg_registry,
+            camera_order=camera_order,
+            config=anchor_cfg,
+            on_release=on_release,
+            embedding_extractor=embedding_extractor,
+            anchored_repo=anchored_identity_repo,
+            group_id=group_id,
+        )
+        verifier.restore_from_db()
+        if self._reid_manager is not None:
+            self._reid_manager.sync_restored_anchors(verifier.states_snapshot())
+        return bg_registry, verifier
+
     def _start_group_hybrid(
         self,
         group: Any,
@@ -621,8 +782,19 @@ class PipelineService:
             device=runtime_cfg['device'],
         )
 
+        reid_manager = self._reid_manager
+        self._bg_registry, self._seam_anchor_verifier = self._build_seam_anchor(
+            camera_order=camera_order,
+            runtime_cfg=runtime_cfg,
+            group_id=int(getattr(group, 'id', 0) or 0) or None,
+            embedding_extractor=embedding_extractor,
+            on_release=reid_manager.handle_anchor_release,
+        )
+        if self._seam_anchor_verifier is not None:
+            self._reid_manager.set_seam_anchor_verifier(self._seam_anchor_verifier)
+
         try:
-            pipeline_preview.set_target_fps(runtime_cfg['record_fps'])
+            self._configure_dashboard_preview(runtime_cfg)
         except Exception:
             pass
 
@@ -638,6 +810,23 @@ class PipelineService:
             )
             self._video_worker.start()
 
+        if ocr_active:
+            recognizer = ShipIdRecognizer()
+            self._ocr_queue = queue.Queue(maxsize=max(20, len(camera_order) * 8))
+            self._ocr_worker = OcrWorkerThread(
+                recognizer,
+                self._ocr_queue,
+                self.ocr_cache,
+                self.ocr_lock,
+                self._stop,
+                runtime_cfg['ocr_label_ttl_sec'],
+                runtime_cfg['save_min_interval_sec'],
+                runs_base=str(self._runtime_media_base / 'detect'),
+                save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
+                on_image_captured=self._upload_captured_image,
+            )
+            self._ocr_worker.start()
+
         self._group_frame_hub = GroupFrameHub(
             group=group,
             enabled_members=enabled_members,
@@ -645,6 +834,8 @@ class PipelineService:
             stop_event=self._stop,
             video_queue=self._video_queue if runtime_cfg['record_enable'] else None,
             distribute_per_camera=True,
+            bg_registry=self._bg_registry,
+            seam_anchor_verifier=self._seam_anchor_verifier,
         )
 
         self._per_camera_pipelines = []
@@ -685,11 +876,12 @@ class PipelineService:
                     runs_base=str(self._runtime_media_base / 'detect'),
                     on_image_captured=self._upload_captured_image,
                     input_frame_queue=self._group_frame_hub.queue_for_camera(camera_id),
+                    shared_ocr_queue=self._ocr_queue if ocr_active else None,
                 )
             )
 
         self._group_frame_hub.set_track_providers(
-            [pipeline.tracker.confirmed_boats for pipeline in self._per_camera_pipelines]
+            [pipeline.tracker.all_active for pipeline in self._per_camera_pipelines]
         )
         self._group_frame_hub.start()
         for pipeline in self._per_camera_pipelines:
@@ -707,6 +899,7 @@ class PipelineService:
             _log.warning('Pipeline is already running')
             return
 
+        self._gpu_status = log_gpu_runtime_status('pipeline_start_group')
         enabled_members = [
             member
             for member in group.members
@@ -745,6 +938,8 @@ class PipelineService:
         if pipeline_mode not in {'hybrid', 'fused'}:
             pipeline_mode = 'hybrid'
 
+        self._active_group_id = int(getattr(group, 'id', 0) or 0) or None
+
         if pipeline_mode == 'hybrid':
             self._start_group_hybrid(
                 group,
@@ -776,7 +971,7 @@ class PipelineService:
         )
         self._group_frame_hub.set_track_providers([self._boat_tracker.confirmed_boats])
         try:
-            pipeline_preview.set_target_fps(runtime_cfg['record_fps'])
+            self._configure_dashboard_preview(runtime_cfg)
         except Exception:
             pass
 
@@ -863,8 +1058,16 @@ class PipelineService:
         self._group_frame_hub = None
         self._per_camera_pipelines = []
         self._reid_manager = None
+        self._seam_anchor_verifier = None
+        self._bg_registry = None
+        self._active_group_id = None
         pipeline_preview.clear()
+        self._gpu_status = None
         _log.info("Pipeline stopped")
+
+    @property
+    def gpu_status(self) -> dict[str, Any] | None:
+        return self._gpu_status
 
     def test_video_sync(
         self,

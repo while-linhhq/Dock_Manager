@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import numpy as np
 
 from app.services.ai.boat_tracker import TrackedBoat
 from app.services.ai.embedding_extractor import cosine_similarity, normalize_embedding
+
+if TYPE_CHECKING:
+    from app.services.ai.seam_anchor_verifier import SeamAnchorVerifier
+
+
+_log = logging.getLogger(__name__)
 
 
 TrackKey = tuple[int, str]
@@ -28,6 +36,7 @@ class GlobalIdentity:
     removed_tracks: set[TrackKey] = field(default_factory=set)
     last_track: TrackedBoat | None = None
     finalized: bool = False
+    anchored: bool = False
 
 
 class CrossCameraReIdManager:
@@ -48,6 +57,7 @@ class CrossCameraReIdManager:
         primary_zone_ratio: float = 0.8,
         edge_zone_ratio: float = 0.1,
         on_global_track_removed=None,
+        seam_anchor_verifier: 'SeamAnchorVerifier | None' = None,
     ) -> None:
         self._camera_order = [int(camera_id) for camera_id in camera_order]
         self._camera_index = {
@@ -58,9 +68,59 @@ class CrossCameraReIdManager:
         self._primary_zone_ratio = float(np.clip(primary_zone_ratio, 0.2, 1.0))
         self._edge_zone_ratio = float(np.clip(edge_zone_ratio, 0.01, 0.45))
         self._on_global_track_removed = on_global_track_removed
+        self._seam_anchor_verifier = seam_anchor_verifier
         self._identities: dict[str, GlobalIdentity] = {}
         self._track_to_global: dict[TrackKey, str] = {}
         self._lock = threading.RLock()
+
+    def set_seam_anchor_verifier(self, verifier: 'SeamAnchorVerifier | None') -> None:
+        self._seam_anchor_verifier = verifier
+
+    def sync_restored_anchors(self, states: list[Any]) -> None:
+        """Mark identities restored from DB as anchored so they are not finalized early."""
+        with self._lock:
+            for state in states:
+                global_id = str(state.global_id)
+                identity = self._identities.get(global_id)
+                if identity is None:
+                    identity = GlobalIdentity(
+                        global_id=global_id,
+                        ship_id=state.ship_id,
+                        camera_tracks={int(state.cam_a_id): str(state.track_id)},
+                        first_seen_ts=float(state.first_seen_ts),
+                        last_seen_ts=float(state.last_seen_ts),
+                        primary_camera_id=int(state.cam_a_id),
+                        anchored=True,
+                        last_track=state.last_track,
+                    )
+                    if state.embedding is not None:
+                        identity.embeddings.append(state.embedding)
+                    if state.ocr_history:
+                        identity.ocr_history = list(state.ocr_history)
+                    self._identities[global_id] = identity
+                else:
+                    identity.anchored = True
+                    identity.last_seen_ts = max(
+                        identity.last_seen_ts, float(state.last_seen_ts)
+                    )
+                    if state.last_track is not None:
+                        identity.last_track = state.last_track
+
+    def handle_anchor_release(self, global_id: str, last_seen_ts: float) -> None:
+        """SeamAnchorVerifier callback: anchor departed, finalize identity now."""
+        with self._lock:
+            identity = self._identities.get(str(global_id))
+            if identity is None:
+                return
+            identity.anchored = False
+            ts = float(last_seen_ts)
+            identity.last_seen_ts = max(identity.last_seen_ts, ts)
+            if identity.last_track is not None:
+                identity.last_track.last_seen_ts = max(
+                    identity.last_track.last_seen_ts, ts
+                )
+            if not identity.finalized:
+                self._finalize_identity_locked(identity)
 
     def adjacent_camera_ids(self, camera_id: int) -> list[int]:
         camera_key = int(camera_id)
@@ -88,6 +148,25 @@ class CrossCameraReIdManager:
             track_key = (camera_key, str(track.track_id))
             global_id = self._track_to_global.get(track_key)
             identity = self._identities.get(global_id) if global_id else None
+
+            if identity is None and self._seam_anchor_verifier is not None:
+                resurrected_id = self._seam_anchor_verifier.try_resurrect(
+                    camera_key,
+                    track.box,
+                    embedding,
+                )
+                if resurrected_id is not None:
+                    identity = self._identities.get(resurrected_id)
+                    if identity is not None:
+                        identity.anchored = False
+                        _log.info(
+                            'reid: track reattached via seam anchor global_id=%s '
+                            'camera_id=%s track_id=%s',
+                            resurrected_id,
+                            camera_key,
+                            track.track_id,
+                        )
+
             if identity is None:
                 identity = self._match_existing_identity(
                     camera_key,
@@ -153,6 +232,32 @@ class CrossCameraReIdManager:
             identity.removed_tracks.add(track_key)
             identity.last_seen_ts = max(identity.last_seen_ts, float(track.last_seen_ts))
             identity.last_track = track.copy_public()
+
+            if (
+                not identity.active_tracks
+                and not identity.anchored
+                and self._seam_anchor_verifier is not None
+            ):
+                last_embedding = (
+                    identity.embeddings[-1] if identity.embeddings else track.embedding
+                )
+                anchored_ok = self._seam_anchor_verifier.try_anchor(
+                    global_id=identity.global_id,
+                    ship_id=identity.ship_id,
+                    track_id=str(track.track_id),
+                    camera_id=camera_key,
+                    bbox=track.box,
+                    embedding=last_embedding,
+                    motion_state=track.motion_state,
+                    first_seen_ts=identity.first_seen_ts,
+                    last_seen_ts=identity.last_seen_ts,
+                    ocr_history=identity.ocr_history,
+                    last_track=identity.last_track,
+                    dominant_color_hsv=getattr(track, 'dominant_color_hsv', None),
+                )
+                if anchored_ok:
+                    identity.anchored = True
+
             self._flush_expired_locked(time.time())
             return identity.global_id
 
@@ -244,7 +349,7 @@ class CrossCameraReIdManager:
         for identity in self._identities.values():
             if identity.finalized:
                 continue
-            if now - identity.last_seen_ts > self._handoff_window_sec:
+            if not identity.anchored and now - identity.last_seen_ts > self._handoff_window_sec:
                 continue
             if not self._is_camera_candidate(camera_id, identity):
                 continue
@@ -323,7 +428,7 @@ class CrossCameraReIdManager:
 
     def _flush_expired_locked(self, now: float) -> None:
         for identity in list(self._identities.values()):
-            if identity.finalized or identity.active_tracks:
+            if identity.finalized or identity.active_tracks or identity.anchored:
                 continue
             if now - identity.last_seen_ts >= self._handoff_window_sec:
                 self._finalize_identity_locked(identity)

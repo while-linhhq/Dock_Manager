@@ -12,8 +12,9 @@ import os
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
 from app.utils.ai.detect_paths import (
@@ -26,6 +27,17 @@ from app.utils.ai.pipeline_utils import clamp_box, ocr_cache_key_track
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OcrQueueItem:
+    """Multi-camera hybrid: one shared OCR worker, per-job tracker + callback."""
+
+    frame: Any
+    boxes_list: list
+    boat_tracker: BoatTracker | None = None
+    on_ocr_result: Callable[[str, str, float], None] | None = None
+    camera_id: int | None = None
 
 
 def _fmt_local_dt(ts: float) -> str:
@@ -212,7 +224,21 @@ class OcrWorkerThread(threading.Thread):
                 except queue.Empty:
                     continue
 
-                frame, boxes_list = item
+                job_camera_id: int | None = None
+                job_on_result = self._on_ocr_result
+                job_tracker = self._boat_tracker
+
+                if isinstance(item, OcrQueueItem):
+                    frame = item.frame
+                    boxes_list = item.boxes_list
+                    job_camera_id = item.camera_id
+                    if item.on_ocr_result is not None:
+                        job_on_result = item.on_ocr_result
+                    if item.boat_tracker is not None:
+                        job_tracker = item.boat_tracker
+                else:
+                    frame, boxes_list = item
+
                 h, w = frame.shape[:2]
                 now = time.time()
 
@@ -239,11 +265,11 @@ class OcrWorkerThread(threading.Thread):
                     track_id_str = str(track_id)
                     x1, y1, x2, y2 = clamp_box(b, w, h)
                     crop = frame[y1:y2, x1:x2]
-                    ck = ocr_cache_key_track(track_id)
+                    ck = ocr_cache_key_track(track_id, job_camera_id)
 
                     state = (
-                        self._boat_tracker.get_track_state(track_id_str)
-                        if self._boat_tracker is not None
+                        job_tracker.get_track_state(track_id_str)
+                        if job_tracker is not None
                         else TrackState.CONFIRMED
                     )
 
@@ -255,23 +281,23 @@ class OcrWorkerThread(threading.Thread):
                         best = ocr_res[0]
                         sid = best["id"]
                         conf = float(best["confidence"])
-                        if self._on_ocr_result is not None:
+                        if job_on_result is not None:
                             try:
-                                self._on_ocr_result(track_id_str, sid, conf)
+                                job_on_result(track_id_str, sid, conf)
                             except Exception:
                                 logger.exception(
                                     'OCR result callback failed for track_id=%s',
                                     track_id_str,
                                 )
 
-                        if self._boat_tracker is not None:
-                            self._boat_tracker.add_ocr_vote(track_id_str, sid, conf)
-                            voted = self._boat_tracker.get_voted_ship_id(track_id_str)
+                        if job_tracker is not None:
+                            job_tracker.add_ocr_vote(track_id_str, sid, conf)
+                            voted = job_tracker.get_voted_ship_id(track_id_str)
                             label = f"{voted} (voted)" if voted else f"{sid} ({conf:.2f})"
                         else:
-                            label = f"{sid} ({conf:.2f})"
+                            label = f'{sid} ({conf:.2f})'
 
-                        updates.append((ck, {"text": label, "time": now}))
+                        updates.append((ck, {'text': label, 'time': now}))
 
                         if state == TrackState.CONFIRMED:
                             last_ts = self._last_cap_save_ts.get(track_id_str, 0.0)

@@ -6,12 +6,15 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.db.session import SessionLocal, get_db
 from app.repositories.camera_group_repository import camera_group_repo
 from app.repositories.camera_repository import camera_repo
 from app.repositories.user_repository import user_repo
 from app.services import pipeline_preview
+from app.services.ai import seam_anchor_baseline
+from app.services.ai.multi_frame_reader import capture_snapshot
 from app.services.pipeline_service import pipeline_service
 
 router = APIRouter()
@@ -51,7 +54,7 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
                 raise HTTPException(status_code=404, detail='Camera group not found')
             if not group.is_active:
                 raise HTTPException(status_code=400, detail='Camera group is inactive')
-            pipeline_service.start_group(group, req.enable_ocr)
+            await asyncio.to_thread(pipeline_service.start_group, group, req.enable_ocr)
             camera_group_name = group.name
             return {
                 "message": "Pipeline started",
@@ -71,7 +74,7 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
         if not resolved_source:
             raise HTTPException(status_code=400, detail='No source resolved for pipeline')
 
-        pipeline_service.start(resolved_source, req.enable_ocr)
+        await asyncio.to_thread(pipeline_service.start, resolved_source, req.enable_ocr)
         return {
             "message": "Pipeline started",
             "source": resolved_source,
@@ -87,14 +90,22 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
 async def stop_pipeline():
     if not pipeline_service.is_running:
         return {"message": "Pipeline is not running"}
-    pipeline_service.stop()
+    await asyncio.to_thread(pipeline_service.stop)
     return {"message": "Pipeline stopped"}
 
 @router.get("/status")
 async def get_status():
+    gpu = pipeline_service.gpu_status
+    if gpu is None:
+        from app.utils.ai.gpu_probe import collect_gpu_runtime_status
+
+        gpu = await asyncio.to_thread(collect_gpu_runtime_status)
     return {
         "is_running": pipeline_service.is_running,
-        "ocr_cache_size": len(pipeline_service.ocr_cache)
+        "ocr_cache_size": len(pipeline_service.ocr_cache),
+        "active_group_id": pipeline_service.active_group_id,
+        "seam_anchor_active": pipeline_service.seam_anchor_verifier is not None,
+        "gpu": gpu,
     }
 
 
@@ -129,18 +140,20 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
         last_sent = 0.0
         last_sequence = 0
         while True:
-            sequence, jpeg = pipeline_preview.get_jpeg_with_sequence()
+            sequence, jpeg = await asyncio.to_thread(
+                pipeline_preview.wait_for_jpeg,
+                last_sequence,
+                1.0,
+            )
             if jpeg and sequence > last_sequence:
                 last_sequence = sequence
                 await websocket.send_bytes(jpeg)
                 last_sent = asyncio.get_event_loop().time()
             else:
-                # Keep the connection alive even if no new frames yet (proxy/NAT idle timeout).
                 now = asyncio.get_event_loop().time()
                 if now - last_sent > 15.0:
                     await websocket.send_text('ka')
                     last_sent = now
-            await asyncio.sleep(0.05)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -167,3 +180,155 @@ async def test_video(req: PipelineTestVideoRequest):
         }
     except Exception as err:
         raise HTTPException(status_code=500, detail=str(err)) from err
+
+
+class SeamAnchorLockRequest(BaseModel):
+    group_id: Optional[int] = None
+    camera_ids: Optional[list[int]] = None
+    force_capture: bool = False
+
+    @model_validator(mode='after')
+    def validate_target(self) -> 'SeamAnchorLockRequest':
+        if self.group_id is None and not self.camera_ids:
+            raise ValueError('Either group_id or camera_ids is required')
+        return self
+
+
+def _resolve_target_cameras(
+    db: Session,
+    req: SeamAnchorLockRequest,
+) -> tuple[list[int], int | None, dict[int, str]]:
+    rtsp_by_camera: dict[int, str] = {}
+    if req.group_id is not None:
+        group = camera_group_repo.get(db, int(req.group_id))
+        if not group:
+            raise HTTPException(status_code=404, detail='Camera group not found')
+        camera_ids = [
+            int(member.camera_id)
+            for member in group.members
+            if bool(member.enabled) and getattr(member, 'camera', None) is not None
+        ]
+        for member in group.members:
+            if member.camera is not None and member.camera.rtsp_url:
+                rtsp_by_camera[int(member.camera_id)] = str(member.camera.rtsp_url)
+        if req.camera_ids:
+            filtered = [cid for cid in camera_ids if cid in set(int(x) for x in req.camera_ids)]
+            camera_ids = filtered
+        return camera_ids, int(req.group_id), rtsp_by_camera
+
+    camera_ids = [int(x) for x in (req.camera_ids or [])]
+    for camera_id in camera_ids:
+        camera = camera_repo.get(db, int(camera_id))
+        if camera is None:
+            raise HTTPException(status_code=404, detail=f'Camera {camera_id} not found')
+        if camera.rtsp_url:
+            rtsp_by_camera[int(camera_id)] = str(camera.rtsp_url)
+    return camera_ids, None, rtsp_by_camera
+
+
+@router.post('/seam-anchor/lock-background')
+async def lock_seam_anchor_background(
+    req: SeamAnchorLockRequest,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    camera_ids, group_id, rtsp_by_camera = _resolve_target_cameras(db, req)
+    if not camera_ids:
+        raise HTTPException(status_code=400, detail='No cameras resolved to lock background')
+
+    use_live_buffer = (
+        pipeline_service.is_running
+        and not req.force_capture
+        and pipeline_service.active_group_id is not None
+        and (group_id is None or pipeline_service.active_group_id == group_id)
+    )
+
+    locked: list[dict] = []
+    failures: list[dict] = []
+    for camera_id in camera_ids:
+        frame = None
+        source = 'capture'
+        if use_live_buffer:
+            frame = pipeline_service.get_latest_camera_frame(int(camera_id))
+            if frame is not None:
+                source = 'live'
+
+        if frame is None:
+            rtsp_url = rtsp_by_camera.get(int(camera_id))
+            if not rtsp_url:
+                failures.append({'camera_id': camera_id, 'reason': 'rtsp_url_missing'})
+                continue
+            frame = capture_snapshot(rtsp_url)
+            if frame is None:
+                failures.append({'camera_id': camera_id, 'reason': 'capture_failed'})
+                continue
+
+        baseline_path = seam_anchor_baseline.save_baseline(group_id, int(camera_id), frame)
+        applied = False
+        bg_registry = pipeline_service.bg_registry
+        if (
+            bg_registry is not None
+            and (group_id is None or pipeline_service.active_group_id == group_id)
+        ):
+            applied = bg_registry.lock_from_frame(int(camera_id), frame)
+
+        locked.append(
+            {
+                'camera_id': int(camera_id),
+                'source': source,
+                'baseline_path': baseline_path,
+                'applied_to_runtime': applied,
+            }
+        )
+
+    if not locked:
+        raise HTTPException(
+            status_code=503,
+            detail={'message': 'Failed to lock background', 'failures': failures},
+        )
+
+    return {
+        'locked': locked,
+        'failures': failures,
+        'group_id': group_id,
+        'used_live_buffer': use_live_buffer,
+    }
+
+
+@router.get('/seam-anchor/state')
+async def seam_anchor_state(_=Depends(get_current_user)):
+    verifier = pipeline_service.seam_anchor_verifier
+    if verifier is None:
+        return {
+            'enabled': False,
+            'anchors': [],
+            'message': 'Seam anchor verifier is not active (pipeline not running or hybrid disabled)',
+        }
+
+    states = verifier.states_snapshot()
+    anchors_payload = []
+    for state in states:
+        anchors_payload.append(
+            {
+                'global_id': state.global_id,
+                'ship_id': state.ship_id,
+                'track_id': state.track_id,
+                'cam_a_id': state.cam_a_id,
+                'cam_b_id': state.cam_b_id,
+                'bbox_a': list(state.bbox_a),
+                'bbox_b': list(state.bbox_b) if state.bbox_b else None,
+                'first_seen_ts': state.first_seen_ts,
+                'last_seen_ts': state.last_seen_ts,
+                'anchored_at': state.anchored_at,
+                'miss_started_at': state.miss_started_at,
+                'last_score_a': state.last_score_a,
+                'last_score_b': state.last_score_b,
+            }
+        )
+    debug = verifier.debug_info()
+    return {
+        'enabled': True,
+        'group_id': pipeline_service.active_group_id,
+        'anchors': anchors_payload,
+        'debug': debug,
+    }

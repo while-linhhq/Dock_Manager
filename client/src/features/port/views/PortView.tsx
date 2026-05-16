@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { usePortStore } from '../store/portStore';
@@ -11,10 +12,24 @@ import { PortMainTabs, type PortMainTab } from '../components/PortMainTabs';
 import { PortDetectionsSection } from '../components/PortDetectionsSection';
 import { PortConfigsSection } from '../components/PortConfigsSection';
 import { PortPipelineSection } from '../components/PortPipelineSection';
+import { PortSeamAnchorSection } from '../components/PortSeamAnchorSection';
 import { PortModals } from '../components/PortModals';
 
+const PORT_TAB_IDS: PortMainTab[] = ['detections', 'configs', 'pipeline', 'seam-anchor'];
+
+function parsePortTab(value: string | null): PortMainTab {
+  if (value && PORT_TAB_IDS.includes(value as PortMainTab)) {
+    return value as PortMainTab;
+  }
+  return 'detections';
+}
+
 export const PortView: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<PortMainTab>('detections');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = useMemo(
+    () => parsePortTab(searchParams.get('tab')),
+    [searchParams],
+  );
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [isPipelineModalOpen, setIsPipelineModalOpen] = useState(false);
@@ -65,10 +80,21 @@ export const PortView: React.FC = () => {
     defaultValues: { source: '', enable_ocr: true },
   });
 
+  const handleTabChange = (tab: PortMainTab) => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'detections') {
+      next.delete('tab');
+    } else {
+      next.set('tab', tab);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
   useEffect(() => {
     if (activeTab === 'detections') fetchDetections();
     if (activeTab === 'pipeline') fetchCameras();
     if (activeTab === 'configs') fetchConfigs();
+    if (activeTab === 'seam-anchor') fetchConfigs();
   }, [activeTab, fetchDetections, fetchCameras, fetchConfigs]);
 
   useEffect(() => {
@@ -259,7 +285,7 @@ export const PortView: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <PortMainTabs activeTab={activeTab} onTabChange={setActiveTab} />
+      <PortMainTabs activeTab={activeTab} onTabChange={handleTabChange} />
 
       {activeTab === 'detections' && (
         <PortDetectionsSection
@@ -307,6 +333,20 @@ export const PortView: React.FC = () => {
           configs={configs}
           onEditConfig={handleEditConfig}
           onDeleteConfig={handleDeleteConfig}
+        />
+      )}
+
+      {activeTab === 'seam-anchor' && (
+        <PortSeamAnchorSection
+          configs={configs}
+          isLoading={isLoading}
+          onUpdateConfig={(key, value, description) =>
+            upsertConfig(key, { value, description })
+          }
+          onCreateConfig={(key, value, description) =>
+            upsertConfig(null, { key, value, description })
+          }
+          onRefresh={fetchConfigs}
         />
       )}
 

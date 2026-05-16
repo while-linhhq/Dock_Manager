@@ -71,6 +71,8 @@ class TrackedBoat:
     velocity: tuple[float, float] | None = None
     embedding: np.ndarray | None = None
     motion_state: str | None = None
+    static_since_ts: float | None = None
+    dominant_color_hsv: tuple[int, int, int] | None = None
     last_known_ship_id: str | None = None
     ever_confirmed: bool = False
 
@@ -90,6 +92,8 @@ class TrackedBoat:
             velocity=self.velocity,
             embedding=self.embedding.copy() if self.embedding is not None else None,
             motion_state=self.motion_state,
+            static_since_ts=self.static_since_ts,
+            dominant_color_hsv=self.dominant_color_hsv,
             last_known_ship_id=self.last_known_ship_id,
             ever_confirmed=self.ever_confirmed,
         )

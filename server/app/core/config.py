@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     CLAHE_TILE_SIZE: int = 8
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
-    
+    PREVIEW_MAX_WIDTH: int = 960
+    PREVIEW_MAX_HEIGHT: int = 540
+
     # OCR / Paddle configuration
     OCR_INTERVAL_FRAMES: int = 10
     ENABLE_OCR: bool = True
@@ -54,12 +56,31 @@ class Settings(BaseSettings):
     RECORD_ENABLE: bool = True
     RECORD_MAX_DURATION_MIN: int = 5
     RECORD_NO_BOAT_GAP_SEC: int = 20
+    # Single FPS for RTSP read, AI, dashboard preview, and video record (port_configs: record_fps).
     RECORD_FPS: int = 20
 
     # Video transcode (ensure browser-playable MP4)
     VIDEO_TRANSCODE_ENABLE: bool = True
     VIDEO_TRANSCODE_PRESET: str = "veryfast"
     VIDEO_TRANSCODE_CRF: int = 23
+
+    # Seam Anchor (mooring persistence at camera seams)
+    SEAM_ANCHOR_ENABLED: bool = True
+    SEAM_ROI_WIDTH_RATIO: float = 0.15
+    SEAM_PROXIMITY_PX: int = 40
+    BG_SUBTRACT_THRESHOLD: float = 0.18
+    BG_MODEL_HISTORY: int = 500
+    BG_VAR_THRESHOLD: float = 25.0
+    BG_MIN_SEED_FRAMES: int = 100
+    ANCHOR_IOU_RESURRECT_THRESHOLD: float = 0.3
+    ANCHOR_EMBEDDING_MATCH_ENABLED: bool = True
+    ANCHOR_EMBEDDING_SIM_THRESHOLD: float = 0.65
+    ANCHOR_REVALIDATION_SEC: float = 5.0
+    ANCHOR_DEPARTED_GRACE_SEC: float = 30.0
+    ANCHOR_MAX_DURATION_SEC: float = 172800.0
+    ANCHOR_DB_UPDATE_DEBOUNCE_SEC: float = 30.0
+    ANCHOR_MIN_STATIONARY_SEC: float = 8.0
+    ANCHOR_COLOR_HSV_TOLERANCE_H: int = 15
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'

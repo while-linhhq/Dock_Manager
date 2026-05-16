@@ -66,7 +66,7 @@ def draw_ship_detection_overlay(
                 if now - ocr_cache[k]["time"] >= ocr_label_ttl:
                     del ocr_cache[k]
             for tb in tracked_boats:
-                ck = ocr_cache_key_track(tb.track_id)
+                ck = ocr_cache_key_track(tb.track_id, tb.camera_id)
                 ent = ocr_cache.get(ck)
                 if not ent:
                     continue
