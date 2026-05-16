@@ -64,7 +64,20 @@ async def lifespan(app: FastAPI):
     from app.services.storage.minio_probe import log_minio_probe_at_startup
 
     log_minio_probe_at_startup()
+
+    from app.core.config import settings as app_settings
+
+    if app_settings.SEPAY_SYNC_ENABLED:
+        from app.services.sepay_background import start_sepay_background_sync
+
+        start_sepay_background_sync()
+
     yield
+
+    if app_settings.SEPAY_SYNC_ENABLED:
+        from app.services.sepay_background import stop_sepay_background_sync
+
+        await stop_sepay_background_sync()
     from app.services.pipeline_service import pipeline_service
 
     if pipeline_service.is_running:

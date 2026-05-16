@@ -1,13 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { portApi } from '../services/portApi';
+import React, { useMemo, useState } from 'react';
 import { AlertTriangle, CreditCard, Loader2, RotateCcw, Save } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import type { PortConfigRead } from '../services/portApi';
 
 export const SEPAY_PORT_CONFIG_KEYS = [
-  'sepay_webhook_secret',
-  'sepay_public_api_base_url',
+  'sepay_api_token',
+  'sepay_sync_interval_sec',
+  'sepay_cron_secret',
   'sepay_bank_account',
   'sepay_bank_name',
   'sepay_account_name',
@@ -19,7 +19,7 @@ type FieldDef = {
   description: string;
   default: string;
   inputType: 'text' | 'password';
-  group: 'bank' | 'webhook';
+  group: 'bank' | 'api';
   placeholder?: string;
 };
 
@@ -27,7 +27,7 @@ const FIELDS: FieldDef[] = [
   {
     key: 'sepay_bank_account',
     label: 'Số tài khoản',
-    description: 'Số TK nhận tiền — dùng tạo mã QR tại qr.sepay.vn.',
+    description: 'Số TK nhận tiền — QR và lọc giao dịch SEPay API.',
     default: '',
     inputType: 'text',
     group: 'bank',
@@ -52,24 +52,31 @@ const FIELDS: FieldDef[] = [
     placeholder: 'CÔNG TY ...',
   },
   {
-    key: 'sepay_public_api_base_url',
-    label: 'URL API công khai (backend)',
-    description:
-      'Gốc URL server FastAPI mà SEPay gọi webhook (VD: https://api.example.com hoặc https://xxx.ngrok.io). Để trống = backend tự lấy từ request.',
-    default: '',
-    inputType: 'text',
-    group: 'webhook',
-    placeholder: 'VD: http://127.0.0.1:8000',
-  },
-  {
-    key: 'sepay_webhook_secret',
-    label: 'Webhook secret (HMAC-SHA256)',
-    description:
-      'Secret khi tạo webhook trên my.sepay.vn. Phương thức xác thực: HMAC-SHA256.',
+    key: 'sepay_api_token',
+    label: 'API token (Bearer)',
+    description: 'my.sepay.vn → Tích hợp → API. Poll giao dịch, không cần webhook.',
     default: '',
     inputType: 'password',
-    group: 'webhook',
-    placeholder: 'Dán secret từ SEPay',
+    group: 'api',
+    placeholder: 'Bearer token',
+  },
+  {
+    key: 'sepay_sync_interval_sec',
+    label: 'Chu kỳ đồng bộ (giây)',
+    description: 'Server tự quét giao dịch theo chu kỳ (tối thiểu 15s).',
+    default: '30',
+    inputType: 'text',
+    group: 'api',
+    placeholder: '30',
+  },
+  {
+    key: 'sepay_cron_secret',
+    label: 'Cron secret',
+    description: 'Cho crontab gọi POST /api/v1/sepay/sync/cron (header X-Sepay-Cron-Secret).',
+    default: '',
+    inputType: 'password',
+    group: 'api',
+    placeholder: 'Chuỗi bí mật',
   },
 ];
 
@@ -80,9 +87,9 @@ const GROUPS = [
     description: 'Thông tin hiển thị trên modal thanh toán và mã QR.',
   },
   {
-    id: 'webhook' as const,
-    label: 'Webhook SEPay',
-    description: 'Xác thực giao dịch tự động — đổi trạng thái hóa đơn sang Đã thanh toán.',
+    id: 'api' as const,
+    label: 'SEPay API & đồng bộ',
+    description: 'Poll giao dịch qua API — cron nền hoặc crontab hệ thống.',
   },
 ];
 
@@ -121,11 +128,11 @@ function StatusPill({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
-function StatusPills({ bankReady, webhookReady }: { bankReady: boolean; webhookReady: boolean }) {
+function StatusPills({ bankReady, apiReady }: { bankReady: boolean; apiReady: boolean }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       <StatusPill ok={bankReady} label="TK ngân hàng" />
-      <StatusPill ok={webhookReady} label="Webhook secret" />
+      <StatusPill ok={apiReady} label="API token" />
     </div>
   );
 }
@@ -141,25 +148,6 @@ export const PortPaymentConfigSection: React.FC<PortPaymentConfigSectionProps> =
   const [saving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [webhookUrlLoading, setWebhookUrlLoading] = useState(false);
-
-  const refreshWebhookUrl = async () => {
-    setWebhookUrlLoading(true);
-    try {
-      const data = await portApi.getSepayWebhookUrl();
-      setWebhookUrl(data.webhook_url);
-    } catch {
-      setWebhookUrl('');
-    } finally {
-      setWebhookUrlLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void refreshWebhookUrl();
-  }, [configs]);
-
   const currentValues = useMemo<Draft>(() => buildCurrentValues(configs), [configs]);
 
   const draft = useMemo<Draft>(() => {
@@ -185,7 +173,7 @@ export const PortPaymentConfigSection: React.FC<PortPaymentConfigSectionProps> =
 
   const bankReady =
     Boolean(draft.sepay_bank_account?.trim()) && Boolean(draft.sepay_bank_name?.trim());
-  const webhookReady = Boolean(draft.sepay_webhook_secret?.trim());
+  const apiReady = Boolean(draft.sepay_api_token?.trim());
 
   const handleChange = (key: string, value: string) => {
     setOverrides((prev) => ({ ...prev, [key]: value }));
@@ -225,7 +213,6 @@ export const PortPaymentConfigSection: React.FC<PortPaymentConfigSectionProps> =
         }
       }
       await onRefresh();
-      await refreshWebhookUrl();
       setOverrides({});
       setLastSavedAt(new Date());
     } catch (err) {
@@ -240,13 +227,12 @@ export const PortPaymentConfigSection: React.FC<PortPaymentConfigSectionProps> =
     <div className="space-y-4">
       <PaymentHeaderCard
         bankReady={bankReady}
-        webhookReady={webhookReady}
+        apiReady={apiReady}
         saving={saving}
         dirtyCount={dirtyKeys.length}
         error={error}
         lastSavedAt={lastSavedAt}
-        webhookUrl={webhookUrl}
-        webhookUrlLoading={webhookUrlLoading}
+        syncIntervalSec={draft.sepay_sync_interval_sec || '30'}
         onResetDefaults={handleResetDefaults}
         onReset={handleReset}
         onSave={handleSave}
@@ -300,25 +286,23 @@ export const PortPaymentConfigSection: React.FC<PortPaymentConfigSectionProps> =
 
 function PaymentHeaderCard({
   bankReady,
-  webhookReady,
+  apiReady,
   saving,
   dirtyCount,
   error,
   lastSavedAt,
-  webhookUrl,
-  webhookUrlLoading,
+  syncIntervalSec,
   onResetDefaults,
   onReset,
   onSave,
 }: {
   bankReady: boolean;
-  webhookReady: boolean;
+  apiReady: boolean;
   saving: boolean;
   dirtyCount: number;
   error: string | null;
   lastSavedAt: Date | null;
-  webhookUrl: string;
-  webhookUrlLoading: boolean;
+  syncIntervalSec: string;
   onResetDefaults: () => void;
   onReset: () => void;
   onSave: () => void;
@@ -335,9 +319,9 @@ function PaymentHeaderCard({
               Cấu hình thanh toán SEPay
             </h3>
             <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-              QR chuyển khoản và webhook tự động xác nhận hóa đơn trong Quản lý thu nhập.
+              QR chuyển khoản và đồng bộ SEPay API tự xác nhận hóa đơn trong Quản lý thu nhập.
             </p>
-            <StatusPills bankReady={bankReady} webhookReady={webhookReady} />
+            <StatusPills bankReady={bankReady} apiReady={apiReady} />
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -385,17 +369,14 @@ function PaymentHeaderCard({
 
       <div className="mt-4 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 dark:border-white/5 dark:bg-white/[0.02]">
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
-          URL webhook (dán vào my.sepay.vn)
+          Đồng bộ SEPay API
         </p>
-        <p className="mt-1 break-all font-mono text-xs text-blue-600 dark:text-blue-400">
-          {webhookUrlLoading
-            ? 'Đang lấy URL từ server…'
-            : webhookUrl ||
-              'Chưa xác định — lưu «URL API công khai» hoặc cấu hình SEPAY_PUBLIC_API_BASE_URL'}
+        <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+          Server poll mỗi <span className="font-mono font-bold">{syncIntervalSec}s</span>. Crontab:{' '}
+          <span className="font-mono text-[10px]">server/scripts/sepay_sync_cron.sh</span>
         </p>
         <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400">
-          Cấu trúc mã thanh toán trên SEPay phải trích xuất được{' '}
-          <span className="font-mono">invoice_number</span> (nội dung CK = số hóa đơn).
+          Nội dung CK / mã SEPay phải khớp <span className="font-mono">invoice_number</span>.
         </p>
       </div>
     </div>

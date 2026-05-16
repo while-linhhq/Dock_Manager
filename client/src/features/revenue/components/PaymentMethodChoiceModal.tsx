@@ -54,7 +54,7 @@ export const PaymentMethodChoiceModal: React.FC<PaymentMethodChoiceModalProps> =
             </div>
             <p className="text-sm font-bold text-gray-900 dark:text-white">Chuyển khoản</p>
             <p className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
-              QR + thông tin CK. Tự xác nhận qua webhook SEPay khi khách chuyển tiền.
+              QR + thông tin CK. Tự xác nhận qua đồng bộ SEPay API khi khách chuyển tiền.
             </p>
           </button>
 

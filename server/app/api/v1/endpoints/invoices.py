@@ -13,6 +13,7 @@ from app.repositories.payment_repository import payment_repo
 from app.services.detection_invoice_service import backfill_missing_ai_invoices
 from app.services.invoice_service import invoice_service
 from app.services.berth_limit_service import compute_invoice_over_berth_limit
+from app.services.sepay_sync_service import sync_sepay_payments
 
 router = APIRouter()
 
@@ -63,6 +64,11 @@ def get_invoice_payment_status(
     obj = invoice_repo.get(db, invoice_id)
     if not obj:
         raise HTTPException(status_code=404, detail='Invoice not found')
+
+    if (obj.payment_status or '').upper() != 'PAID' and obj.invoice_number:
+        sync_sepay_payments(db, invoice_number=obj.invoice_number)
+        db.refresh(obj)
+
     return InvoicePaymentStatusRead(
         payment_status=obj.payment_status or 'UNPAID',
         paid_at=obj.paid_at,

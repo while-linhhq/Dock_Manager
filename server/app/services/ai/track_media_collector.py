@@ -49,10 +49,14 @@ class TrackMediaCollector:
         conf: float,
         fused_bgr: np.ndarray,
     ) -> None:
+        tid = str(track_id)
+        with self._lock:
+            snap = self._by_track.setdefault(tid, TrackMediaSnapshot())
+            if conf <= snap.fused_best_detection_conf:
+                return
         data = encode_jpeg_bgr(fused_bgr)
         if not data:
             return
-        tid = str(track_id)
         with self._lock:
             snap = self._by_track.setdefault(tid, TrackMediaSnapshot())
             if conf > snap.fused_best_detection_conf:
@@ -66,10 +70,14 @@ class TrackMediaCollector:
         camera_id: int,
         frame_bgr: np.ndarray,
     ) -> None:
+        tid = str(track_id)
+        with self._lock:
+            snap = self._by_track.setdefault(tid, TrackMediaSnapshot())
+            if conf <= snap.single_best_detection_conf:
+                return
         data = encode_jpeg_bgr(frame_bgr)
         if not data:
             return
-        tid = str(track_id)
         with self._lock:
             snap = self._by_track.setdefault(tid, TrackMediaSnapshot())
             if conf > snap.single_best_detection_conf:
@@ -87,8 +95,15 @@ class TrackMediaCollector:
         camera_id: int | None,
     ) -> None:
         tid = str(track_id)
-        single_jpeg = encode_jpeg_bgr(single_bgr)
-        fused_jpeg = encode_jpeg_bgr(fused_bgr) if fused_bgr is not None else None
+        with self._lock:
+            snap = self._by_track.setdefault(tid, TrackMediaSnapshot())
+            need_single = ocr_conf > snap.single_best_ocr_conf
+            need_fused = fused_bgr is not None and ocr_conf > snap.fused_best_ocr_conf
+
+        single_jpeg = encode_jpeg_bgr(single_bgr) if need_single else None
+        fused_jpeg = encode_jpeg_bgr(fused_bgr) if need_fused else None
+        if not single_jpeg and not fused_jpeg:
+            return
         with self._lock:
             snap = self._by_track.setdefault(tid, TrackMediaSnapshot())
             if single_jpeg and ocr_conf > snap.single_best_ocr_conf:

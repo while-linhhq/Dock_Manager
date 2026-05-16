@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     TRACK_MIN_HITS: int = 30
     TRACK_MAX_TENTATIVE_MISSES: int = 10
     TRACK_MAX_LOST_FRAMES: int = 80
+    TRACK_MIN_CONFIRM_SEC: float | None = None
+    TRACK_MAX_TENTATIVE_SEC: float | None = None
+    TRACK_MAX_LOST_SEC: float | None = None
     TRACK_IOU_THRESHOLD: float = 0.3
     
     # Re-ID & Dedup logic
@@ -46,6 +49,7 @@ class Settings(BaseSettings):
 
     # OCR / Paddle configuration
     OCR_INTERVAL_FRAMES: int = 10
+    OCR_INTERVAL_SEC: float | None = None
     ENABLE_OCR: bool = True
     OCR_LABEL_TTL_SEC: float = 5.0
     SAVE_MIN_INTERVAL_SEC: float = 20.0
@@ -82,13 +86,14 @@ class Settings(BaseSettings):
     ANCHOR_MIN_STATIONARY_SEC: float = 8.0
     ANCHOR_COLOR_HSV_TOLERANCE_H: int = 15
 
-    # SEPay (bank transfer QR + webhook)
-    SEPAY_WEBHOOK_SECRET: str = ''
+    # SEPay (bank transfer QR + API sync)
+    SEPAY_API_TOKEN: str = ''
+    SEPAY_CRON_SECRET: str = ''
+    SEPAY_SYNC_INTERVAL_SEC: int = 30
+    SEPAY_SYNC_ENABLED: bool = True
     SEPAY_BANK_ACCOUNT: str = ''
     SEPAY_BANK_NAME: str = ''
     SEPAY_ACCOUNT_NAME: str = ''
-    # Public API origin for SEPay webhook URL (e.g. https://api.example.com). Overrides request base when set.
-    SEPAY_PUBLIC_API_BASE_URL: str = ''
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'

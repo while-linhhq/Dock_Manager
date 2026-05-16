@@ -48,6 +48,10 @@ class PerCameraPipelineConfig:
     clahe_tile_size: int
     edge_zone_ratio: float
     enable_preview_stream: bool = False
+    track_min_confirm_sec: float | None = None
+    track_max_tentative_sec: float | None = None
+    track_max_lost_sec: float | None = None
+    ocr_interval_sec: float | None = None
 
 
 class PerCameraPipeline(threading.Thread):
@@ -102,6 +106,9 @@ class PerCameraPipeline(threading.Thread):
             reid_max_centroid_dist=config.track_reid_max_dist,
             on_track_removed=self._on_local_track_removed,
             camera_id=config.camera_id,
+            min_confirm_sec=config.track_min_confirm_sec,
+            max_tentative_sec=config.track_max_tentative_sec,
+            max_lost_sec=config.track_max_lost_sec,
         )
         self._motion_classifier = MotionClassifier()
         self._clahe_config = ClahePreprocessConfig(
@@ -132,6 +139,7 @@ class PerCameraPipeline(threading.Thread):
                 )
         self._frame_count = 0
         self._fps_started_at: float | None = None
+        self._last_ocr_ts = 0.0
 
     @property
     def tracker(self) -> BoatTracker:
@@ -298,7 +306,12 @@ class PerCameraPipeline(threading.Thread):
     def _queue_ocr(self, frame: np.ndarray, tracked_boats: list[TrackedBoat]) -> None:
         if not self.config.enable_ocr or self._ocr_queue is None:
             return
-        if self._frame_count % max(1, self.config.ocr_interval_frames) != 0:
+        if self.config.ocr_interval_sec is not None:
+            now = time.time()
+            if now - self._last_ocr_ts < float(self.config.ocr_interval_sec):
+                return
+            self._last_ocr_ts = now
+        elif self._frame_count % max(1, self.config.ocr_interval_frames) != 0:
             return
         confirmed = [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
         if not confirmed:

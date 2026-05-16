@@ -3,6 +3,7 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import datetime
@@ -46,8 +47,19 @@ from app.utils.ai.gpu_probe import log_gpu_runtime_status
 from app.utils.ai.yolo_detector import load_yolo_detector
 from app.services.ai.yolo_worker import YoloWorkerThread
 from app.services import pipeline_preview
+from app.utils.ai.pipeline_utils import put_queue_drop_oldest
 
 init_windows_cuda_path("pre")
+
+
+@dataclass(frozen=True)
+class _MediaSampleJob:
+  """Async best-shot sampling — keeps GroupFrameHub coordinator off JPEG encode."""
+
+  frame: Any
+  tracks: tuple[Any, ...]
+  camera_id: int | None = None
+  update_fused: bool = True
 
 _log = logging.getLogger("app.services.pipeline")
 
@@ -120,6 +132,8 @@ class PipelineService:
         self._video_registry = TrackVideoRegistry()
         self._latest_fused_lock = threading.Lock()
         self._latest_fused_bgr: Any = None
+        self._media_sample_queue: queue.Queue[_MediaSampleJob | None] = queue.Queue(maxsize=5)
+        self._media_sample_thread: threading.Thread | None = None
         self._primary_record_camera_id: int | None = None
         self._detector: Any = None
         self._detector_lock = threading.Lock()
@@ -142,6 +156,7 @@ class PipelineService:
         self._ocr_queue = queue.Queue(maxsize=10)
         self._video_queue = queue.Queue(maxsize=30)
         self._single_video_queue = queue.Queue(maxsize=30)
+        self._media_sample_queue = queue.Queue(maxsize=5)
         self._video_registry.clear()
 
     @staticmethod
@@ -167,6 +182,32 @@ class PipelineService:
         except Exception:
             return default
 
+    @staticmethod
+    def _optional_positive_float(cfg_map: dict[str, str], key: str, default: float | None) -> float | None:
+        raw = cfg_map.get(key)
+        if raw is None or str(raw).strip() == '':
+            return default
+        try:
+            value = float(str(raw).strip())
+        except Exception:
+            return default
+        return value if value > 0 else default
+
+    @staticmethod
+    def _tracker_kwargs(runtime_cfg: dict[str, Any], *, on_track_removed) -> dict[str, Any]:
+        return {
+            'min_hits': runtime_cfg['track_min_hits'],
+            'max_tentative_misses': runtime_cfg['track_max_tentative_misses'],
+            'max_lost_frames': runtime_cfg['track_max_lost_frames'],
+            'iou_threshold': runtime_cfg['track_iou_threshold'],
+            'reid_window_sec': runtime_cfg['track_reid_window_sec'],
+            'reid_max_centroid_dist': runtime_cfg['track_reid_max_dist'],
+            'on_track_removed': on_track_removed,
+            'min_confirm_sec': runtime_cfg.get('track_min_confirm_sec'),
+            'max_tentative_sec': runtime_cfg.get('track_max_tentative_sec'),
+            'max_lost_sec': runtime_cfg.get('track_max_lost_sec'),
+        }
+
     def _load_runtime_config(self) -> dict[str, Any]:
         db = SessionLocal()
         try:
@@ -190,6 +231,26 @@ class PipelineService:
             'ocr_interval_frames': max(
                 1,
                 self._to_int(cfg_map.get('ocr_interval_frames', ''), int(settings.OCR_INTERVAL_FRAMES)),
+            ),
+            'ocr_interval_sec': self._optional_positive_float(
+                cfg_map,
+                'ocr_interval_sec',
+                getattr(settings, 'OCR_INTERVAL_SEC', None),
+            ),
+            'track_min_confirm_sec': self._optional_positive_float(
+                cfg_map,
+                'track_min_confirm_sec',
+                getattr(settings, 'TRACK_MIN_CONFIRM_SEC', None),
+            ),
+            'track_max_tentative_sec': self._optional_positive_float(
+                cfg_map,
+                'track_max_tentative_sec',
+                getattr(settings, 'TRACK_MAX_TENTATIVE_SEC', None),
+            ),
+            'track_max_lost_sec': self._optional_positive_float(
+                cfg_map,
+                'track_max_lost_sec',
+                getattr(settings, 'TRACK_MAX_LOST_SEC', None),
             ),
             'ocr_label_ttl_sec': self._to_float(
                 cfg_map.get('ocr_label_ttl_sec', ''),
@@ -400,19 +461,87 @@ class PipelineService:
             return self._reid_manager.resolve_lookup_track_ids(str(track_id))
         return [str(track_id)]
 
-    def _recording_fused_media_sample(self, fused: Any, tracks: list[Any]) -> None:
-        if fused is None or getattr(fused, 'size', 0) == 0:
+    def _start_media_sample_worker(self) -> None:
+        if self._media_sample_thread is not None and self._media_sample_thread.is_alive():
             return
-        with self._latest_fused_lock:
-            self._latest_fused_bgr = fused.copy()
-        for t in tracks:
+        self._media_sample_thread = threading.Thread(
+            target=self._media_sample_loop,
+            daemon=True,
+            name='MediaSampleWorker',
+        )
+        self._media_sample_thread.start()
+
+    def _stop_media_sample_worker(self) -> None:
+        try:
+            self._media_sample_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._media_sample_thread is not None:
+            self._media_sample_thread.join(timeout=3.0)
+        self._media_sample_thread = None
+
+    def _media_sample_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                job = self._media_sample_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if job is None:
+                self._media_sample_queue.task_done()
+                break
+            try:
+                self._apply_media_sample(job)
+            except Exception:
+                _log.exception('Media sample worker failed')
+            finally:
+                self._media_sample_queue.task_done()
+
+    def _apply_media_sample(self, job: _MediaSampleJob) -> None:
+        frame = job.frame
+        if frame is None or getattr(frame, 'size', 0) == 0:
+            return
+        for t in job.tracks:
             if getattr(t, 'state', None) != TrackState.CONFIRMED:
                 continue
             tid = str(t.track_id)
             conf = float(t.conf)
-            self._media_collector.update_fused_detection(tid, conf, fused)
-            cam = int(getattr(t, 'camera_id', None) or 0)
-            self._media_collector.update_single_detection(tid, conf, cam, fused)
+            if job.update_fused:
+                self._media_collector.update_fused_detection(tid, conf, frame)
+            cam = int(job.camera_id if job.camera_id is not None else getattr(t, 'camera_id', None) or 0)
+            self._media_collector.update_single_detection(tid, conf, cam, frame)
+
+    def _enqueue_media_sample(
+        self,
+        frame: Any,
+        tracks: list[Any],
+        *,
+        camera_id: int | None = None,
+        update_fused: bool = True,
+        mirror_latest_fused: bool = False,
+    ) -> None:
+        if frame is None or getattr(frame, 'size', 0) == 0:
+            return
+        if mirror_latest_fused:
+            with self._latest_fused_lock:
+                self._latest_fused_bgr = frame.copy()
+        confirmed = tuple(t for t in tracks if getattr(t, 'state', None) == TrackState.CONFIRMED)
+        if not confirmed:
+            return
+        job = _MediaSampleJob(
+            frame=frame.copy(),
+            tracks=confirmed,
+            camera_id=camera_id,
+            update_fused=update_fused,
+        )
+        put_queue_drop_oldest(self._media_sample_queue, job)
+
+    def _recording_fused_media_sample(self, fused: Any, tracks: list[Any]) -> None:
+        self._enqueue_media_sample(
+            fused,
+            tracks,
+            update_fused=True,
+            mirror_latest_fused=True,
+        )
 
     def _recording_single_media_sample(
         self,
@@ -420,29 +549,20 @@ class PipelineService:
         overlay: Any,
         tracks: list[Any],
     ) -> None:
-        for t in tracks:
-            if getattr(t, 'state', None) != TrackState.CONFIRMED:
-                continue
-            self._media_collector.update_single_detection(
-                str(t.track_id),
-                float(t.conf),
-                int(camera_id),
-                overlay,
-            )
+        self._enqueue_media_sample(
+            overlay,
+            tracks,
+            camera_id=int(camera_id),
+            update_fused=False,
+        )
 
     def _recording_yolo_single_overlay(self, overlay: Any, tracks: list[Any]) -> None:
-        if overlay is None or getattr(overlay, 'size', 0) == 0:
-            return
-        with self._latest_fused_lock:
-            self._latest_fused_bgr = overlay.copy()
-        for t in tracks:
-            if getattr(t, 'state', None) != TrackState.CONFIRMED:
-                continue
-            tid = str(t.track_id)
-            conf = float(t.conf)
-            cam = int(t.camera_id) if getattr(t, 'camera_id', None) is not None else 0
-            self._media_collector.update_fused_detection(tid, conf, overlay)
-            self._media_collector.update_single_detection(tid, conf, cam, overlay)
+        self._enqueue_media_sample(
+            overlay,
+            tracks,
+            update_fused=True,
+            mirror_latest_fused=True,
+        )
 
     def _on_ocr_track_media(
         self,
@@ -1033,14 +1153,9 @@ class PipelineService:
             db_cb(tb, hist)
 
         self._boat_tracker = BoatTracker(
-            min_hits=runtime_cfg['track_min_hits'],
-            max_tentative_misses=runtime_cfg['track_max_tentative_misses'],
-            max_lost_frames=runtime_cfg['track_max_lost_frames'],
-            iou_threshold=runtime_cfg['track_iou_threshold'],
-            reid_window_sec=runtime_cfg['track_reid_window_sec'],
-            reid_max_centroid_dist=runtime_cfg['track_reid_max_dist'],
-            on_track_removed=combined_on_removed
+            **self._tracker_kwargs(runtime_cfg, on_track_removed=combined_on_removed),
         )
+        self._start_media_sample_worker()
 
         # Đồng bộ FPS: dùng record_fps làm nhịp đọc frame → nhịp infer → nhịp record/preview.
         self._reader = FrameReaderThread(
@@ -1056,6 +1171,7 @@ class PipelineService:
         self._yolo_worker = YoloWorkerThread(
             self._detector, self._boat_tracker, self._frame_queue, self._result_queue,
             self._ocr_queue, self._video_queue, self._stop, ocr_interval, ocr_active,
+            ocr_interval_sec=runtime_cfg.get('ocr_interval_sec'),
             ocr_cache=self.ocr_cache, ocr_lock=self.ocr_lock, ocr_label_ttl=ocr_label_ttl,
             record_overlay_resize_scale=runtime_cfg['resize_scale'],
             enable_preview_stream=True,
@@ -1206,6 +1322,8 @@ class PipelineService:
         if self._seam_anchor_verifier is not None:
             self._reid_manager.set_seam_anchor_verifier(self._seam_anchor_verifier)
 
+        self._start_media_sample_worker()
+
         try:
             self._configure_dashboard_preview(runtime_cfg)
         except Exception:
@@ -1301,6 +1419,10 @@ class PipelineService:
                 track_iou_threshold=runtime_cfg['track_iou_threshold'],
                 track_reid_window_sec=runtime_cfg['track_reid_window_sec'],
                 track_reid_max_dist=runtime_cfg['track_reid_max_dist'],
+                track_min_confirm_sec=runtime_cfg.get('track_min_confirm_sec'),
+                track_max_tentative_sec=runtime_cfg.get('track_max_tentative_sec'),
+                track_max_lost_sec=runtime_cfg.get('track_max_lost_sec'),
+                ocr_interval_sec=runtime_cfg.get('ocr_interval_sec'),
                 clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
@@ -1401,14 +1523,9 @@ class PipelineService:
             return
 
         self._boat_tracker = BoatTracker(
-            min_hits=runtime_cfg['track_min_hits'],
-            max_tentative_misses=runtime_cfg['track_max_tentative_misses'],
-            max_lost_frames=runtime_cfg['track_max_lost_frames'],
-            iou_threshold=runtime_cfg['track_iou_threshold'],
-            reid_window_sec=runtime_cfg['track_reid_window_sec'],
-            reid_max_centroid_dist=runtime_cfg['track_reid_max_dist'],
-            on_track_removed=combined_on_removed,
+            **self._tracker_kwargs(runtime_cfg, on_track_removed=combined_on_removed),
         )
+        self._start_media_sample_worker()
 
         self._group_frame_hub = GroupFrameHub(
             group=group,
@@ -1436,6 +1553,7 @@ class PipelineService:
             self._stop,
             ocr_interval,
             ocr_active,
+            ocr_interval_sec=runtime_cfg.get('ocr_interval_sec'),
             ocr_cache=self.ocr_cache,
             ocr_lock=self.ocr_lock,
             ocr_label_ttl=ocr_label_ttl,
@@ -1495,10 +1613,13 @@ class PipelineService:
             self._ocr_worker.join(timeout=2.0)
         if self._video_worker:
             self._video_worker.join(timeout=2.0)
+            self._video_worker.shutdown_finalize()
         if self._single_video_worker:
             self._single_video_worker.join(timeout=2.0)
+            self._single_video_worker.shutdown_finalize()
         for pipeline in self._per_camera_pipelines:
             pipeline.join(timeout=2.0)
+        self._stop_media_sample_worker()
         
         # Final flush
         for pipeline in self._per_camera_pipelines:

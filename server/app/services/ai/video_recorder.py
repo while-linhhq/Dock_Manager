@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 VideoSavedCallback = Callable[[str, frozenset[str], float, float], None]
@@ -33,6 +34,14 @@ def _confirmed_track_ids(tracked_boats: list) -> frozenset[str]:
         for t in tracked_boats
         if getattr(t, "state", None) == TrackState.CONFIRMED
     )
+
+
+@dataclass(frozen=True)
+class _FinalizeJob:
+    path: str
+    track_ids: frozenset[str]
+    started_at: float
+    ended_at: float
 
 
 class VideoRecorderThread(threading.Thread):
@@ -76,43 +85,99 @@ class VideoRecorderThread(threading.Thread):
         self._session_track_ids: set[str] = set()
         self._session_start_wall = 0.0
 
+        self._finalize_queue: queue.Queue[_FinalizeJob | None] = queue.Queue(maxsize=10)
+        self._finalize_worker = threading.Thread(
+            target=self._finalize_loop,
+            daemon=True,
+            name='VideoRecorderFinalize',
+        )
+        self._finalize_worker.start()
+
+    def _finalize_loop(self) -> None:
+        while True:
+            job = self._finalize_queue.get()
+            if job is None:
+                self._finalize_queue.task_done()
+                break
+            try:
+                self._finalize_recording(job)
+            except Exception as exc:
+                print(f'[RECORD] finalize failed: {exc}')
+            finally:
+                self._finalize_queue.task_done()
+
+    def _finalize_recording(self, job: _FinalizeJob) -> None:
+        path = job.path
+        try:
+            if bool(getattr(settings, 'VIDEO_TRANSCODE_ENABLE', True)):
+                codec = (get_mp4_video_codec_fourcc(path) or '').strip().lower()
+                if (not has_moov_atom(path)) or (codec and codec != 'avc1'):
+                    tmp = f'{path}.h264.tmp.mp4'
+                    transcode_to_h264_faststart(
+                        path,
+                        tmp,
+                        preset=str(
+                            getattr(settings, 'VIDEO_TRANSCODE_PRESET', 'veryfast') or 'veryfast'
+                        ),
+                        crf=int(getattr(settings, 'VIDEO_TRANSCODE_CRF', 23) or 23),
+                    )
+                    os.replace(tmp, path)
+            faststart_inplace(path)
+        except Exception as e:
+            print(f'[RECORD] faststart failed: {e}')
+        if self._on_video_saved is not None:
+            try:
+                self._on_video_saved(
+                    path,
+                    job.track_ids,
+                    job.started_at,
+                    job.ended_at,
+                )
+            except Exception as e:
+                print(f'[RECORD] MinIO upload callback failed: {e}')
+        print(f'[RECORD] Saved: {path}')
+
+    def _enqueue_finalize(self, path: str) -> None:
+        job = _FinalizeJob(
+            path=path,
+            track_ids=frozenset(self._session_track_ids),
+            started_at=float(self._session_start_wall),
+            ended_at=time.time(),
+        )
+        try:
+            self._finalize_queue.put_nowait(job)
+        except queue.Full:
+            try:
+                self._finalize_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._finalize_queue.put_nowait(job)
+            except queue.Full:
+                print(f'[RECORD] finalize queue full, dropping: {path}')
+
     def _stop_recording(self) -> None:
         if self._writer is not None:
             self._writer.release()
             self._writer = None
             if self._current_path:
-                try:
-                    path = self._current_path
-                    # If MP4 is not browser-friendly (no moov / non-H.264), transcode to H.264 + faststart.
-                    if bool(getattr(settings, 'VIDEO_TRANSCODE_ENABLE', True)):
-                        codec = (get_mp4_video_codec_fourcc(path) or '').strip().lower()
-                        if (not has_moov_atom(path)) or (codec and codec != 'avc1'):
-                            tmp = f'{path}.h264.tmp.mp4'
-                            transcode_to_h264_faststart(
-                                path,
-                                tmp,
-                                preset=str(getattr(settings, 'VIDEO_TRANSCODE_PRESET', 'veryfast') or 'veryfast'),
-                                crf=int(getattr(settings, 'VIDEO_TRANSCODE_CRF', 23) or 23),
-                            )
-                            os.replace(tmp, path)
-
-                    # Make MP4 streamable in browsers (moov atom at front)
-                    faststart_inplace(path)
-                except Exception as e:
-                    print(f"[RECORD] faststart failed: {e}")
-                if self._on_video_saved is not None:
-                    try:
-                        self._on_video_saved(
-                            path,
-                            frozenset(self._session_track_ids),
-                            float(self._session_start_wall),
-                            time.time(),
-                        )
-                    except Exception as e:
-                        print(f"[RECORD] MinIO upload callback failed: {e}")
-                print(f"[RECORD] Saved: {self._current_path}")
+                path = self._current_path
+                self._enqueue_finalize(path)
             self._current_path = None
             self._last_video_frame_mono = None
+
+    def shutdown_finalize(self, timeout: float = 120.0) -> None:
+        """Wait for pending transcode/upload jobs, then stop finalize worker."""
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        while time.monotonic() < deadline:
+            if self._finalize_queue.unfinished_tasks <= 0:
+                break
+            time.sleep(0.1)
+        try:
+            self._finalize_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        self._finalize_worker.join(timeout=10.0)
 
     def _begin_session(self, frame, n_boats: int, tracked_boats: list) -> None:
         h, w = frame.shape[:2]

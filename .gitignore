@@ -18,6 +18,9 @@ __pycache__/
 *.log
 logs/
 
+# Playwright MCP local snapshots
+.playwright-mcp/
+
 # Local Docker-mounted data (PostgreSQL/MinIO/runtime media)
 server/app/data-docker/
 

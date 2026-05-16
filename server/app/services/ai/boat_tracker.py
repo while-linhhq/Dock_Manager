@@ -127,10 +127,24 @@ class BoatTracker:
         reid_window_sec: float = 120.0,
         reid_max_centroid_dist: float = 150.0,
         camera_id: int | None = None,
+        min_confirm_sec: float | None = None,
+        max_tentative_sec: float | None = None,
+        max_lost_sec: float | None = None,
     ):
         self.min_hits = max(1, int(min_hits))
         self.max_tentative_misses = max(1, int(max_tentative_misses))
         self.max_lost_frames = max(1, int(max_lost_frames))
+        self.min_confirm_sec = (
+            float(min_confirm_sec) if min_confirm_sec is not None and min_confirm_sec > 0 else None
+        )
+        self.max_tentative_sec = (
+            float(max_tentative_sec)
+            if max_tentative_sec is not None and max_tentative_sec > 0
+            else None
+        )
+        self.max_lost_sec = (
+            float(max_lost_sec) if max_lost_sec is not None and max_lost_sec > 0 else None
+        )
         self.iou_threshold = float(iou_threshold)
         self._on_track_removed = on_track_removed
         self.reid_window_sec = float(reid_window_sec)
@@ -301,7 +315,7 @@ class BoatTracker:
                         tb.hits += 1
                         tb.misses = 0
                         if tb.state == TrackState.TENTATIVE:
-                            if tb.hits >= self.min_hits:
+                            if self._should_confirm_tentative(tb, now):
                                 tb.state = TrackState.CONFIRMED
                                 tb.ever_confirmed = True
                                 if self.reid_window_sec > 0:
@@ -334,13 +348,13 @@ class BoatTracker:
                 tb = self._tracks[tid]
                 tb.misses += 1
                 if tb.state == TrackState.TENTATIVE:
-                    if tb.misses >= self.max_tentative_misses:
+                    if self._should_remove_tentative(tb, now):
                         tb.state = TrackState.REMOVED
                 elif tb.state == TrackState.CONFIRMED:
                     if tb.misses >= 1:
                         tb.state = TrackState.LOST
                 elif tb.state == TrackState.LOST:
-                    if tb.misses >= self.max_lost_frames:
+                    if self._should_remove_lost(tb, now):
                         tb.state = TrackState.REMOVED
 
             to_del = [
@@ -372,6 +386,24 @@ class BoatTracker:
                 self._flush_expired_pending(now)
 
             return self.all_active()
+
+    def _should_confirm_tentative(self, tb: TrackedBoat, now: float) -> bool:
+        if self.min_confirm_sec is not None:
+            return (
+                tb.hits >= 2
+                and (now - tb.first_seen_ts) >= self.min_confirm_sec
+            )
+        return tb.hits >= self.min_hits
+
+    def _should_remove_tentative(self, tb: TrackedBoat, now: float) -> bool:
+        if self.max_tentative_sec is not None:
+            return (now - tb.last_seen_ts) >= self.max_tentative_sec
+        return tb.misses >= self.max_tentative_misses
+
+    def _should_remove_lost(self, tb: TrackedBoat, now: float) -> bool:
+        if self.max_lost_sec is not None:
+            return (now - tb.last_seen_ts) >= self.max_lost_sec
+        return tb.misses >= self.max_lost_frames
 
     def _build_cost_matrix(
         self, track_ids: list[str], boxes: list[np.ndarray]

@@ -44,7 +44,7 @@ export type SepayBankInfo = {
   bank_account: string;
   bank_name: string;
   account_name: string;
-  webhook_url?: string;
+  sync_configured?: boolean;
 };
 
 export type InvoicePaymentStatus = {
