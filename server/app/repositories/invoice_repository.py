@@ -6,6 +6,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.invoice import Invoice
+from app.services.invoice_snapshot_service import seal_invoice_on_paid
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import Payment
 from app.models.vessel import Vessel
@@ -139,6 +140,7 @@ class InvoiceRepository:
         inv.payment_status = new_status
         if new_status == 'PAID':
             inv.paid_at = datetime.now(timezone.utc)
+            seal_invoice_on_paid(db, inv)
         db.flush()
 
     def count_unpaid(self, db: Session) -> int:

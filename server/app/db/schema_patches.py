@@ -566,6 +566,52 @@ def _ensure_invoices_is_over_berth_limit() -> None:
         raise
 
 
+def _ensure_invoices_financial_snapshots() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('invoices'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('invoices')}
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect invoices table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        if 'vessel_ship_id_snapshot' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vessel_ship_id_snapshot VARCHAR(50)'))
+        if 'vessel_type_name_snapshot' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vessel_type_name_snapshot VARCHAR(100)'))
+        if 'financial_locked_at' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS financial_locked_at TIMESTAMPTZ'))
+    elif dialect == 'sqlite':
+        if 'vessel_ship_id_snapshot' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN vessel_ship_id_snapshot VARCHAR(50)'))
+        if 'vessel_type_name_snapshot' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN vessel_type_name_snapshot VARCHAR(100)'))
+        if 'financial_locked_at' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN financial_locked_at DATETIME'))
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add invoice snapshot columns manually',
+            dialect,
+        )
+        return
+
+    if not stmts:
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        logger.info('schema_patches: ensured invoice financial snapshot columns')
+    except Exception as err:
+        logger.error('schema_patches: failed to add invoice snapshot columns: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
@@ -574,6 +620,7 @@ def apply_schema_patches() -> None:
     _ensure_detections_audit_image_path()
     _ensure_fee_configs_berth_limit()
     _ensure_invoices_is_over_berth_limit()
+    _ensure_invoices_financial_snapshots()
     _ensure_camera_groups()
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()

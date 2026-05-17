@@ -7,8 +7,6 @@ from app.repositories.port_config_repository import port_config_repo
 from app.schemas.invoice import InvoiceCreate
 from app.models.invoice import Invoice
 from app.services.berth_limit_service import compute_invoice_over_berth_limit
-
-
 class InvoiceService:
     def create_with_items(self, db: Session, data: InvoiceCreate) -> Invoice:
         # Fetch tax rate from port_configs (default 10%)

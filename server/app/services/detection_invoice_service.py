@@ -17,18 +17,9 @@ from app.repositories.invoice_repository import invoice_repo
 from app.repositories.vessel_repository import vessel_repo
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate
 from app.services.invoice_service import invoice_service
+from app.services.ship_id_utils import is_unknown_ship_id
 
 _log = logging.getLogger('app.services.detection_invoice')
-
-_UNKNOWN_SHIP = frozenset({'', 'UNKNOWN', 'KHÔNG XÁC ĐỊNH', 'N/A'})
-
-
-def _norm_ship(s: Optional[str]) -> str:
-    return (s or '').strip().upper()
-
-
-def is_unknown_ship_id(ship_id: Optional[str]) -> bool:
-    return _norm_ship(ship_id) in _UNKNOWN_SHIP
 
 
 def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decimal:

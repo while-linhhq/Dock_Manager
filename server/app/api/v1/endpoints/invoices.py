@@ -13,6 +13,7 @@ from app.repositories.payment_repository import payment_repo
 from app.services.detection_invoice_service import backfill_missing_ai_invoices
 from app.services.invoice_service import invoice_service
 from app.services.berth_limit_service import compute_invoice_over_berth_limit
+from app.services.invoice_snapshot_service import is_invoice_financially_locked
 from app.services.sepay_sync_service import sync_sepay_payments
 
 router = APIRouter()
@@ -20,6 +21,8 @@ router = APIRouter()
 
 def _invoice_to_read(db: Session, inv) -> InvoiceRead:
     payload = InvoiceRead.model_validate(inv)
+    if is_invoice_financially_locked(inv):
+        return payload
     over = compute_invoice_over_berth_limit(db, inv)
     return payload.model_copy(update={'is_over_berth_limit': over})
 
@@ -133,6 +136,18 @@ def update_invoice(
         if not obj:
             raise HTTPException(status_code=404, detail='Invoice not found')
         return _invoice_to_read(db, obj)
+
+    obj = invoice_repo.get(db, invoice_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    if is_invoice_financially_locked(obj):
+        allowed = {'notes'}
+        if set(payload.keys()) - allowed:
+            raise HTTPException(
+                status_code=400,
+                detail='Hóa đơn đã thanh toán — không thể sửa thông tin tài chính hoặc mã tàu.',
+            )
+
     updated = invoice_repo.update(db, invoice_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail='Invoice not found')

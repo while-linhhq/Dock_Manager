@@ -134,6 +134,9 @@ class InvoiceRead(InvoiceBase):
     berth_duration_hours: Optional[Decimal] = None
     berth_duration_seconds: Optional[int] = None
     is_over_berth_limit: bool = False
+    vessel_ship_id_snapshot: Optional[str] = None
+    vessel_type_name_snapshot: Optional[str] = None
+    financial_locked_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -142,7 +145,11 @@ class InvoiceRead(InvoiceBase):
         """Field thường — tránh computed_field (một số client/encoder hiển thị sai)."""
         src = (self.creation_source or 'USER').upper()
         updates: dict = {}
-        if self.vessel is not None:
+        if self.vessel_ship_id_snapshot:
+            updates['vessel_ship_id'] = self.vessel_ship_id_snapshot
+            if self.vessel_type_name_snapshot:
+                updates['vessel_type_name'] = self.vessel_type_name_snapshot
+        elif self.vessel is not None:
             updates['vessel_ship_id'] = self.vessel.ship_id
             updates['vessel_type_name'] = (
                 self.vessel.vessel_type.type_name

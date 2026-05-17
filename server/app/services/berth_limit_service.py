@@ -18,7 +18,7 @@ from app.models.detection import Detection
 from app.models.fee import FeeConfig
 from app.models.vessel import Vessel
 from app.repositories.fee_config_repository import fee_config_repo
-from app.services.detection_invoice_service import is_unknown_ship_id
+from app.services.ship_id_utils import is_unknown_ship_id
 
 VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
