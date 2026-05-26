@@ -1,5 +1,5 @@
 import React from 'react';
-import { DollarSign, Loader2, Plus, Trash2 } from 'lucide-react';
+import { DollarSign, FileSpreadsheet, Loader2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import {
@@ -31,6 +31,8 @@ export type RevenueFeesSectionProps = {
   onOpenAddFee: () => void;
   onEditFee: (fee: FeeConfigRead) => void;
   onDeleteFee: (fee: FeeConfigRead) => void;
+  onExportExcel: () => void;
+  isExporting: boolean;
 };
 
 export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
@@ -53,6 +55,8 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
   onOpenAddFee,
   onEditFee,
   onDeleteFee,
+  onExportExcel,
+  isExporting,
 }) => {
   return (
     <div className="space-y-6">
@@ -112,6 +116,30 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
           />
         </FilterField>
       </TableFilterPanel>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+          Xuất Excel theo bộ lọc —{' '}
+          <span className="font-semibold text-gray-700 dark:text-gray-200">
+            {filteredFeeConfigs.length}
+          </span>{' '}
+          cấu hình phí
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onExportExcel}
+          disabled={isExporting || filteredFeeConfigs.length === 0}
+          className="border-emerald-500/50 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 shrink-0 disabled:opacity-50"
+        >
+          {isExporting ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <FileSpreadsheet className="w-4 h-4 mr-2" />
+          )}
+          Xuất Excel
+        </Button>
+      </div>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>

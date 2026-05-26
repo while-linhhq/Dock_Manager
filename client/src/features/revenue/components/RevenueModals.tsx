@@ -250,6 +250,12 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
               Mức phí cố định 0 — áp dụng cho tàu công ty / miễn phí.
             </p>
           )}
+          {feeUnit === 'per_berth_visit' && (
+            <p className="text-[10px] text-gray-500 dark:text-gray-400 ml-1 leading-relaxed">
+              Mỗi lần tàu cập bến (1 detection / lượt neo) tính đúng 1 lượt × mức phí quy định.
+              Hóa đơn tự động sẽ ghi nhận số tiền ngay khi kết thúc theo dõi.
+            </p>
+          )}
           <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 space-y-3">
             <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
               Giới hạn neo đậu

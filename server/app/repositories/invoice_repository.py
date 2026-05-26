@@ -56,6 +56,26 @@ class InvoiceRepository:
             .all()
         )
 
+    def get_by_ids(self, db: Session, invoice_ids: List[int], *, include_deleted: bool = False) -> List[Invoice]:
+        if not invoice_ids:
+            return []
+        q = (
+            db.query(Invoice)
+            .options(
+                joinedload(Invoice.creator),
+                joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
+                joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
+                joinedload(Invoice.detection),
+            )
+            .filter(Invoice.id.in_(invoice_ids))
+        )
+        if not include_deleted:
+            q = q.filter(Invoice.deleted_at.is_(None))
+        rows = q.all()
+        order = {iid: idx for idx, iid in enumerate(invoice_ids)}
+        rows.sort(key=lambda inv: order.get(inv.id, 10**9))
+        return rows
+
     def get_by_detection_id(self, db: Session, detection_id: int) -> Optional[Invoice]:
         return (
             db.query(Invoice)
@@ -112,6 +132,23 @@ class InvoiceRepository:
                 )
             )
         return q.offset(skip).limit(limit).all()
+
+    def get_all_revenue_export(self, db: Session) -> List[Invoice]:
+        """Mọi hóa đơn quản lý thu nhập: tạo tay + AI, mọi trạng thái, kể cả đã xóa."""
+        return (
+            db.query(Invoice)
+            .options(
+                joinedload(Invoice.creator),
+                joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
+                joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
+                joinedload(Invoice.detection),
+            )
+            .order_by(Invoice.created_at.desc())
+            .all()
+        )
+
+    def count_all_revenue_export(self, db: Session) -> int:
+        return db.query(Invoice).count()
 
     def recalculate_payment_status(self, db: Session, invoice_id: int) -> None:
         """Cập nhật payment_status / paid_at theo tổng payments (sau POST payment)."""

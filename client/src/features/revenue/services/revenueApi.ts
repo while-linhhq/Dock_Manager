@@ -15,7 +15,27 @@ export type PaymentCreate = {
   payment_method: string;
   reference_number?: string;
   notes?: string;
-}
+};
+
+export type BulkPaymentCreate = {
+  invoice_ids: number[];
+  payment_method?: string;
+  notes?: string;
+};
+
+export type BulkPaymentRead = {
+  invoice_count: number;
+  total_amount: number | string;
+  payments: PaymentRead[];
+};
+
+export type BulkSepaySessionRead = {
+  reference_code: string;
+  invoice_count: number;
+  total_amount: number | string;
+  status: string;
+  invoice_ids: number[];
+};
 
 export type FeeConfigCreate = {
   fee_name: string;
@@ -121,6 +141,22 @@ export const revenueApi = {
       notes: data.notes,
     });
   },
+  createBulkPayments: async (data: BulkPaymentCreate): Promise<BulkPaymentRead> => {
+    return httpClient.post<BulkPaymentRead>('/invoices/bulk-payments', {
+      invoice_ids: data.invoice_ids,
+      payment_method: data.payment_method ?? 'cash',
+      notes: data.notes,
+    });
+  },
+  createBulkSepaySession: async (invoiceIds: number[]): Promise<BulkSepaySessionRead> => {
+    return httpClient.post<BulkSepaySessionRead>('/invoices/bulk-sepay-session', {
+      invoice_ids: invoiceIds,
+    });
+  },
+  getBulkSepaySessionStatus: async (referenceCode: string): Promise<BulkSepaySessionRead> => {
+    const ref = encodeURIComponent(referenceCode.trim().toUpperCase());
+    return httpClient.get<BulkSepaySessionRead>(`/invoices/bulk-sepay-session/${ref}`);
+  },
   getFeeConfigs: async (activeOnly: boolean = false): Promise<FeeConfigRead[]> => {
     return httpClient.get<FeeConfigRead[]>(`/fee-configs/?active_only=${activeOnly}`);
   },
@@ -135,5 +171,30 @@ export const revenueApi = {
   },
   deleteFeeConfig: async (id: string | number): Promise<void> => {
     await httpClient.delete(`/fee-configs/${id}`);
+  },
+  getRevenueExportStats: async (): Promise<{ total_invoices: number }> => {
+    return httpClient.get<{ total_invoices: number }>('/exports/revenue-invoices/stats');
+  },
+  exportAllInvoicesExcel: async (): Promise<Blob> => {
+    return httpClient.downloadBlob('/exports/revenue-invoices/all', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+  exportInvoicesExcel: async (payload: {
+    invoice_ids: number[];
+    list_kind?: string;
+    invoice_sub_tab?: string;
+  }): Promise<Blob> => {
+    return httpClient.downloadBlob('/exports/revenue-invoices', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  exportFeeConfigsExcel: async (feeConfigIds: number[]): Promise<Blob> => {
+    return httpClient.downloadBlob('/exports/revenue-fee-configs', {
+      method: 'POST',
+      body: JSON.stringify({ fee_config_ids: feeConfigIds }),
+    });
   },
 };

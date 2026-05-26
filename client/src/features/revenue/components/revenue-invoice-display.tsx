@@ -5,6 +5,24 @@ import type { InvoiceRead } from '../../../types/api.types';
 
 export { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
 
+/** Số phút neo đậu từ API (seconds hoặc hours); null nếu không có dữ liệu. */
+export function getInvoiceBerthMinutes(inv: {
+  berth_duration_seconds?: number | null;
+  berth_duration_hours?: number | string | null;
+}): number | null {
+  let totalSeconds = Number(inv.berth_duration_seconds ?? NaN);
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    const h = Number(inv.berth_duration_hours ?? NaN);
+    if (Number.isFinite(h) && h > 0) {
+      totalSeconds = Math.round(h * 3600);
+    }
+  }
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return null;
+  }
+  return totalSeconds / 60;
+}
+
 export function normInvoicePaymentStatus(
   status: string,
 ): 'paid' | 'partial' | 'unpaid' | 'overdue' | 'cancelled' {
@@ -14,6 +32,19 @@ export function normInvoicePaymentStatus(
   if (s === 'OVERDUE') return 'overdue';
   if (s === 'CANCELLED') return 'cancelled';
   return 'unpaid';
+}
+
+export function isInvoicePayable(inv: Pick<InvoiceRead, 'payment_status'>): boolean {
+  return normInvoicePaymentStatus(inv.payment_status) !== 'paid';
+}
+
+export function getInvoiceDisplayAmount(inv: Pick<InvoiceRead, 'total_amount'>): number {
+  const n = Number(inv.total_amount ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function sumInvoiceDisplayAmounts(invoices: Pick<InvoiceRead, 'total_amount'>[]): number {
+  return invoices.reduce((acc, inv) => acc + getInvoiceDisplayAmount(inv), 0);
 }
 
 export function formatMoney(value: number | string) {
@@ -36,7 +67,9 @@ export function renderInvoiceRefFeesCell(inv: InvoiceRead) {
               ? '/ tháng'
               : unit === 'per_year'
                 ? '/ năm'
-                : '';
+                : unit === 'per_berth_visit'
+                  ? '/ lượt'
+                  : '';
         const price = Number(it.unit_price ?? 0);
         return (
           <li key={it.id ?? idx} className={cn(dt.bodyMuted, 'leading-snug')}>

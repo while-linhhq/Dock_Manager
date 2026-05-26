@@ -6,17 +6,16 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-FeeBillingUnitLiteral = Literal['per_hour', 'per_month', 'per_year', 'none']
+from app.utils.fee_billing_unit import normalize_fee_billing_unit
+
+FeeBillingUnitLiteral = Literal['per_hour', 'per_month', 'per_year', 'per_berth_visit', 'none']
 BerthLimitUnitLiteral = Literal['day', 'month']
 
-_ALLOWED_UNITS = frozenset({'per_hour', 'per_month', 'per_year', 'none'})
 _ALLOWED_BERTH_UNITS = frozenset({'day', 'month'})
 
 
 def normalize_stored_fee_unit(value: Optional[str]) -> str:
-    if not value or value not in _ALLOWED_UNITS:
-        return 'per_month'
-    return value
+    return normalize_fee_billing_unit(value)
 
 
 class VesselTypeNestedForFee(BaseModel):

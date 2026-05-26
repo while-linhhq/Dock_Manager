@@ -129,6 +129,44 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
   return response.json();
 }
 
+async function requestBlob(endpoint: string, options: RequestInit = {}, retry = true): Promise<Response> {
+  await maybeProactiveRefresh();
+  const token = authStorage.getToken();
+  const headers = new Headers(options.headers);
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  if (options.body && !(options.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(`${BASE_URL}${endpoint}`, {
+    ...options,
+    headers,
+  });
+
+  if (response.status === 401) {
+    if (retry) {
+      const refreshed = await refreshAccessToken();
+      if (refreshed) {
+        return requestBlob(endpoint, options, false);
+      }
+    }
+    authStorage.removeToken();
+    window.location.href = '/login';
+    throw new ApiError(401, 'Unauthorized');
+  }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, resolveErrorMessage(errorData), errorData);
+  }
+
+  return response;
+}
+
 export const httpClient = {
   get: <T>(url: string, options?: RequestInit) => request<T>(url, { ...options, method: 'GET' }),
   post: <T>(url: string, body?: unknown, options?: RequestInit) =>
@@ -150,4 +188,8 @@ export const httpClient = {
       body: body instanceof FormData ? body : JSON.stringify(body),
     }),
   delete: <T>(url: string, options?: RequestInit) => request<T>(url, { ...options, method: 'DELETE' }),
+  downloadBlob: async (url: string, options?: RequestInit) => {
+    const response = await requestBlob(url, options);
+    return response.blob();
+  },
 };

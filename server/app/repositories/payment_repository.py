@@ -25,7 +25,16 @@ class PaymentRepository:
             is not None
         )
 
-    def create(self, db: Session, invoice_id: int, amount: Decimal, payment_method: Optional[str] = None, payment_reference: Optional[str] = None, notes: Optional[str] = None, created_by: Optional[int] = None) -> Payment:
+    def _create_payment_row(
+        self,
+        db: Session,
+        invoice_id: int,
+        amount: Decimal,
+        payment_method: Optional[str] = None,
+        payment_reference: Optional[str] = None,
+        notes: Optional[str] = None,
+        created_by: Optional[int] = None,
+    ) -> Payment:
         db_obj = Payment(
             invoice_id=invoice_id,
             amount=amount,
@@ -37,6 +46,27 @@ class PaymentRepository:
         db.add(db_obj)
         db.flush()
         invoice_repo.recalculate_payment_status(db, invoice_id)
+        return db_obj
+
+    def create(
+        self,
+        db: Session,
+        invoice_id: int,
+        amount: Decimal,
+        payment_method: Optional[str] = None,
+        payment_reference: Optional[str] = None,
+        notes: Optional[str] = None,
+        created_by: Optional[int] = None,
+    ) -> Payment:
+        db_obj = self._create_payment_row(
+            db,
+            invoice_id,
+            amount,
+            payment_method=payment_method,
+            payment_reference=payment_reference,
+            notes=notes,
+            created_by=created_by,
+        )
         db.commit()
         db.refresh(db_obj)
         return db_obj

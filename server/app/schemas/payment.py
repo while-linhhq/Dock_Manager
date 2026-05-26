@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from decimal import Decimal
 
 
@@ -24,3 +24,27 @@ class PaymentRead(PaymentBase):
     created_at: datetime
 
     model_config = {'from_attributes': True}
+
+
+class BulkPaymentCreate(BaseModel):
+    invoice_ids: List[int] = Field(..., min_length=1)
+    payment_method: str = 'cash'
+    notes: Optional[str] = None
+
+
+class BulkPaymentRead(BaseModel):
+    invoice_count: int
+    total_amount: Decimal
+    payments: List[PaymentRead] = []
+
+
+class BulkSepaySessionCreate(BaseModel):
+    invoice_ids: List[int] = Field(..., min_length=1)
+
+
+class BulkSepaySessionRead(BaseModel):
+    reference_code: str
+    invoice_count: int
+    total_amount: Decimal
+    status: str
+    invoice_ids: List[int] = []

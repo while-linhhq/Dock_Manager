@@ -612,6 +612,71 @@ def _ensure_invoices_financial_snapshots() -> None:
         raise
 
 
+def _ensure_bulk_payment_sessions() -> None:
+    try:
+        inspector = inspect(engine)
+        if inspector.has_table('bulk_payment_sessions'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect bulk_payment_sessions: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS bulk_payment_sessions (
+                id SERIAL PRIMARY KEY,
+                reference_code VARCHAR(64) UNIQUE NOT NULL,
+                invoice_ids JSONB NOT NULL,
+                expected_total NUMERIC(12, 2) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                sepay_txn_id INTEGER,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                completed_at TIMESTAMPTZ
+            )
+            """
+        )
+        index_stmt = text(
+            'CREATE INDEX IF NOT EXISTS ix_bulk_payment_sessions_reference_code '
+            'ON bulk_payment_sessions(reference_code)'
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS bulk_payment_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                reference_code VARCHAR(64) UNIQUE NOT NULL,
+                invoice_ids TEXT NOT NULL,
+                expected_total NUMERIC(12, 2) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                sepay_txn_id INTEGER,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+            """
+        )
+        index_stmt = None
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — create bulk_payment_sessions manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+            if index_stmt is not None:
+                conn.execute(index_stmt)
+        logger.info('schema_patches: ensured bulk_payment_sessions table')
+    except Exception as err:
+        logger.error('schema_patches: failed to create bulk_payment_sessions: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
@@ -625,3 +690,4 @@ def apply_schema_patches() -> None:
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()
     _ensure_sepay_port_configs()
+    _ensure_bulk_payment_sessions()

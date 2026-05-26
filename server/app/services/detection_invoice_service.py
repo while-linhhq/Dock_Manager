@@ -18,6 +18,7 @@ from app.repositories.vessel_repository import vessel_repo
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate
 from app.services.invoice_service import invoice_service
 from app.services.ship_id_utils import is_unknown_ship_id
+from app.utils.fee_billing_unit import normalize_fee_billing_unit
 
 _log = logging.getLogger('app.services.detection_invoice')
 
@@ -36,13 +37,6 @@ def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decim
         return Decimal('1')
     raw = Decimal(str(secs)) / Decimal('3600')
     return max(raw.quantize(Decimal('0.01'), rounding=ROUND_UP), Decimal('0.01'))
-
-
-def _fee_unit(fee) -> str:
-    u = (fee.unit or 'per_month').strip().lower()
-    if u in ('per_hour', 'per_month', 'per_year', 'none'):
-        return u
-    return 'per_month'
 
 
 def ensure_ai_invoice_for_detection(detection_id: int) -> None:
@@ -87,11 +81,20 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
         has_period = False
 
         for fee in fees:
-            unit = _fee_unit(fee)
+            unit = normalize_fee_billing_unit(fee.unit)
             if unit == 'none':
                 continue
             base = Decimal(str(fee.base_fee))
-            if unit == 'per_hour':
+            if unit == 'per_berth_visit':
+                items.append(
+                    InvoiceItemCreate(
+                        fee_config_id=fee.id,
+                        description=f'{fee.fee_name} — 1 lượt cập bến (tự động)',
+                        quantity=Decimal('1'),
+                        unit_price=base,
+                    )
+                )
+            elif unit == 'per_hour':
                 items.append(
                     InvoiceItemCreate(
                         fee_config_id=fee.id,
@@ -140,13 +143,16 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
 
         if has_period:
             subtotal = sum((_line_sub(it) for it in items), Decimal('0'))
-            payload = payload.model_copy(
-                update={
-                    'subtotal': subtotal,
-                    'tax_amount': Decimal('0'),
-                    'total_amount': Decimal('0'),
-                }
-            )
+            # Chỉ để tổng = 0 khi mọi dòng đều là phí tháng/năm tham chiếu (chưa nhập tổng).
+            # Nếu có thêm per_berth_visit / per_hour thì vẫn tính tiền bình thường.
+            if subtotal <= 0:
+                payload = payload.model_copy(
+                    update={
+                        'subtotal': subtotal,
+                        'tax_amount': Decimal('0'),
+                        'total_amount': Decimal('0'),
+                    }
+                )
 
         invoice_service.create_with_items(db, payload)
         _log.info(

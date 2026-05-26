@@ -18,6 +18,19 @@ class FeeConfigRepository:
             q = q.filter(FeeConfig.is_active == True)
         return q.offset(skip).limit(limit).all()
 
+    def get_by_ids(self, db: Session, fee_ids: List[int]) -> List[FeeConfig]:
+        if not fee_ids:
+            return []
+        rows = (
+            db.query(FeeConfig)
+            .options(joinedload(FeeConfig.vessel_type))
+            .filter(FeeConfig.id.in_(fee_ids))
+            .all()
+        )
+        order = {fid: idx for idx, fid in enumerate(fee_ids)}
+        rows.sort(key=lambda row: order.get(row.id, 10**9))
+        return rows
+
     def get_by_vessel_type(self, db: Session, vessel_type_id: int) -> List[FeeConfig]:
         return (
             db.query(FeeConfig)

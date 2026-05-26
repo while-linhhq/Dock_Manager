@@ -120,6 +120,11 @@ export type InvoiceRead = {
   berth_duration_hours?: number | string | null;
   berth_duration_seconds?: number | null;
   is_over_berth_limit?: boolean;
+  detection?: {
+    id?: number;
+    start_time?: string | null;
+    end_time?: string | null;
+  } | null;
 };
 
 export type FeeConfigRead = {

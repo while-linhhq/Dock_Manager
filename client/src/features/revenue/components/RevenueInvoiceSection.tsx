@@ -8,6 +8,8 @@ import {
   Loader2,
   Trash2,
   Archive,
+  Banknote,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
@@ -22,6 +24,8 @@ import {
 import type { InvoiceSubTab } from '../store/revenueStore';
 import {
   formatInvoiceTotalCell,
+  formatMoney,
+  getInvoiceBerthMinutes,
   normInvoicePaymentStatus,
   OverBerthLimitBadge,
   paymentStatusColors,
@@ -38,8 +42,8 @@ export type RevenueInvoiceSectionProps = {
   isLoading: boolean;
   invQ: string;
   setInvQ: (v: string) => void;
-  invPayStatus: string;
-  setInvPayStatus: (v: string) => void;
+  invMinBerthMinutes: string;
+  setInvMinBerthMinutes: (v: string) => void;
   invShipIdFilter: string;
   setInvShipIdFilter: (v: string) => void;
   invVesselTypeFilter: string;
@@ -59,6 +63,11 @@ export type RevenueInvoiceSectionProps = {
   onOpenCreateInvoice: () => void;
   onOpenPayment: (inv: InvoiceRead) => void;
   onDeleteInvoice: (id: string | number) => void;
+  payableCount: number;
+  bulkPaymentTotal: number;
+  onOpenBulkPayment: () => void;
+  onExportExcel: () => void;
+  isExporting: boolean;
 };
 
 export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
@@ -70,8 +79,8 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   isLoading,
   invQ,
   setInvQ,
-  invPayStatus,
-  setInvPayStatus,
+  invMinBerthMinutes,
+  setInvMinBerthMinutes,
   invShipIdFilter,
   setInvShipIdFilter,
   invVesselTypeFilter,
@@ -91,6 +100,11 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   onOpenCreateInvoice,
   onOpenPayment,
   onDeleteInvoice,
+  payableCount,
+  bulkPaymentTotal,
+  onOpenBulkPayment,
+  onExportExcel,
+  isExporting,
 }) => {
   const formatAvgConfidence = (value: number | string | null | undefined) => {
     const n = Number(value ?? NaN);
@@ -100,20 +114,12 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
     return `${(n * 100).toFixed(1)}%`;
   };
 
-  const formatBerthDuration = (
-    durationSeconds: number | null | undefined,
-    durationHours: number | string | null | undefined,
-  ) => {
-    let totalSeconds = Number(durationSeconds ?? NaN);
-    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
-      const n = Number(durationHours ?? NaN);
-      if (Number.isFinite(n) && n > 0) {
-        totalSeconds = Math.round(n * 3600);
-      }
-    }
-    if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+  const formatBerthDuration = (inv: InvoiceRead) => {
+    const berthMinutes = getInvoiceBerthMinutes(inv);
+    if (berthMinutes === null) {
       return '—';
     }
+    const totalSeconds = Math.round(berthMinutes * 60);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${minutes} phút ${seconds} giây`;
@@ -177,19 +183,16 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
               className={filterControlClass}
             />
           </FilterField>
-          <FilterField label="Trạng thái thanh toán">
-            <select
-              value={invPayStatus}
-              onChange={(e) => setInvPayStatus(e.target.value)}
+          <FilterField label="Thời gian neo đậu tối thiểu (phút)">
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={invMinBerthMinutes}
+              onChange={(e) => setInvMinBerthMinutes(e.target.value)}
+              placeholder="VD: 30"
               className={filterControlClass}
-            >
-              <option value="">Theo tab hiện tại (không siết thêm)</option>
-              <option value="PAID">PAID</option>
-              <option value="PARTIAL">PARTIAL</option>
-              <option value="UNPAID">UNPAID</option>
-              <option value="OVERDUE">OVERDUE</option>
-              <option value="CANCELLED">CANCELLED</option>
-            </select>
+            />
           </FilterField>
           <FilterField label="Mã tàu">
             <select
@@ -255,16 +258,61 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
           </FilterField>
         </TableFilterPanel>
 
-        {!isAutoInvoiceTab && (
-          <div className="flex justify-end">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+            Tab hiện tại:{' '}
+            <span className="font-semibold text-gray-700 dark:text-gray-200">{invoices.length}</span>{' '}
+            hóa đơn
+            {filteredInvoices.length !== invoices.length ? (
+              <>
+                {' '}
+                · Khớp filter:{' '}
+                <span className="font-semibold">{filteredInvoices.length}</span>
+              </>
+            ) : null}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onExportExcel}
+            disabled={isExporting}
+            className="border-emerald-500/50 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 shrink-0 disabled:opacity-50"
+          >
+            {isExporting ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <FileSpreadsheet className="w-4 h-4 mr-2" />
+            )}
+            Xuất Excel
+          </Button>
+        </div>
+
+        {invoiceSubTab === 'pending' && (
+          <div
+            className={cn(
+              'flex flex-wrap items-center gap-3',
+              !isAutoInvoiceTab ? 'justify-between' : 'justify-start',
+            )}
+          >
             <Button
               type="button"
-              onClick={onOpenCreateInvoice}
-              className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
+              onClick={onOpenBulkPayment}
+              disabled={payableCount === 0 || isLoading}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/20 disabled:opacity-50"
             >
-              <Plus className="w-4 h-4 mr-2" />
-              Tạo Hóa Đơn
+              <Banknote className="w-4 h-4 mr-2" />
+              Thanh toán tất cả ({payableCount}) — {formatMoney(bulkPaymentTotal)} ₫
             </Button>
+            {!isAutoInvoiceTab && (
+              <Button
+                type="button"
+                onClick={onOpenCreateInvoice}
+                className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Tạo Hóa Đơn
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -325,10 +373,7 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                             {formatAvgConfidence(inv.detection_confidence_avg)}
                           </td>
                           <td className={cn(dt.pad, dt.mono, 'text-gray-500 dark:text-gray-400')}>
-                            {formatBerthDuration(
-                              inv.berth_duration_seconds,
-                              inv.berth_duration_hours,
-                            )}
+                            {formatBerthDuration(inv)}
                           </td>
                         </>
                       )}

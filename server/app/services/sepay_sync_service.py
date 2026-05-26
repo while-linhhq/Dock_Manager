@@ -118,7 +118,12 @@ def _write_last_synced_txn_id(db: Session, txn_id: int) -> None:
     )
 
 
-def sync_sepay_payments(db: Session, *, invoice_number: Optional[str] = None) -> dict[str, Any]:
+def sync_sepay_payments(
+    db: Session,
+    *,
+    invoice_number: Optional[str] = None,
+    bulk_reference: Optional[str] = None,
+) -> dict[str, Any]:
     cfg = get_sepay_config(db)
     if not cfg.api_token:
         return {'ok': False, 'reason': 'api_token_missing', 'recorded': 0, 'scanned': 0}
@@ -129,7 +134,7 @@ def sync_sepay_payments(db: Session, *, invoice_number: Optional[str] = None) ->
 
     bank_account = resolved.bank_account
 
-    since_id = _read_last_synced_txn_id(db) if not invoice_number else None
+    since_id = _read_last_synced_txn_id(db) if not invoice_number and not bulk_reference else None
     date_min = None if since_id else default_transaction_date_min(30)
 
     try:
@@ -137,7 +142,7 @@ def sync_sepay_payments(db: Session, *, invoice_number: Optional[str] = None) ->
             cfg.api_token,
             account_number=bank_account,
             since_id=since_id,
-            limit=200 if invoice_number else 100,
+            limit=200 if invoice_number or bulk_reference else 100,
             transaction_date_min=date_min,
         )
     except SepayApiError as exc:
@@ -147,14 +152,21 @@ def sync_sepay_payments(db: Session, *, invoice_number: Optional[str] = None) ->
     recorded = 0
     max_txn_id = since_id or 0
 
+    from app.services.bulk_sepay_service import apply_bulk_incoming_transaction
+
     for txn in transactions:
         txn_id = _txn_id(txn)
         if txn_id > max_txn_id:
             max_txn_id = txn_id
-        if apply_incoming_transaction(db, txn, invoice_number=invoice_number):
+        if bulk_reference:
+            if apply_bulk_incoming_transaction(db, txn, bulk_reference=bulk_reference):
+                recorded += 1
+        elif apply_incoming_transaction(db, txn, invoice_number=invoice_number):
+            recorded += 1
+        elif not invoice_number and apply_bulk_incoming_transaction(db, txn):
             recorded += 1
 
-    if not invoice_number and max_txn_id > (since_id or 0):
+    if not invoice_number and not bulk_reference and max_txn_id > (since_id or 0):
         _write_last_synced_txn_id(db, max_txn_id)
 
     return {

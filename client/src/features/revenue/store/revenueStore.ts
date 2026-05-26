@@ -2,11 +2,15 @@ import { create } from 'zustand';
 import type { InvoiceRead, FeeConfigRead } from '../../../types/api.types';
 import { revenueApi } from '../services/revenueApi';
 import type {
+  BulkPaymentCreate,
+  BulkPaymentRead,
   InvoiceCreate,
   PaymentCreate,
   FeeConfigCreate,
   FeeConfigUpdatePayload,
 } from '../services/revenueApi';
+import { ApiError } from '../../../services/httpClient';
+import type { PaymentRead } from '../../../types/api.types';
 
 export type InvoiceSubTab = 'pending' | 'paid' | 'trash';
 
@@ -26,9 +30,47 @@ interface RevenueState {
   fetchFeeConfigs: (activeOnly?: boolean) => Promise<void>;
   createInvoice: (data: InvoiceCreate) => Promise<void>;
   recordPayment: (invoiceId: string | number, data: PaymentCreate) => Promise<void>;
+  recordBulkPayments: (data: BulkPaymentCreate) => Promise<BulkPaymentRead>;
   deleteInvoice: (id: string | number) => Promise<void>;
   upsertFeeConfig: (id: string | number | null, data: FeeConfigCreate) => Promise<void>;
   deleteFeeConfig: (id: string | number) => Promise<void>;
+}
+
+async function recordBulkPaymentsSequential(
+  state: RevenueState,
+  data: BulkPaymentCreate,
+): Promise<BulkPaymentRead> {
+  const payments: PaymentRead[] = [];
+  let total = 0;
+  const method = data.payment_method ?? 'cash';
+
+  for (const rawId of data.invoice_ids) {
+    const inv = state.invoices.find((row) => String(row.id) === String(rawId));
+    if (!inv) {
+      continue;
+    }
+    const amount = Number(inv.total_amount ?? 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+    const payment = await revenueApi.createPayment(rawId, {
+      amount,
+      payment_method: method,
+      notes: data.notes,
+    });
+    payments.push(payment);
+    total += amount;
+  }
+
+  if (payments.length === 0) {
+    throw new Error('No payable invoices in the request');
+  }
+
+  return {
+    invoice_count: payments.length,
+    total_amount: total,
+    payments,
+  };
 }
 
 export const useRevenueStore = create<RevenueState>((set, get) => ({
@@ -97,8 +139,31 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
     try {
       await revenueApi.createPayment(invoiceId, data);
       await get().fetchInvoices();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to record payment', isLoading: false });
+      throw err;
+    }
+  },
+
+  recordBulkPayments: async (data) => {
+    set({ isLoading: true, error: null });
+    try {
+      let result: BulkPaymentRead;
+      try {
+        result = await revenueApi.createBulkPayments(data);
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+          result = await recordBulkPaymentsSequential(get(), data);
+        } else {
+          throw err;
+        }
+      }
+      await get().fetchInvoices();
+      set({ isLoading: false });
+      return result;
+    } catch (err: any) {
+      set({ error: err.message || 'Failed to record bulk payments', isLoading: false });
       throw err;
     }
   },

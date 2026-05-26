@@ -1,11 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.invoice import InvoiceCreate, InvoiceRead, InvoiceUpdate
-from app.schemas.payment import PaymentCreate, PaymentRead
+from app.schemas.payment import (
+    BulkPaymentCreate,
+    BulkPaymentRead,
+    BulkSepaySessionCreate,
+    BulkSepaySessionRead,
+    PaymentCreate,
+    PaymentRead,
+)
 from app.schemas.sepay import InvoicePaymentStatusRead
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.order_repository import order_repo
@@ -14,6 +21,8 @@ from app.services.detection_invoice_service import backfill_missing_ai_invoices
 from app.services.invoice_service import invoice_service
 from app.services.berth_limit_service import compute_invoice_over_berth_limit
 from app.services.invoice_snapshot_service import is_invoice_financially_locked
+from app.services.bulk_sepay_service import create_bulk_sepay_session, sync_bulk_sepay_session
+from app.services.invoice_payment_service import bulk_record_payments
 from app.services.sepay_sync_service import sync_sepay_payments
 
 router = APIRouter()
@@ -58,7 +67,76 @@ def list_invoices(
     return [_invoice_to_read(db, inv) for inv in rows]
 
 
-@router.get('/{invoice_id}/payment-status', response_model=InvoicePaymentStatusRead)
+@router.post('/bulk-payments', response_model=BulkPaymentRead, status_code=201)
+def bulk_payments(
+    data: BulkPaymentCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    method = (data.payment_method or 'cash').strip().lower()
+    if not method:
+        raise HTTPException(status_code=422, detail='payment_method is required')
+    payments, total = bulk_record_payments(
+        db,
+        data.invoice_ids,
+        payment_method=method,
+        created_by=current_user.id,
+        notes=data.notes,
+    )
+    if not payments:
+        raise HTTPException(status_code=400, detail='No payable invoices in the request')
+    return BulkPaymentRead(
+        invoice_count=len(payments),
+        total_amount=total,
+        payments=[PaymentRead.model_validate(p) for p in payments],
+    )
+
+
+@router.post('/bulk-sepay-session', response_model=BulkSepaySessionRead, status_code=status.HTTP_201_CREATED)
+def create_bulk_sepay_payment_session(
+    data: BulkSepaySessionCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    try:
+        session = create_bulk_sepay_session(
+            db,
+            data.invoice_ids,
+            created_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ids = [int(x) for x in (session.invoice_ids or [])]
+    return BulkSepaySessionRead(
+        reference_code=session.reference_code,
+        invoice_count=len(ids),
+        total_amount=session.expected_total,
+        status=session.status,
+        invoice_ids=ids,
+    )
+
+
+@router.get('/bulk-sepay-session/{reference_code}', response_model=BulkSepaySessionRead)
+def get_bulk_sepay_payment_session(
+    reference_code: str,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    try:
+        session = sync_bulk_sepay_session(db, reference_code.strip().upper())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    ids = [int(x) for x in (session.invoice_ids or [])]
+    return BulkSepaySessionRead(
+        reference_code=session.reference_code,
+        invoice_count=len(ids),
+        total_amount=session.expected_total,
+        status=session.status,
+        invoice_ids=ids,
+    )
+
+
+@router.get('/{invoice_id:int}/payment-status', response_model=InvoicePaymentStatusRead)
 def get_invoice_payment_status(
     invoice_id: int,
     db: Session = Depends(get_db),
@@ -78,7 +156,7 @@ def get_invoice_payment_status(
     )
 
 
-@router.get('/{invoice_id}', response_model=InvoiceRead)
+@router.get('/{invoice_id:int}', response_model=InvoiceRead)
 def get_invoice(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
     obj = invoice_repo.get(db, invoice_id)
     if not obj:
@@ -123,7 +201,7 @@ def create_invoice(data: InvoiceCreate, db: Session = Depends(get_db), current_u
     return _invoice_to_read(db, created)
 
 
-@router.put('/{invoice_id}', response_model=InvoiceRead)
+@router.put('/{invoice_id:int}', response_model=InvoiceRead)
 def update_invoice(
     invoice_id: int,
     data: InvoiceUpdate,
@@ -154,14 +232,14 @@ def update_invoice(
     return _invoice_to_read(db, updated)
 
 
-@router.delete('/{invoice_id}', status_code=204)
+@router.delete('/{invoice_id:int}', status_code=204)
 def delete_invoice(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
     """Soft-delete (deleted_at). Listed under deleted_only=true."""
     if not invoice_repo.delete(db, invoice_id):
         raise HTTPException(status_code=404, detail='Invoice not found')
 
 
-@router.post('/{invoice_id}/payments', response_model=PaymentRead, status_code=201)
+@router.post('/{invoice_id:int}/payments', response_model=PaymentRead, status_code=201)
 def add_payment(invoice_id: int, data: PaymentCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     invoice = invoice_repo.get(db, invoice_id)
     if not invoice:
@@ -171,6 +249,6 @@ def add_payment(invoice_id: int, data: PaymentCreate, db: Session = Depends(get_
     return payment
 
 
-@router.get('/{invoice_id}/payments', response_model=List[PaymentRead])
+@router.get('/{invoice_id:int}/payments', response_model=List[PaymentRead])
 def list_payments(invoice_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
     return payment_repo.get_by_invoice(db, invoice_id)

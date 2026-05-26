@@ -23,6 +23,9 @@ class Invoice(Base):
     # USER = tạo tay; ORDER_AUTO = sinh khi tạo đơn; AI = pipeline tự động
     creation_source = Column(String(20), nullable=False, default='USER', server_default='USER')
     is_over_berth_limit = Column(Boolean, nullable=False, default=False, server_default='false')
+    vessel_ship_id_snapshot = Column(String(50), nullable=True)
+    vessel_type_name_snapshot = Column(String(100), nullable=True)
+    financial_locked_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

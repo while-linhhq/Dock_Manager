@@ -5,8 +5,19 @@ import { useRevenueStore } from '../store/revenueStore';
 import { useVesselStore } from '../../vessels/store/vesselStore';
 import { useOrderStore } from '../../orders/store/orderStore';
 import type { FeeConfigRead } from '../../../types/api.types';
-import type { InvoiceCreate, PaymentCreate, FeeConfigCreate } from '../services/revenueApi';
+import { revenueApi, type InvoiceCreate, type PaymentCreate, type FeeConfigCreate } from '../services/revenueApi';
+import { downloadBlobFile } from '../../../utils/download-blob';
+import { ApiError } from '../../../services/httpClient';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
+import {
+  formatMoney,
+  getInvoiceBerthMinutes,
+  isInvoicePayable,
+  sumInvoiceDisplayAmounts,
+} from '../components/revenue-invoice-display';
+import { BulkPaymentConfirmModal } from '../components/BulkPaymentConfirmModal';
+import { BulkPaymentMethodChoiceModal } from '../components/BulkPaymentMethodChoiceModal';
+import { BulkSepayPaymentModal } from '../components/BulkSepayPaymentModal';
 import { normalizeFeeBillingUnit } from '../../../utils/fee-billing-unit';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
 import { invoiceSchema, paymentSchema, feeSchema, type FeeFormValues } from '../revenue-schemas';
@@ -15,6 +26,7 @@ import { RevenueMainTabs, type RevenueMainTab } from '../components/RevenueMainT
 import { RevenueInvoiceSection } from '../components/RevenueInvoiceSection';
 import { RevenueFeesSection } from '../components/RevenueFeesSection';
 import { RevenueModals } from '../components/RevenueModals';
+import { RevenueExcelExportChoiceModal } from '../components/RevenueExcelExportChoiceModal';
 import { SepayPaymentModal } from '../components/SepayPaymentModal';
 import {
   PaymentMethodChoiceModal,
@@ -32,10 +44,13 @@ export const RevenueView: React.FC = () => {
   const [paymentModalTitle, setPaymentModalTitle] = useState('Ghi Nhận Thanh Toán');
   const [lockPaymentMethod, setLockPaymentMethod] = useState<'cash' | undefined>(undefined);
   const [isFeeModalOpen, setIsFeeModalOpen] = useState(false);
+  const [isBulkPaymentChoiceModalOpen, setIsBulkPaymentChoiceModalOpen] = useState(false);
+  const [isBulkCashConfirmModalOpen, setIsBulkCashConfirmModalOpen] = useState(false);
+  const [isBulkSepayModalOpen, setIsBulkSepayModalOpen] = useState(false);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | number | null>(null);
   const [editingFeeId, setEditingFeeId] = useState<string | number | null>(null);
   const [invQ, setInvQ] = useState('');
-  const [invPayStatus, setInvPayStatus] = useState('');
+  const [invMinBerthMinutes, setInvMinBerthMinutes] = useState('');
   const [invShipIdFilter, setInvShipIdFilter] = useState('');
   const [invVesselTypeFilter, setInvVesselTypeFilter] = useState('');
   const [invDateFrom, setInvDateFrom] = useState('');
@@ -47,6 +62,9 @@ export const RevenueView: React.FC = () => {
   const [feeActive, setFeeActive] = useState<'all' | 'on' | 'off'>('all');
   const [feeDateFrom, setFeeDateFrom] = useState('');
   const [feeDateTo, setFeeDateTo] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [isExcelExportChoiceModalOpen, setIsExcelExportChoiceModalOpen] = useState(false);
+  const [allRevenueCount, setAllRevenueCount] = useState<number | null>(null);
 
   const {
     invoices,
@@ -59,6 +77,7 @@ export const RevenueView: React.FC = () => {
     fetchFeeConfigs,
     createInvoice,
     recordPayment,
+    recordBulkPayments,
     deleteInvoice,
     upsertFeeConfig,
     deleteFeeConfig,
@@ -140,11 +159,12 @@ export const RevenueView: React.FC = () => {
       ) {
         return false;
       }
-      if (
-        invPayStatus &&
-        String(inv.payment_status ?? '').toUpperCase() !== invPayStatus.toUpperCase()
-      ) {
-        return false;
+      if (invMinBerthMinutes.trim()) {
+        const berthMinutes = getInvoiceBerthMinutes(inv);
+        const min = Number(invMinBerthMinutes);
+        if (berthMinutes === null || !Number.isFinite(min) || berthMinutes < min) {
+          return false;
+        }
       }
       const matchedVessel = filterVessels.find((vessel) => String(vessel.id) === String(inv.vessel_id ?? ''));
       if (invShipIdFilter && String(inv.vessel_id ?? matchedVessel?.id ?? '') !== invShipIdFilter) {
@@ -171,7 +191,7 @@ export const RevenueView: React.FC = () => {
   }, [
     invoices,
     invQ,
-    invPayStatus,
+    invMinBerthMinutes,
     invShipIdFilter,
     invVesselTypeFilter,
     invDateFrom,
@@ -205,9 +225,19 @@ export const RevenueView: React.FC = () => {
 
   const isAutoInvoiceTab = activeTab === 'auto_invoices';
 
+  const payableFilteredInvoices = useMemo(
+    () => filteredInvoices.filter((inv) => isInvoicePayable(inv)),
+    [filteredInvoices],
+  );
+
+  const bulkPaymentTotal = useMemo(
+    () => sumInvoiceDisplayAmounts(payableFilteredInvoices),
+    [payableFilteredInvoices],
+  );
+
   const invFilterCount =
     (invQ.trim() ? 1 : 0) +
-    (invPayStatus ? 1 : 0) +
+    (invMinBerthMinutes.trim() ? 1 : 0) +
     (invShipIdFilter ? 1 : 0) +
     (invVesselTypeFilter ? 1 : 0) +
     (invDateFrom ? 1 : 0) +
@@ -224,7 +254,7 @@ export const RevenueView: React.FC = () => {
 
   const resetInvFilters = () => {
     setInvQ('');
-    setInvPayStatus('');
+    setInvMinBerthMinutes('');
     setInvShipIdFilter('');
     setInvVesselTypeFilter('');
     setInvDateFrom('');
@@ -246,6 +276,25 @@ export const RevenueView: React.FC = () => {
       await createInvoice(data);
       setIsInvoiceModalOpen(false);
       invoiceForm.reset();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleBulkPaymentConfirm = async () => {
+    if (payableFilteredInvoices.length === 0) {
+      return;
+    }
+    try {
+      const result = await recordBulkPayments({
+        invoice_ids: payableFilteredInvoices.map((inv) => Number(inv.id)),
+        payment_method: 'cash',
+        notes: invFilterCount > 0 ? 'Thanh toán hàng loạt (theo bộ lọc)' : 'Thanh toán hàng loạt',
+      });
+      setIsBulkCashConfirmModalOpen(false);
+      window.alert(
+        `Đã thanh toán ${result.invoice_count} hóa đơn — ${formatMoney(result.total_amount)} ₫`,
+      );
     } catch (err) {
       console.error(err);
     }
@@ -375,6 +424,78 @@ export const RevenueView: React.FC = () => {
     setIsFeeModalOpen(true);
   };
 
+  const exportStamp = () => new Date().toISOString().slice(0, 10);
+
+  const openExcelExportModal = () => {
+    setIsExcelExportChoiceModalOpen(true);
+    setAllRevenueCount(null);
+    void revenueApi
+      .getRevenueExportStats()
+      .then((stats) => setAllRevenueCount(stats.total_invoices))
+      .catch(() => {
+        setAllRevenueCount(null);
+      });
+  };
+
+  const handleExportInvoicesAll = async () => {
+    setIsExporting(true);
+    setIsExcelExportChoiceModalOpen(false);
+    try {
+      const blob = await revenueApi.exportAllInvoicesExcel();
+      downloadBlobFile(blob, `revenue_all_history_${exportStamp()}.xlsx`);
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Xuất Excel thất bại';
+      window.alert(message);
+      console.error(err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportInvoicesFiltered = async () => {
+    if (filteredInvoices.length === 0) {
+      return;
+    }
+    setIsExporting(true);
+    setIsExcelExportChoiceModalOpen(false);
+    try {
+      const blob = await revenueApi.exportInvoicesExcel({
+        invoice_ids: filteredInvoices.map((inv) => Number(inv.id)),
+        list_kind: activeTab === 'auto_invoices' ? 'ai' : 'invoices',
+        invoice_sub_tab: invoiceSubTab,
+      });
+      downloadBlobFile(
+        blob,
+        `revenue_${activeTab === 'auto_invoices' ? 'ai' : 'invoices'}_filtered_${invoiceSubTab}_${exportStamp()}.xlsx`,
+      );
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Xuất Excel thất bại';
+      window.alert(message);
+      console.error(err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportFeeConfigs = async () => {
+    if (filteredFeeConfigs.length === 0) {
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const blob = await revenueApi.exportFeeConfigsExcel(
+        filteredFeeConfigs.map((fee) => Number(fee.id)),
+      );
+      downloadBlobFile(blob, `revenue_fee_configs_${exportStamp()}.xlsx`);
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Xuất Excel thất bại';
+      window.alert(message);
+      console.error(err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <RevenueMainTabs activeTab={activeTab} onTabChange={setActiveTab} />
@@ -389,8 +510,8 @@ export const RevenueView: React.FC = () => {
           isLoading={isLoading}
           invQ={invQ}
           setInvQ={setInvQ}
-          invPayStatus={invPayStatus}
-          setInvPayStatus={setInvPayStatus}
+          invMinBerthMinutes={invMinBerthMinutes}
+          setInvMinBerthMinutes={setInvMinBerthMinutes}
           invShipIdFilter={invShipIdFilter}
           setInvShipIdFilter={setInvShipIdFilter}
           invVesselTypeFilter={invVesselTypeFilter}
@@ -413,6 +534,11 @@ export const RevenueView: React.FC = () => {
             setIsPaymentChoiceModalOpen(true);
           }}
           onDeleteInvoice={handleDeleteInvoice}
+          payableCount={payableFilteredInvoices.length}
+          bulkPaymentTotal={bulkPaymentTotal}
+          onOpenBulkPayment={() => setIsBulkPaymentChoiceModalOpen(true)}
+          onExportExcel={openExcelExportModal}
+          isExporting={isExporting}
         />
       ) : (
         <RevenueFeesSection
@@ -435,8 +561,57 @@ export const RevenueView: React.FC = () => {
           onOpenAddFee={openAddFeeModal}
           onEditFee={handleEditFee}
           onDeleteFee={handleDeleteFee}
+          onExportExcel={handleExportFeeConfigs}
+          isExporting={isExporting}
         />
       )}
+
+      <BulkPaymentMethodChoiceModal
+        isOpen={isBulkPaymentChoiceModalOpen}
+        onClose={() => setIsBulkPaymentChoiceModalOpen(false)}
+        invoiceCount={payableFilteredInvoices.length}
+        totalAmount={bulkPaymentTotal}
+        hasActiveFilters={invFilterCount > 0}
+        onSelect={(method: PaymentMethodChoice) => {
+          setIsBulkPaymentChoiceModalOpen(false);
+          if (method === 'transfer') {
+            setIsBulkSepayModalOpen(true);
+            return;
+          }
+          setIsBulkCashConfirmModalOpen(true);
+        }}
+      />
+
+      <BulkPaymentConfirmModal
+        isOpen={isBulkCashConfirmModalOpen}
+        onClose={() => setIsBulkCashConfirmModalOpen(false)}
+        invoiceCount={payableFilteredInvoices.length}
+        totalAmount={bulkPaymentTotal}
+        hasActiveFilters={invFilterCount > 0}
+        isLoading={isLoading}
+        onConfirm={() => void handleBulkPaymentConfirm()}
+      />
+
+      <BulkSepayPaymentModal
+        isOpen={isBulkSepayModalOpen}
+        onClose={() => setIsBulkSepayModalOpen(false)}
+        invoices={payableFilteredInvoices}
+        hasActiveFilters={invFilterCount > 0}
+        onPaid={() => {
+          void fetchInvoices();
+        }}
+      />
+
+      <RevenueExcelExportChoiceModal
+        isOpen={isExcelExportChoiceModalOpen}
+        onClose={() => setIsExcelExportChoiceModalOpen(false)}
+        onExportAll={() => void handleExportInvoicesAll()}
+        onExportFiltered={() => void handleExportInvoicesFiltered()}
+        totalCount={allRevenueCount ?? 0}
+        filteredCount={filteredInvoices.length}
+        tabCount={invoices.length}
+        isExporting={isExporting}
+      />
 
       <PaymentMethodChoiceModal
         isOpen={isPaymentChoiceModalOpen}

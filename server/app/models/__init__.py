@@ -8,6 +8,7 @@ from app.models.order import Order
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import Payment
+from app.models.bulk_payment_session import BulkPaymentSession
 from app.models.detection_media import DetectionMedia
 from app.models.port import PortConfig
 from app.models.port_log import PortLog
@@ -28,6 +29,7 @@ __all__ = [
     'Invoice',
     'InvoiceItem',
     'Payment',
+    'BulkPaymentSession',
     'DetectionMedia',
     'PortConfig',
     'PortLog',

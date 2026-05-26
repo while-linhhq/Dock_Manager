@@ -1,4 +1,10 @@
-export const FEE_BILLING_UNITS = ['per_hour', 'per_month', 'per_year', 'none'] as const;
+export const FEE_BILLING_UNITS = [
+  'per_hour',
+  'per_month',
+  'per_year',
+  'per_berth_visit',
+  'none',
+] as const;
 
 export type FeeBillingUnit = (typeof FEE_BILLING_UNITS)[number];
 
@@ -6,6 +12,7 @@ export const FEE_BILLING_UNIT_LABELS: Record<FeeBillingUnit, string> = {
   per_hour: 'Phí theo giờ',
   per_month: 'Phí theo tháng',
   per_year: 'Phí theo năm',
+  per_berth_visit: 'Phí theo lượt đậu',
   none: 'Không thu phí (tàu công ty)',
 };
 
@@ -13,6 +20,7 @@ export const FEE_BILLING_UNIT_AMOUNT_LABELS: Record<FeeBillingUnit, string> = {
   per_hour: 'Mức phí (VNĐ / giờ)',
   per_month: 'Mức phí (VNĐ / tháng)',
   per_year: 'Mức phí (VNĐ / năm)',
+  per_berth_visit: 'Mức phí (VNĐ / lượt đậu)',
   none: 'Mức phí',
 };
 
@@ -34,6 +42,9 @@ export function feeBillingUnitSuffix(unit: string | null | undefined): string {
   }
   if (u === 'per_month') {
     return '/tháng';
+  }
+  if (u === 'per_berth_visit') {
+    return '/lượt';
   }
   return '/năm';
 }
