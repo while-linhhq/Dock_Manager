@@ -1,5 +1,7 @@
 """Đọc RTSP / webcam, đẩy frame vào queue."""
 
+from collections.abc import Callable
+
 import queue
 import threading
 import time
@@ -30,11 +32,13 @@ class FrameReaderThread(threading.Thread):
         stop_event: threading.Event,
         queue_maxsize: int = 2,
         target_fps: float | None = None,
+        on_frame_emitted: Callable | None = None,
     ):
         super().__init__(daemon=True)
         self.rtsp_url = rtsp_url
         self._frame_queue = frame_queue
         self._stop_event = stop_event
+        self._on_frame_emitted = on_frame_emitted
         self._cap = None
         self._target_interval = None
         if target_fps is not None:
@@ -80,16 +84,22 @@ class FrameReaderThread(threading.Thread):
                 if self._target_interval is not None:
                     next_emit = now + self._target_interval
 
+                frame_copy = frame.copy()
                 try:
-                    self._frame_queue.put_nowait(frame.copy())
+                    self._frame_queue.put_nowait(frame_copy)
                 except queue.Full:
                     try:
                         self._frame_queue.get_nowait()
                     except queue.Empty:
                         pass
                     try:
-                        self._frame_queue.put_nowait(frame.copy())
+                        self._frame_queue.put_nowait(frame_copy)
                     except queue.Full:
+                        pass
+                if self._on_frame_emitted is not None:
+                    try:
+                        self._on_frame_emitted(frame_copy)
+                    except Exception:
                         pass
         except Exception as e:
             print(f"[WARNING] FrameReaderThread crashed: {e}")

@@ -19,7 +19,7 @@ from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
 from app.services.ai.ocr_worker import OcrQueueItem, OcrWorkerThread
 from app.utils.ai.overlay import draw_ship_detection_overlay
-from app.utils.ai.pipeline_utils import clamp_box, put_queue_drop_oldest
+from app.utils.ai.pipeline_utils import clamp_box, drain_queue_latest, put_queue_drop_oldest
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 
 _COLOR_TENTATIVE = (128, 128, 128)
@@ -156,7 +156,10 @@ class PerCameraPipeline(threading.Thread):
         try:
             while not self._stop_event.is_set():
                 try:
-                    raw_frame = self._frame_queue.get(timeout=0.5)
+                    raw_frame = drain_queue_latest(
+                        self._frame_queue,
+                        self._frame_queue.get(timeout=0.5),
+                    )
                 except queue.Empty:
                     continue
 
@@ -206,6 +209,11 @@ class PerCameraPipeline(threading.Thread):
 
         active_ids = {str(track.track_id) for track in tracked_boats}
         self._motion_classifier.forget_missing(active_ids)
+        overlay_scale = (
+            self.config.resize_scale
+            if self.config.resize_scale != 1.0
+            else 1.0
+        )
         overlay_frame = draw_ship_detection_overlay(
             annotated,
             tracked_boats,
@@ -213,7 +221,7 @@ class PerCameraPipeline(threading.Thread):
             self._ocr_lock,
             self.config.ocr_label_ttl_sec,
             fps_est,
-            1.0,
+            overlay_scale,
         )
         if self._on_overlay_media_sample is not None:
             try:
@@ -230,34 +238,12 @@ class PerCameraPipeline(threading.Thread):
                     self.config.camera_id,
                 )
         if self.config.enable_preview_stream:
-            display_frame = overlay_frame
-            if self.config.resize_scale != 1.0:
-                display_frame = draw_ship_detection_overlay(
-                    annotated,
-                    tracked_boats,
-                    self._ocr_cache,
-                    self._ocr_lock,
-                    self.config.ocr_label_ttl_sec,
-                    fps_est,
-                    self.config.resize_scale,
-                )
-            pipeline_preview.push_bgr_frame(display_frame)
+            pipeline_preview.push_bgr_frame(overlay_frame)
         record_queues = (
             self._video_queue is not None or self._single_camera_video_queue is not None
         )
         if record_queues:
-            video_frame = overlay_frame
-            if self.config.resize_scale != 1.0:
-                video_frame = draw_ship_detection_overlay(
-                    annotated,
-                    tracked_boats,
-                    self._ocr_cache,
-                    self._ocr_lock,
-                    self.config.ocr_label_ttl_sec,
-                    fps_est,
-                    self.config.resize_scale,
-                )
-            item = (video_frame, tracked_boats)
+            item = (overlay_frame, tracked_boats)
             if self._video_queue is not None:
                 put_queue_drop_oldest(self._video_queue, item)
             if self._single_camera_video_queue is not None:

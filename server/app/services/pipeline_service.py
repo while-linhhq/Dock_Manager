@@ -1157,17 +1157,25 @@ class PipelineService:
         )
         self._start_media_sample_worker()
 
-        # Đồng bộ FPS: dùng record_fps làm nhịp đọc frame → nhịp infer → nhịp record/preview.
+        # Đồng bộ FPS: reader @ record_fps; preview từ reader (mượt), YOLO ghi đè khi xong.
+        try:
+            self._configure_dashboard_preview(runtime_cfg)
+        except Exception:
+            pass
+
+        def _push_reader_preview(frame) -> None:
+            try:
+                pipeline_preview.push_bgr_frame(frame)
+            except Exception:
+                pass
+
         self._reader = FrameReaderThread(
             source,
             self._frame_queue,
             self._stop,
             target_fps=runtime_cfg['record_fps'],
+            on_frame_emitted=_push_reader_preview,
         )
-        try:
-            self._configure_dashboard_preview(runtime_cfg)
-        except Exception:
-            pass
         self._yolo_worker = YoloWorkerThread(
             self._detector, self._boat_tracker, self._frame_queue, self._result_queue,
             self._ocr_queue, self._video_queue, self._stop, ocr_interval, ocr_active,

@@ -11,7 +11,7 @@ import cv2
 
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
 from app.utils.ai.overlay import draw_ship_detection_overlay
-from app.utils.ai.pipeline_utils import put_queue_drop_oldest
+from app.utils.ai.pipeline_utils import drain_queue_latest, put_queue_drop_oldest
 from app.services import pipeline_preview
 
 _COLOR_TENTATIVE = (128, 128, 128)
@@ -72,7 +72,10 @@ class YoloWorkerThread(threading.Thread):
         try:
             while not self._stop_event.is_set():
                 try:
-                    frame = self._frame_queue.get(timeout=0.5)
+                    frame = drain_queue_latest(
+                        self._frame_queue,
+                        self._frame_queue.get(timeout=0.5),
+                    )
                 except queue.Empty:
                     continue
 

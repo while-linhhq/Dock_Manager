@@ -23,6 +23,17 @@ def ocr_cache_key_track(track_id: str | int, camera_id: int | None = None) -> st
     return f't{track_id}'
 
 
+def drain_queue_latest(q: "queue.Queue", first):
+    """Keep only the newest queued item (drop backlog so AI/preview stay real-time)."""
+    item = first
+    while True:
+        try:
+            item = q.get_nowait()
+        except queue.Empty:
+            break
+    return item
+
+
 def put_queue_drop_oldest(q: "queue.Queue", payload):
     try:
         q.put_nowait(payload)

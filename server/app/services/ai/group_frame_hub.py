@@ -122,6 +122,14 @@ class GroupFrameHub:
         ]
         self._interval = 1.0 / record_fps
         self._coordinator = threading.Thread(target=self._run_coordinator, daemon=True)
+        self._seam_anchor_queue: queue.Queue[dict[int, TimedFrame] | None] = queue.Queue(
+            maxsize=1
+        )
+        self._seam_anchor_thread = threading.Thread(
+            target=self._seam_anchor_loop,
+            daemon=True,
+            name='GroupFrameHubSeamAnchor',
+        )
 
     @property
     def frame_buffer(self) -> LatestFrameBuffer:
@@ -157,10 +165,16 @@ class GroupFrameHub:
     def start(self) -> None:
         for reader in self._readers:
             reader.start()
+        self._seam_anchor_thread.start()
         self._coordinator.start()
 
     def join(self, timeout: float | None = None) -> None:
         self._coordinator.join(timeout=timeout)
+        try:
+            self._seam_anchor_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        self._seam_anchor_thread.join(timeout=timeout)
         for reader in self._readers:
             reader.join(timeout=timeout)
 
@@ -181,7 +195,11 @@ class GroupFrameHub:
                 if now < next_emit:
                     time.sleep(min(0.02, next_emit - now))
                     continue
-                next_emit = now + self._interval
+
+                scheduled = next_emit
+                next_emit = scheduled + self._interval
+                if next_emit <= now:
+                    next_emit = now + self._interval
 
                 batch = self._synchronizer.next_batch()
                 if not batch:
@@ -194,7 +212,7 @@ class GroupFrameHub:
                             continue
                         put_queue_drop_oldest(camera_queue, timed_frame.frame.copy())
 
-                self._update_seam_anchor(batch)
+                self._enqueue_seam_anchor(batch)
 
                 fused = self._fuser.fuse(batch)
                 if fused is None or fused.size == 0:
@@ -222,6 +240,34 @@ class GroupFrameHub:
             _log.exception('GroupFrameHub coordinator crashed')
         finally:
             self._stop_event.set()
+
+    def _enqueue_seam_anchor(self, batch: dict[int, TimedFrame]) -> None:
+        if self._bg_registry is None and self._seam_anchor_verifier is None:
+            return
+        try:
+            self._seam_anchor_queue.put_nowait(batch)
+        except queue.Full:
+            try:
+                self._seam_anchor_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._seam_anchor_queue.put_nowait(batch)
+            except queue.Full:
+                pass
+
+    def _seam_anchor_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                batch = self._seam_anchor_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if batch is None:
+                return
+            try:
+                self._update_seam_anchor(batch)
+            except Exception:
+                _log.exception('GroupFrameHub seam anchor update failed')
 
     def _push_dashboard_preview(self, fused: Any) -> None:
         """Downscale fused output for WS preview (same pixels as old preview_fuser path, one resize)."""
