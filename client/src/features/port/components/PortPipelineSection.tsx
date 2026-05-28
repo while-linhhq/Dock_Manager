@@ -1,39 +1,24 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { UseFormReturn } from 'react-hook-form';
 import { Cpu, Loader2, Play, Square } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
-import type { CameraRead } from '../../../types/api.types';
 import type { PipelineStartRequest } from '../services/portApi';
 import { cameraGroupsApi, type CameraGroup } from '../../camera-fusion';
 
 export type PortPipelineSectionProps = {
-  cameras: CameraRead[];
   isLoading: boolean;
   startPipeline: (req: PipelineStartRequest) => Promise<void>;
   stopPipeline: () => Promise<void>;
-  pipelineTabCameraId: string;
-  setPipelineTabCameraId: (v: string) => void;
   pipelineTabEnableOcr: boolean;
   setPipelineTabEnableOcr: (v: boolean) => void;
-  setSelectedCameraId: (v: string) => void;
-  pipelineForm: UseFormReturn<PipelineStartRequest>;
-  onOpenCustomSourceModal: () => void;
 };
 
 export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
-  cameras,
   isLoading,
   startPipeline,
   stopPipeline,
-  pipelineTabCameraId,
-  setPipelineTabCameraId,
   pipelineTabEnableOcr,
   setPipelineTabEnableOcr,
-  setSelectedCameraId,
-  pipelineForm,
-  onOpenCustomSourceModal,
 }) => {
-  const [sourceMode, setSourceMode] = useState<'camera' | 'group'>('camera');
   const [cameraGroups, setCameraGroups] = useState<CameraGroup[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const selectedGroup = useMemo(
@@ -45,10 +30,7 @@ export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
     cameraGroupsApi.list(true).then(setCameraGroups).catch(console.error);
   }, []);
 
-  const canStart =
-    sourceMode === 'group'
-      ? selectedGroupId.length > 0
-      : pipelineTabCameraId.length > 0;
+  const canStart = selectedGroupId.length > 0;
 
   return (
     <div className="max-w-2xl mx-auto bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl shadow-2xl p-8 space-y-8">
@@ -70,83 +52,44 @@ export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
             Khởi chạy pipeline
           </h4>
           <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            Chỉ camera đang bật «Kích hoạt» trong tab Camera. Cần chạy RTSP lẻ → «Nguồn tùy chỉnh».
+            Chỉ hỗ trợ chạy theo Camera Group để đồng bộ multi-camera và Seam Anchor.
           </p>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            className={[
-              'rounded-xl border px-3 py-2 text-xs font-bold uppercase tracking-widest',
-              sourceMode === 'camera'
-                ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-950/30'
-                : 'border-gray-200 text-gray-500 dark:border-white/10',
-            ].join(' ')}
-            onClick={() => setSourceMode('camera')}
-          >
-            Single camera
-          </button>
-          <button
-            type="button"
-            className={[
-              'rounded-xl border px-3 py-2 text-xs font-bold uppercase tracking-widest',
-              sourceMode === 'group'
-                ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-950/30'
-                : 'border-gray-200 text-gray-500 dark:border-white/10',
-            ].join(' ')}
-            onClick={() => setSourceMode('group')}
-          >
-            Camera group
-          </button>
         </div>
         <div>
           <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
-            {sourceMode === 'group' ? 'Camera Group' : 'Camera'}
+            Camera Group
           </label>
-          {sourceMode === 'group' ? (
-            <>
-              <select
-                value={selectedGroupId}
-                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm dark:border-white/10 dark:bg-[#121214] dark:text-white"
-                onChange={(e) => setSelectedGroupId(e.target.value)}
-              >
-                <option value="">-- Chọn camera group --</option>
-                {cameraGroups.map((group) => (
-                  <option key={group.id} value={String(group.id)}>
-                    {group.name} ({group.members.length} cameras)
-                  </option>
-                ))}
-              </select>
-              {selectedGroup ? (
-                <p className="mt-2 rounded-xl bg-blue-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-blue-600 dark:bg-blue-950/30 dark:text-blue-300">
-                  Mode:{' '}
-                  {selectedGroup.pipeline_mode === 'fused'
-                    ? 'Frame ghép thủ công từ layout canvas'
-                    : 'Camera rời rạc đa luồng + Re-ID'}
-                </p>
-              ) : null}
-            </>
-          ) : (
+          <>
             <select
-              value={pipelineTabCameraId}
+              value={selectedGroupId}
               className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm dark:border-white/10 dark:bg-[#121214] dark:text-white"
-              onChange={(e) => setPipelineTabCameraId(e.target.value)}
+              onChange={(e) => setSelectedGroupId(e.target.value)}
             >
-              <option value="">-- Chọn camera đang bật --</option>
-              {cameras
-                .filter((cam) => cam.is_active)
-                .map((cam) => (
-                  <option key={cam.id} value={String(cam.id)}>
-                    {(cam.camera_name || cam.name) ?? `Camera ${cam.id}`}
-                  </option>
-                ))}
+              <option value="">-- Chọn camera group --</option>
+              {cameraGroups.map((group) => (
+                <option key={group.id} value={String(group.id)}>
+                  {group.name} ({group.members.length} cameras)
+                </option>
+              ))}
             </select>
-          )}
-          {sourceMode === 'camera' && cameras.length > 0 && cameras.every((c) => !c.is_active) ? (
-            <p className="mt-2 text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wide">
-              Không có camera nào đang bật — vào tab Camera và bật «Kích hoạt», hoặc dùng nguồn tùy chỉnh.
-            </p>
-          ) : null}
+            {selectedGroup ? (
+              <p className="mt-2 rounded-xl bg-blue-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-blue-600 dark:bg-blue-950/30 dark:text-blue-300">
+                Mode:{' '}
+                {selectedGroup.pipeline_mode === 'fused'
+                  ? 'Frame ghép thủ công từ layout canvas'
+                  : 'Camera rời rạc đa luồng + Re-ID'}
+              </p>
+            ) : (
+              <p className="mt-2 text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wide">
+                Chưa chọn Camera Group.
+              </p>
+            )}
+            {!cameraGroups.length ? (
+              <p className="mt-2 text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wide">
+                Chưa có group khả dụng — tạo group trong Camera Fusion trước khi chạy pipeline.
+              </p>
+            ) : null}
+          </>
         </div>
         <div className="flex items-center space-x-2">
           <input
@@ -171,17 +114,10 @@ export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
               return;
             }
             try {
-              if (sourceMode === 'group') {
-                await startPipeline({
-                  camera_group_id: Number(selectedGroupId),
-                  enable_ocr: pipelineTabEnableOcr,
-                });
-              } else {
-                await startPipeline({
-                  camera_id: Number(pipelineTabCameraId),
-                  enable_ocr: pipelineTabEnableOcr,
-                });
-              }
+              await startPipeline({
+                camera_group_id: Number(selectedGroupId),
+                enable_ocr: pipelineTabEnableOcr,
+              });
             } catch (err) {
               console.error(err);
             }
@@ -197,20 +133,6 @@ export const PortPipelineSection: React.FC<PortPipelineSectionProps> = ({
             </>
           )}
         </Button>
-        <button
-          type="button"
-          onClick={() => {
-            setSelectedCameraId('');
-            pipelineForm.reset({
-              source: '',
-              enable_ocr: pipelineTabEnableOcr,
-            });
-            onOpenCustomSourceModal();
-          }}
-          className="w-full text-center text-[11px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
-        >
-          Nguồn tùy chỉnh (RTSP / URL / chỉ số camera)…
-        </button>
       </div>
 
       <Button

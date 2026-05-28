@@ -1,7 +1,10 @@
 import { authStorage } from './authStorage';
 import { getJwtExpMs } from './jwt';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim();
+const BASE_URL = import.meta.env.DEV
+  ? '/api/v1'
+  : (API_BASE_URL || '/api/v1');
 const REFRESH_SKEW_MS = 2 * 60 * 1000; // refresh 2 minutes before exp
 
 export class ApiError extends Error {
@@ -17,6 +20,7 @@ export class ApiError extends Error {
 }
 
 let refreshPromise: Promise<string | null> | null = null;
+const inFlightGetRequests = new Map<string, Promise<unknown>>();
 
 function resolveErrorMessage(errorData: unknown): string {
   if (!errorData || typeof errorData !== 'object') {
@@ -88,45 +92,67 @@ async function maybeProactiveRefresh(): Promise<void> {
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}, retry = true): Promise<T> {
-  await maybeProactiveRefresh();
-  const token = authStorage.getToken();
-  const headers = new Headers(options.headers);
+  const method = (options.method || 'GET').toUpperCase();
+  const isGetRequest = method === 'GET';
 
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
+  const runRequest = async (): Promise<T> => {
+    await maybeProactiveRefresh();
+    const token = authStorage.getToken();
+    const headers = new Headers(options.headers);
 
-  if (options.body && !(options.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  });
-
-  if (response.status === 401) {
-    if (retry) {
-      const refreshed = await refreshAccessToken();
-      if (refreshed) {
-        return request<T>(endpoint, options, false);
-      }
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
     }
-    authStorage.removeToken();
-    window.location.href = '/login';
-    throw new ApiError(401, 'Unauthorized');
+
+    if (options.body && !(options.body instanceof FormData)) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    const response = await fetch(`${BASE_URL}${endpoint}`, {
+      ...options,
+      headers,
+    });
+
+    if (response.status === 401) {
+      if (retry) {
+        const refreshed = await refreshAccessToken();
+        if (refreshed) {
+          return request<T>(endpoint, options, false);
+        }
+      }
+      authStorage.removeToken();
+      window.location.href = '/login';
+      throw new ApiError(401, 'Unauthorized');
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new ApiError(response.status, resolveErrorMessage(errorData), errorData);
+    }
+
+    if (response.status === 204) {
+      return {} as T;
+    }
+
+    return response.json();
+  };
+
+  if (!isGetRequest) {
+    return runRequest();
   }
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, resolveErrorMessage(errorData), errorData);
+  const token = authStorage.getToken() || '';
+  const requestKey = `${method}:${endpoint}:${token}`;
+  const pending = inFlightGetRequests.get(requestKey) as Promise<T> | undefined;
+  if (pending) {
+    return pending;
   }
 
-  if (response.status === 204) {
-    return {} as T;
-  }
-
-  return response.json();
+  const current = runRequest().finally(() => {
+    inFlightGetRequests.delete(requestKey);
+  });
+  inFlightGetRequests.set(requestKey, current);
+  return current;
 }
 
 async function requestBlob(endpoint: string, options: RequestInit = {}, retry = true): Promise<Response> {

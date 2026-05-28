@@ -29,6 +29,7 @@ class GlobalIdentity:
     camera_tracks: dict[int, str]
     embeddings: list[np.ndarray] = field(default_factory=list)
     ocr_history: list[tuple[str, float]] = field(default_factory=list)
+    ocr_confirmed_tracks: set[TrackKey] = field(default_factory=set)
     first_seen_ts: float = 0.0
     last_seen_ts: float = 0.0
     primary_camera_id: int | None = None
@@ -180,7 +181,7 @@ class CrossCameraReIdManager:
             self._attach_track(identity, camera_key, track, embedding)
             self._track_to_global[track_key] = identity.global_id
             self._update_primary_camera(identity, camera_key, track, frame_shape)
-            if identity.ship_id and not track.ship_id:
+            if self._should_propagate_ship_id_to_track(identity, track_key, track):
                 track.ship_id = identity.ship_id
                 track.last_known_ship_id = identity.ship_id
             return identity.global_id
@@ -203,9 +204,12 @@ class CrossCameraReIdManager:
 
             identity.ocr_history.append((normalized_ship_id, float(confidence)))
             identity.ship_id = self._best_ship_id(identity)
+            identity.ocr_confirmed_tracks.add(track_key)
 
             for other in list(self._identities.values()):
                 if other.global_id == identity.global_id or other.ship_id != normalized_ship_id:
+                    continue
+                if self._identities_have_concurrent_active_tracks(identity, other):
                     continue
                 identity = self._merge_identities(identity, other)
 
@@ -223,11 +227,12 @@ class CrossCameraReIdManager:
             if identity is None:
                 identity = self._create_identity(camera_key, track)
             self._attach_track(identity, camera_key, track, track.embedding)
+            track_key = (camera_key, str(track.track_id))
             if ocr_history:
                 for ship_id, confidence in ocr_history:
                     identity.ocr_history.append((str(ship_id).strip().upper(), float(confidence)))
                 identity.ship_id = self._best_ship_id(identity)
-            track_key = (camera_key, str(track.track_id))
+                identity.ocr_confirmed_tracks.add(track_key)
             identity.active_tracks.discard(track_key)
             identity.removed_tracks.add(track_key)
             identity.last_seen_ts = max(identity.last_seen_ts, float(track.last_seen_ts))
@@ -263,8 +268,13 @@ class CrossCameraReIdManager:
 
     def get_global_ship_id(self, camera_id: int, track_id: str) -> str | None:
         with self._lock:
-            identity = self._identity_for_track((int(camera_id), str(track_id)))
-            return identity.ship_id if identity is not None else None
+            track_key = (int(camera_id), str(track_id))
+            identity = self._identity_for_track(track_key)
+            if identity is None or not identity.ship_id:
+                return None
+            if not self._track_may_display_ship_id(identity, track_key):
+                return None
+            return identity.ship_id
 
     def resolve_lookup_track_ids(self, track_id: str) -> list[str]:
         """
@@ -362,8 +372,11 @@ class CrossCameraReIdManager:
         ship_id = (track.ship_id or track.last_known_ship_id or '').strip().upper()
         if ship_id:
             for identity in self._identities.values():
-                if identity.ship_id == ship_id:
-                    return identity
+                if identity.ship_id != ship_id:
+                    continue
+                if self._has_concurrent_active_on_other_camera(identity, camera_id):
+                    continue
+                return identity
 
         if embedding is None:
             return None
@@ -372,6 +385,8 @@ class CrossCameraReIdManager:
         best_score = 0.0
         for identity in self._identities.values():
             if identity.finalized:
+                continue
+            if self._has_concurrent_active_on_other_camera(identity, camera_id):
                 continue
             if not identity.anchored and now - identity.last_seen_ts > self._handoff_window_sec:
                 continue
@@ -404,6 +419,7 @@ class CrossCameraReIdManager:
         keep.embeddings.extend(other.embeddings)
         keep.embeddings = keep.embeddings[-20:]
         keep.ocr_history.extend(other.ocr_history)
+        keep.ocr_confirmed_tracks |= other.ocr_confirmed_tracks
         keep.ship_id = self._best_ship_id(keep)
         keep.first_seen_ts = min(keep.first_seen_ts, other.first_seen_ts)
         keep.last_seen_ts = max(keep.last_seen_ts, other.last_seen_ts)
@@ -416,6 +432,68 @@ class CrossCameraReIdManager:
             self._track_to_global[(int(camera_id), str(track_id))] = keep.global_id
         self._identities.pop(other.global_id, None)
         return keep
+
+    def _has_concurrent_active_on_other_camera(
+        self,
+        identity: GlobalIdentity,
+        camera_id: int,
+    ) -> bool:
+        """True when another camera still has a live track on this identity."""
+        camera_key = int(camera_id)
+        return any(cam != camera_key for cam, _ in identity.active_tracks)
+
+    def _identities_have_concurrent_active_tracks(
+        self,
+        left: GlobalIdentity,
+        right: GlobalIdentity,
+    ) -> bool:
+        if not left.active_tracks or not right.active_tracks:
+            return False
+        left_cams = {cam for cam, _ in left.active_tracks}
+        right_cams = {cam for cam, _ in right.active_tracks}
+        return bool(left_cams & right_cams) or len(left_cams | right_cams) > 1
+
+    def _track_may_display_ship_id(
+        self,
+        identity: GlobalIdentity,
+        track_key: TrackKey,
+    ) -> bool:
+        """Overlay/API: only show plate after OCR on this track or cross-cam handoff."""
+        if track_key in identity.ocr_confirmed_tracks:
+            return True
+        return self._is_cross_camera_handoff_track(identity, track_key)
+
+    def _should_propagate_ship_id_to_track(
+        self,
+        identity: GlobalIdentity,
+        track_key: TrackKey,
+        track: TrackedBoat,
+    ) -> bool:
+        if not identity.ship_id or track.ship_id:
+            return False
+        if track_key in identity.ocr_confirmed_tracks:
+            return True
+        return self._is_cross_camera_handoff_track(identity, track_key)
+
+    def _is_cross_camera_handoff_track(
+        self,
+        identity: GlobalIdentity,
+        track_key: TrackKey,
+    ) -> bool:
+        """
+        Allow inherited plate when the identity is handing off between adjacent cameras:
+        no concurrent active tracks elsewhere, and a removed track exists on an adjacent cam.
+        """
+        if not identity.ship_id:
+            return False
+        camera_id, _ = track_key
+        if self._has_concurrent_active_on_other_camera(identity, camera_id):
+            return False
+        removed_cameras = {cam for cam, _ in identity.removed_tracks}
+        if not removed_cameras:
+            return False
+        candidate_cameras = {camera_id, *self.adjacent_camera_ids(camera_id)}
+        return bool(removed_cameras & set(candidate_cameras))
 
     def _update_primary_camera(
         self,

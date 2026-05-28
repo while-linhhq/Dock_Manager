@@ -13,7 +13,6 @@ export const configSchema = z.object({
 });
 
 export const pipelineSchema = z.object({
-  source: z.string().optional(),
-  camera_group_id: z.number().optional(),
+  camera_group_id: z.number().int().positive('Camera group là bắt buộc'),
   enable_ocr: z.boolean().default(true),
 });

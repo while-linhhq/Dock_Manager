@@ -12,6 +12,7 @@ suppress_ffmpeg_decoder_logs()
 import cv2
 
 from app.services.ai.frame_reader import open_rtsp
+from app.utils.ai.frame_quality import is_usable_bgr_frame
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,25 @@ class LatestFrameBuffer:
             }
 
 
+def _drain_latest_from_capture(cap: Any, *, max_grabs: int = 4) -> Any | None:
+    """Drop a few buffered RTSP frames; return the newest decoded image."""
+    latest = None
+    grabs = max(1, int(max_grabs))
+    for _ in range(grabs):
+        grabbed = cap.grab()
+        if not grabbed:
+            break
+        ok, frame = cap.retrieve()
+        if ok and frame is not None:
+            latest = frame
+    if latest is not None:
+        return latest
+    ok, frame = cap.read()
+    if ok and frame is not None:
+        return frame
+    return None
+
+
 class MultiFrameReaderThread(threading.Thread):
     def __init__(
         self,
@@ -66,12 +86,17 @@ class MultiFrameReaderThread(threading.Thread):
         frame_buffer: LatestFrameBuffer,
         stop_event: threading.Event,
         target_fps: float | None = None,
+        *,
+        drain_rtsp_buffer: bool = True,
+        max_drain_grabs: int = 4,
     ) -> None:
         super().__init__(daemon=True)
         self._source = source
         self._frame_buffer = frame_buffer
         self._stop_event = stop_event
         self._cap = None
+        self._drain_rtsp_buffer = drain_rtsp_buffer
+        self._max_drain_grabs = max(1, int(max_drain_grabs))
         self._target_interval = 1.0 / target_fps if target_fps and target_fps > 0 else None
 
     def run(self) -> None:
@@ -85,8 +110,16 @@ class MultiFrameReaderThread(threading.Thread):
 
             next_emit = time.monotonic()
             while not self._stop_event.is_set():
-                ok, frame = self._cap.read()
-                if not ok or frame is None:
+                if self._drain_rtsp_buffer:
+                    frame = _drain_latest_from_capture(
+                        self._cap,
+                        max_grabs=self._max_drain_grabs,
+                    )
+                else:
+                    ok, frame = self._cap.read()
+                    frame = frame if ok and frame is not None else None
+
+                if frame is None:
                     if isinstance(self._source.source, str):
                         self._cap.release()
                         time.sleep(2)
@@ -98,13 +131,10 @@ class MultiFrameReaderThread(threading.Thread):
 
                 now = time.monotonic()
                 if self._target_interval is not None and now < next_emit:
-                    slack = next_emit - now
-                    if slack > 0:
-                        time.sleep(min(slack, 0.02))
                     continue
                 if self._target_interval is not None:
                     next_emit = now + self._target_interval
-                self._frame_buffer.set(self._source.camera_id, frame)
+                self._frame_buffer.set(self._source.camera_id, frame, captured_at=now)
         except Exception as err:
             print(f'[WARNING] MultiFrameReaderThread crashed: {err}')
         finally:
@@ -117,15 +147,26 @@ class MultiFrameReaderThread(threading.Thread):
         return cv2.VideoCapture(self._source.source)
 
 
-def capture_snapshot(source: str | int, timeout_sec: float = 5.0):
+def capture_snapshot(
+    source: str | int,
+    timeout_sec: float = 8.0,
+    *,
+    warmup_frames: int = 25,
+) -> Any | None:
     cap = open_rtsp(source) if isinstance(source, str) else cv2.VideoCapture(source)
     try:
         if not cap.isOpened():
             return None
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        for _ in range(max(0, int(warmup_frames))):
+            cap.read()
+
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             ok, frame = cap.read()
-            if ok and frame is not None:
+            if ok and frame is not None and is_usable_bgr_frame(frame):
                 return frame.copy()
             time.sleep(0.05)
         return None

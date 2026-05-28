@@ -20,11 +20,12 @@ from app.utils.media.mp4_codec import get_mp4_video_codec_fourcc
 from app.utils.media.transcode_h264 import transcode_to_h264_faststart
 
 
-def _n_confirmed(tracked_boats: list) -> int:
-    return sum(
-        1
+def _recording_track_ids(tracked_boats: list) -> frozenset[str]:
+    """Tracks still on screen (CONFIRMED or LOST) — keep recording through brief misses."""
+    return frozenset(
+        str(t.track_id)
         for t in tracked_boats
-        if getattr(t, "state", None) == TrackState.CONFIRMED
+        if getattr(t, 'state', None) in (TrackState.CONFIRMED, TrackState.LOST)
     )
 
 
@@ -32,7 +33,7 @@ def _confirmed_track_ids(tracked_boats: list) -> frozenset[str]:
     return frozenset(
         str(t.track_id)
         for t in tracked_boats
-        if getattr(t, "state", None) == TrackState.CONFIRMED
+        if getattr(t, 'state', None) == TrackState.CONFIRMED
     )
 
 
@@ -44,18 +45,39 @@ class _FinalizeJob:
     ended_at: float
 
 
+@dataclass
+class _TrackRecordSession:
+    track_id: str
+    writer: cv2.VideoWriter
+    path: str
+    start_mono: float
+    last_seen_mono: float
+    start_wall: float
+    last_video_frame_mono: float | None = None
+
+    def write_frame_paced(self, frame, now: float, record_fps: float) -> None:
+        last = self.last_video_frame_mono
+        if last is None:
+            n_write = 1
+        else:
+            elapsed = max(0.0, now - last)
+            n_write = max(1, int(round(elapsed * record_fps)))
+        for _ in range(n_write):
+            self.writer.write(frame)
+        self.last_video_frame_mono = now
+        self.last_seen_mono = now
+
+
 class VideoRecorderThread(threading.Thread):
     """
-    Nhận (annotated_frame, tracked_boats) từ queue; ghi MP4 khi có tàu CONFIRMED.
-    - Ngắt: hết max duration hoặc không có CONFIRMED liên tục >= gap (debounce nhiễu).
-    - Restart file: số CONFIRMED tăng so với max_boat_count của session hiện tại.
-    - exclusive_single_track: chỉ ghi khi đúng 1 CONFIRMED; đổi track_id → session mới
-      (dùng cho video đối chiếu single-camera, tránh nhiều detection dùng chung 1 file).
+    Nhận (annotated_frame, tracked_boats); ghi MP4 **riêng từng track_id**.
+    Một tàu mới xuất hiện không cắt clip của tàu đang ghi.
+    Ngắt mỗi track: gap không thấy track đó, hoặc max duration.
     """
 
     def __init__(
         self,
-        video_queue: "queue.Queue",
+        video_queue: 'queue.Queue',
         stop_event: threading.Event,
         max_duration_sec: float,
         gap_sec: float,
@@ -68,22 +90,15 @@ class VideoRecorderThread(threading.Thread):
         self._video_queue = video_queue
         self._stop_event = stop_event
         self._max_duration_sec = max(0.0, float(max_duration_sec))
-        # gap_sec <= 0: không ngắt theo "mất tàu" (chỉ max duration / số tàu tăng)
         self._gap_sec = float(gap_sec)
         self._record_fps = max(1.0, float(record_fps))
         self._runs_base = runs_base
         self._on_video_saved = on_video_saved
+        # Kept for API compat; per-track sessions are always used now.
         self._exclusive_single_track = bool(exclusive_single_track)
 
-        self._writer: cv2.VideoWriter | None = None
-        self._current_path: str | None = None
-        self._max_boat_count = 0
-        self._start_ts = 0.0
-        self._last_boat_ts = 0.0
-        # Monotonic ts of last VideoWriter.write — duplicate frames so fps matches real-time playback.
-        self._last_video_frame_mono: float | None = None
-        self._session_track_ids: set[str] = set()
-        self._session_start_wall = 0.0
+        self._sessions: dict[str, _TrackRecordSession] = {}
+        self._frame_size: tuple[int, int] | None = None
 
         self._finalize_queue: queue.Queue[_FinalizeJob | None] = queue.Queue(maxsize=10)
         self._finalize_worker = threading.Thread(
@@ -137,11 +152,11 @@ class VideoRecorderThread(threading.Thread):
                 print(f'[RECORD] MinIO upload callback failed: {e}')
         print(f'[RECORD] Saved: {path}')
 
-    def _enqueue_finalize(self, path: str) -> None:
+    def _enqueue_finalize(self, path: str, track_ids: frozenset[str], started_wall: float) -> None:
         job = _FinalizeJob(
             path=path,
-            track_ids=frozenset(self._session_track_ids),
-            started_at=float(self._session_start_wall),
+            track_ids=track_ids,
+            started_at=float(started_wall),
             ended_at=time.time(),
         )
         try:
@@ -156,18 +171,81 @@ class VideoRecorderThread(threading.Thread):
             except queue.Full:
                 print(f'[RECORD] finalize queue full, dropping: {path}')
 
-    def _stop_recording(self) -> None:
-        if self._writer is not None:
-            self._writer.release()
-            self._writer = None
-            if self._current_path:
-                path = self._current_path
-                self._enqueue_finalize(path)
-            self._current_path = None
-            self._last_video_frame_mono = None
+    def _open_session(self, track_id: str, frame) -> _TrackRecordSession | None:
+        h, w = frame.shape[:2]
+        self._frame_size = (w, h)
+        out_dir = ensure_dir(videos_dir_for_today(self._runs_base))
+        safe_tid = ''.join(c if c.isalnum() or c in '-_' else '_' for c in track_id)[:48]
+        name = f'{timestamp_prefix()}_{safe_tid}.mp4'
+        path = os.path.join(out_dir, name)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(path, fourcc, self._record_fps, (w, h))
+        if not writer.isOpened():
+            print(f'[RECORD] Error: could not open VideoWriter for {path}')
+            return None
+        now = time.monotonic()
+        session = _TrackRecordSession(
+            track_id=track_id,
+            writer=writer,
+            path=path,
+            start_mono=now,
+            last_seen_mono=now,
+            start_wall=time.time(),
+        )
+        session.write_frame_paced(frame, now, self._record_fps)
+        print(f'[RECORD] Started track={track_id}: {path}')
+        return session
+
+    def _finalize_session(self, session: _TrackRecordSession) -> None:
+        session.writer.release()
+        self._enqueue_finalize(
+            session.path,
+            frozenset({session.track_id}),
+            session.start_wall,
+        )
+
+    def _stop_all_sessions(self) -> None:
+        for session in list(self._sessions.values()):
+            self._finalize_session(session)
+        self._sessions.clear()
+
+    def _session_over_max_duration(self, session: _TrackRecordSession, now: float) -> bool:
+        return (
+            self._max_duration_sec > 0
+            and (now - session.start_mono) >= self._max_duration_sec
+        )
+
+    def _session_gap_expired(self, session: _TrackRecordSession, now: float) -> bool:
+        return self._gap_sec > 0 and (now - session.last_seen_mono) >= self._gap_sec
+
+    def _process_frame(self, frame, tracked_boats: list[TrackedBoat]) -> None:
+        now = time.monotonic()
+        present = _recording_track_ids(tracked_boats)
+        confirmed = _confirmed_track_ids(tracked_boats)
+
+        for tid in confirmed:
+            if tid not in self._sessions:
+                session = self._open_session(tid, frame)
+                if session is not None:
+                    self._sessions[tid] = session
+
+        for tid in list(present):
+            session = self._sessions.get(tid)
+            if session is None:
+                continue
+            session.write_frame_paced(frame, now, self._record_fps)
+            if self._session_over_max_duration(session, now):
+                self._finalize_session(session)
+                del self._sessions[tid]
+
+        for tid, session in list(self._sessions.items()):
+            if tid in present:
+                continue
+            if self._session_gap_expired(session, now):
+                self._finalize_session(session)
+                del self._sessions[tid]
 
     def shutdown_finalize(self, timeout: float = 120.0) -> None:
-        """Wait for pending transcode/upload jobs, then stop finalize worker."""
         deadline = time.monotonic() + max(1.0, float(timeout))
         while time.monotonic() < deadline:
             if self._finalize_queue.unfinished_tasks <= 0:
@@ -179,107 +257,17 @@ class VideoRecorderThread(threading.Thread):
             pass
         self._finalize_worker.join(timeout=10.0)
 
-    def _begin_session(self, frame, n_boats: int, tracked_boats: list) -> None:
-        h, w = frame.shape[:2]
-        out_dir = ensure_dir(videos_dir_for_today(self._runs_base))
-        name = f"{timestamp_prefix()}.mp4"
-        path = os.path.join(out_dir, name)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(
-            path, fourcc, self._record_fps, (w, h)
-        )
-        if not writer.isOpened():
-            print(f"[RECORD] Error: could not open VideoWriter for {path}")
-            return
-
-        self._writer = writer
-        self._current_path = path
-        self._max_boat_count = n_boats
-        now = time.monotonic()
-        self._start_ts = now
-        self._last_boat_ts = now
-        self._last_video_frame_mono = None
-        self._session_track_ids = set(_confirmed_track_ids(tracked_boats))
-        self._session_start_wall = time.time()
-        self._write_frame_paced(frame, now)
-        print(f"[RECORD] Started: {path} (confirmed={n_boats})")
-
-    def _write_frame_paced(self, frame, now: float) -> None:
-        """Write the same frame enough times to match record_fps wall-clock cadence."""
-        if self._writer is None:
-            return
-        last = self._last_video_frame_mono
-        if last is None:
-            n_write = 1
-        else:
-            elapsed = max(0.0, now - last)
-            n_write = max(1, int(round(elapsed * self._record_fps)))
-        for _ in range(n_write):
-            self._writer.write(frame)
-        self._last_video_frame_mono = now
-
-    def _maybe_stop_on_timeout(self, now: float) -> None:
-        if self._writer is None:
-            return
-        if self._max_duration_sec > 0 and (
-            now - self._start_ts >= self._max_duration_sec
-        ):
-            self._stop_recording()
-            return
-        if self._gap_sec > 0 and now - self._last_boat_ts >= self._gap_sec:
-            self._stop_recording()
-
-    def _process_frame(self, frame, tracked_boats: list[TrackedBoat]) -> None:
-        n = _n_confirmed(tracked_boats)
-        now = time.monotonic()
-        current_ids = _confirmed_track_ids(tracked_boats)
-
-        if self._exclusive_single_track:
-            if n > 1:
-                if self._writer is not None:
-                    self._maybe_stop_on_timeout(now)
-                return
-            if self._writer is not None:
-                if n == 0:
-                    self._maybe_stop_on_timeout(now)
-                    return
-                if current_ids != frozenset(self._session_track_ids):
-                    self._stop_recording()
-                    self._begin_session(frame, 1, tracked_boats)
-                    return
-                self._write_frame_paced(frame, now)
-                self._last_boat_ts = now
-                self._maybe_stop_on_timeout(now)
-                return
-            if n == 1:
-                self._begin_session(frame, 1, tracked_boats)
-            return
-
-        if self._writer is not None:
-            if n > 0:
-                self._session_track_ids.update(current_ids)
-            if n > self._max_boat_count:
-                self._stop_recording()
-                self._begin_session(frame, n, tracked_boats)
-                return
-
-            self._write_frame_paced(frame, now)
-            if n > 0:
-                self._last_boat_ts = now
-            self._maybe_stop_on_timeout(now)
-            return
-
-        if n > 0:
-            self._begin_session(frame, n, tracked_boats)
-
     def run(self) -> None:
         try:
             while not self._stop_event.is_set():
                 try:
                     item = self._video_queue.get(timeout=0.5)
                 except queue.Empty:
-                    if self._writer is not None:
-                        self._maybe_stop_on_timeout(time.monotonic())
+                    now = time.monotonic()
+                    for tid, session in list(self._sessions.items()):
+                        if self._session_gap_expired(session, now):
+                            self._finalize_session(session)
+                            del self._sessions[tid]
                     continue
 
                 if not item or len(item) < 2:
@@ -290,6 +278,6 @@ class VideoRecorderThread(threading.Thread):
 
                 self._process_frame(frame, tracked_boats)
         except Exception as e:
-            print(f"[WARNING] VideoRecorderThread crashed: {e}")
+            print(f'[WARNING] VideoRecorderThread crashed: {e}')
         finally:
-            self._stop_recording()
+            self._stop_all_sessions()

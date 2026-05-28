@@ -23,13 +23,10 @@ class Settings(BaseSettings):
     CONF: float = 0.75
     RESIZE_SCALE: float = 0.5
     
-    # Boat tracker (IoU + state machine)
-    TRACK_MIN_HITS: int = 30
-    TRACK_MAX_TENTATIVE_MISSES: int = 10
-    TRACK_MAX_LOST_FRAMES: int = 80
-    TRACK_MIN_CONFIRM_SEC: float | None = None
-    TRACK_MAX_TENTATIVE_SEC: float | None = None
-    TRACK_MAX_LOST_SEC: float | None = None
+    # Boat tracker (IoU + state machine) — timing in seconds (see port_timing_config)
+    TRACK_MIN_CONFIRM_SEC: float = 1.5
+    TRACK_MAX_TENTATIVE_SEC: float = 0.5
+    TRACK_MAX_LOST_SEC: float = 4.0
     TRACK_IOU_THRESHOLD: float = 0.3
     
     # Re-ID & Dedup logic
@@ -48,8 +45,7 @@ class Settings(BaseSettings):
     PREVIEW_MAX_HEIGHT: int = 540
 
     # OCR / Paddle configuration
-    OCR_INTERVAL_FRAMES: int = 10
-    OCR_INTERVAL_SEC: float | None = None
+    OCR_INTERVAL_SEC: float = 0.5
     ENABLE_OCR: bool = True
     OCR_LABEL_TTL_SEC: float = 5.0
     SAVE_MIN_INTERVAL_SEC: float = 20.0

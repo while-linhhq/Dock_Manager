@@ -677,6 +677,111 @@ def _ensure_bulk_payment_sessions() -> None:
         raise
 
 
+def _migrate_port_config_frames_to_seconds() -> None:
+    """Convert legacy frame-based port_configs to second-based keys."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    from app.utils.port_timing_config import (
+        DEFAULT_SEC_BY_KEY,
+        FRAME_TO_SEC_KEY,
+        LEGACY_FRAME_CONFIG_KEYS,
+        frames_to_seconds,
+    )
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        upsert = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                description = EXCLUDED.description
+            """
+        )
+        delete_legacy = text('DELETE FROM port_configs WHERE key = :key')
+    elif dialect == 'sqlite':
+        upsert = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                description = excluded.description
+            """
+        )
+        delete_legacy = text('DELETE FROM port_configs WHERE key = :key')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — migrate frame port_configs manually',
+            dialect,
+        )
+        return
+
+    descriptions = {
+        'ocr_interval_sec': 'Seconds between OCR attempts',
+        'track_min_confirm_sec': 'Seconds before TENTATIVE becomes CONFIRMED',
+        'track_max_tentative_sec': 'Seconds without match before tentative track is removed',
+        'track_max_lost_sec': 'Seconds in LOST before track is removed',
+    }
+
+    try:
+        with engine.begin() as conn:
+            fps_row = conn.execute(
+                text("SELECT value FROM port_configs WHERE key = 'record_fps' LIMIT 1")
+            ).fetchone()
+            try:
+                fps = float(fps_row[0]) if fps_row and str(fps_row[0]).strip() else 20.0
+            except (TypeError, ValueError):
+                fps = 20.0
+            fps = max(1.0, fps)
+
+            for frame_key, sec_key in FRAME_TO_SEC_KEY.items():
+                sec_row = conn.execute(
+                    text('SELECT value FROM port_configs WHERE key = :key LIMIT 1'),
+                    {'key': sec_key},
+                ).fetchone()
+                sec_value: str | None = None
+                if sec_row and str(sec_row[0]).strip():
+                    sec_value = str(sec_row[0]).strip()
+                else:
+                    frame_row = conn.execute(
+                        text('SELECT value FROM port_configs WHERE key = :key LIMIT 1'),
+                        {'key': frame_key},
+                    ).fetchone()
+                    if frame_row and str(frame_row[0]).strip():
+                        try:
+                            frames = float(str(frame_row[0]).strip())
+                            sec_value = f'{frames_to_seconds(frames, fps):.4g}'
+                        except ValueError:
+                            sec_value = None
+                    if sec_value is None:
+                        sec_value = str(DEFAULT_SEC_BY_KEY[sec_key])
+
+                conn.execute(
+                    upsert,
+                    {
+                        'key': sec_key,
+                        'value': sec_value,
+                        'description': descriptions[sec_key],
+                    },
+                )
+
+            for legacy_key in LEGACY_FRAME_CONFIG_KEYS:
+                conn.execute(delete_legacy, {'key': legacy_key})
+
+        logger.info('schema_patches: migrated frame port_configs to seconds')
+    except Exception as err:
+        logger.error('schema_patches: failed to migrate frame port_configs: %s', err)
+        raise
+
+
 def apply_schema_patches() -> None:
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
@@ -690,4 +795,5 @@ def apply_schema_patches() -> None:
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()
     _ensure_sepay_port_configs()
+    _migrate_port_config_frames_to_seconds()
     _ensure_bulk_payment_sessions()

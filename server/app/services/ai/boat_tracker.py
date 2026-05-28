@@ -165,16 +165,28 @@ class BoatTracker:
 
     def _merge_pending_into_track(
         self, pending: PendingRemoved, tid: str, tb: TrackedBoat
-    ) -> None:
+    ) -> bool:
+        pending_vote = pending.voted_ship_id or _vote_id_from_hist(pending.ocr_history)
+        current_vote = _vote_id_from_hist(self._ocr_history.get(tid, []))
+        if pending_vote and current_vote and pending_vote != current_vote:
+            return False
         tb.first_seen_ts = pending.track.first_seen_ts
         curr = self._ocr_history.get(tid, [])
         self._ocr_history[tid] = list(pending.ocr_history) + list(curr)
         best = self.get_voted_ship_id(tid)
         if best is not None:
             tb.ship_id = best
+        return True
+
+    def _count_confirmed_locked(self) -> int:
+        return sum(
+            1 for t in self._tracks.values() if t.state == TrackState.CONFIRMED
+        )
 
     def _try_spatial_reid(self, tid: str, tb: TrackedBoat, now: float) -> None:
         if not self._pending_removed:
+            return
+        if self._count_confirmed_locked() > 1:
             return
         new_c = _centroid_xyxy(tb.box)
         for i, pending in enumerate(self._pending_removed):
@@ -182,8 +194,8 @@ class BoatTracker:
                 continue
             old_c = _centroid_xyxy(pending.last_box)
             if _euclidean(new_c, old_c) <= self.reid_max_centroid_dist:
-                self._merge_pending_into_track(pending, tid, tb)
-                self._pending_removed.pop(i)
+                if self._merge_pending_into_track(pending, tid, tb):
+                    self._pending_removed.pop(i)
                 break
 
     def _try_shipid_reid(self, track_id: str, tb: TrackedBoat, now: float) -> None:
@@ -195,8 +207,8 @@ class BoatTracker:
                 continue
             if now - pending.removed_ts > self.reid_window_sec:
                 continue
-            self._merge_pending_into_track(pending, track_id, tb)
-            self._pending_removed.pop(i)
+            if self._merge_pending_into_track(pending, track_id, tb):
+                self._pending_removed.pop(i)
             break
 
     def _update_track_detection(

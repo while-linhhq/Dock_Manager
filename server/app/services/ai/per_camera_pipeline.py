@@ -15,6 +15,7 @@ from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
+from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
 from app.services.ai.ocr_worker import OcrQueueItem, OcrWorkerThread
@@ -33,25 +34,21 @@ class PerCameraPipelineConfig:
     source: str | int
     record_fps: float
     enable_ocr: bool
-    ocr_interval_frames: int
+    ocr_interval_sec: float
     ocr_label_ttl_sec: float
     save_min_interval_sec: float
     ocr_audit_save_frames: bool
     resize_scale: float
-    track_min_hits: int
-    track_max_tentative_misses: int
-    track_max_lost_frames: int
     track_iou_threshold: float
     track_reid_window_sec: float
     track_reid_max_dist: float
+    track_min_confirm_sec: float
+    track_max_tentative_sec: float
+    track_max_lost_sec: float
     clahe_clip_limit: float
     clahe_tile_size: int
     edge_zone_ratio: float
     enable_preview_stream: bool = False
-    track_min_confirm_sec: float | None = None
-    track_max_tentative_sec: float | None = None
-    track_max_lost_sec: float | None = None
-    ocr_interval_sec: float | None = None
 
 
 class PerCameraPipeline(threading.Thread):
@@ -98,9 +95,9 @@ class PerCameraPipeline(threading.Thread):
                 target_fps=config.record_fps,
             )
         self._tracker = BoatTracker(
-            min_hits=config.track_min_hits,
-            max_tentative_misses=config.track_max_tentative_misses,
-            max_lost_frames=config.track_max_lost_frames,
+            min_hits=1,
+            max_tentative_misses=1,
+            max_lost_frames=1,
             iou_threshold=config.track_iou_threshold,
             reid_window_sec=0.0,
             reid_max_centroid_dist=config.track_reid_max_dist,
@@ -156,18 +153,25 @@ class PerCameraPipeline(threading.Thread):
         try:
             while not self._stop_event.is_set():
                 try:
-                    raw_frame = drain_queue_latest(
+                    item = drain_queue_latest(
                         self._frame_queue,
                         self._frame_queue.get(timeout=0.5),
                     )
                 except queue.Empty:
                     continue
 
+                if isinstance(item, TimedFrame):
+                    raw_frame = item.frame
+                    captured_mono = item.captured_at
+                else:
+                    raw_frame = item
+                    captured_mono = time.monotonic()
+
                 self._frame_count += 1
                 if self._fps_started_at is None:
                     self._fps_started_at = time.time()
                 fps_est = self._frame_count / max(1e-6, time.time() - self._fps_started_at)
-                self._process_frame(raw_frame, fps_est)
+                self._process_frame(raw_frame, fps_est, captured_mono=captured_mono)
         except Exception:
             import logging
 
@@ -188,7 +192,13 @@ class PerCameraPipeline(threading.Thread):
     def flush_shutdown_logs(self) -> None:
         self._tracker.flush_shutdown_logs()
 
-    def _process_frame(self, raw_frame: np.ndarray, fps_est: float) -> None:
+    def _process_frame(
+        self,
+        raw_frame: np.ndarray,
+        fps_est: float,
+        *,
+        captured_mono: float | None = None,
+    ) -> None:
         processed = preprocess_frame_clahe(raw_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
@@ -222,6 +232,8 @@ class PerCameraPipeline(threading.Thread):
             self.config.ocr_label_ttl_sec,
             fps_est,
             overlay_scale,
+            frame_captured_mono=captured_mono,
+            camera_id=int(self.config.camera_id),
         )
         if self._on_overlay_media_sample is not None:
             try:
@@ -292,13 +304,10 @@ class PerCameraPipeline(threading.Thread):
     def _queue_ocr(self, frame: np.ndarray, tracked_boats: list[TrackedBoat]) -> None:
         if not self.config.enable_ocr or self._ocr_queue is None:
             return
-        if self.config.ocr_interval_sec is not None:
-            now = time.time()
-            if now - self._last_ocr_ts < float(self.config.ocr_interval_sec):
-                return
-            self._last_ocr_ts = now
-        elif self._frame_count % max(1, self.config.ocr_interval_frames) != 0:
+        now = time.time()
+        if now - self._last_ocr_ts < float(self.config.ocr_interval_sec):
             return
+        self._last_ocr_ts = now
         confirmed = [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
         if not confirmed:
             return

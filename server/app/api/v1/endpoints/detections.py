@@ -29,10 +29,16 @@ def _with_presigned_detection_paths(obj):
     return obj
 
 
-def _detection_to_read(db: Session, obj) -> DetectionRead:
-    row = _with_presigned_detection_paths(obj)
+def _detection_to_read(
+    db: Session,
+    obj,
+    *,
+    include_over_berth_limit: bool = True,
+    include_presigned_paths: bool = True,
+) -> DetectionRead:
+    row = _with_presigned_detection_paths(obj) if include_presigned_paths else obj
     payload = DetectionRead.model_validate(row)
-    over = compute_detection_over_berth_limit(db, obj)
+    over = compute_detection_over_berth_limit(db, obj) if include_over_berth_limit else False
     return payload.model_copy(update={'is_over_berth_limit': over})
 
 
@@ -60,6 +66,8 @@ def list_detections(
     vessel_id: Optional[int] = None,
     ship_id: Optional[str] = None,
     event_date: Optional[date] = None,
+    include_over_berth_limit: bool = False,
+    include_presigned_paths: bool = False,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
@@ -71,7 +79,15 @@ def list_detections(
         ship_id=ship_id,
         event_date=event_date,
     )
-    return [_detection_to_read(db, row) for row in rows]
+    return [
+        _detection_to_read(
+            db,
+            row,
+            include_over_berth_limit=include_over_berth_limit,
+            include_presigned_paths=include_presigned_paths,
+        )
+        for row in rows
+    ]
 
 
 @router.get('/{detection_id}', response_model=DetectionRead)

@@ -53,7 +53,7 @@ const FIELDS: FieldDef[] = [
   },
   {
     key: 'sepay_api_token',
-    label: 'API token (Bearer)',
+    label: 'Token API (Bearer)',
     description: 'my.sepay.vn → Tích hợp → API. Poll giao dịch, không cần webhook.',
     default: '',
     inputType: 'password',
@@ -71,7 +71,7 @@ const FIELDS: FieldDef[] = [
   },
   {
     key: 'sepay_cron_secret',
-    label: 'Cron secret',
+    label: 'Secret cron',
     description: 'Cho crontab gọi POST /api/v1/sepay/sync/cron (header X-Sepay-Cron-Secret).',
     default: '',
     inputType: 'password',
@@ -132,7 +132,7 @@ function StatusPills({ bankReady, apiReady }: { bankReady: boolean; apiReady: bo
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       <StatusPill ok={bankReady} label="TK ngân hàng" />
-      <StatusPill ok={apiReady} label="API token" />
+      <StatusPill ok={apiReady} label="Token API" />
     </div>
   );
 }

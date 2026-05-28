@@ -37,9 +37,8 @@ class YoloWorkerThread(threading.Thread):
         ocr_queue: "queue.Queue | None",
         video_queue: "queue.Queue | None",
         stop_event: threading.Event,
-        ocr_interval: int,
         enable_ocr: bool,
-        ocr_interval_sec: float | None = None,
+        ocr_interval_sec: float,
         ocr_cache: dict | None = None,
         ocr_lock: threading.RLock | None = None,
         ocr_label_ttl: float = 5.0,
@@ -55,8 +54,7 @@ class YoloWorkerThread(threading.Thread):
         self._ocr_queue = ocr_queue
         self._video_queue = video_queue
         self._stop_event = stop_event
-        self.ocr_interval = ocr_interval
-        self.ocr_interval_sec = ocr_interval_sec
+        self.ocr_interval_sec = float(ocr_interval_sec)
         self.enable_ocr = enable_ocr
         self.frame_count = 0
         self._last_ocr_ts = 0.0
@@ -142,12 +140,9 @@ class YoloWorkerThread(threading.Thread):
                 ]
                 ocr_tick = False
                 if self.enable_ocr and self._ocr_queue is not None and len(confirmed) > 0:
-                    if self.ocr_interval_sec is not None:
-                        now = time.time()
-                        if now - self._last_ocr_ts >= float(self.ocr_interval_sec):
-                            self._last_ocr_ts = now
-                            ocr_tick = True
-                    elif self.frame_count % max(1, self.ocr_interval) == 0:
+                    now = time.time()
+                    if now - self._last_ocr_ts >= self.ocr_interval_sec:
+                        self._last_ocr_ts = now
                         ocr_tick = True
                 if ocr_tick:
                     items = [(tb.track_id, tb.box.copy()) for tb in confirmed]

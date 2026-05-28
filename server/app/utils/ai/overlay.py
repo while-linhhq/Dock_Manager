@@ -7,6 +7,7 @@ import cv2
 
 from app.services.ai.boat_tracker import TrackedBoat, TrackState
 from app.utils.ai.pipeline_utils import ocr_cache_key_track
+from app.utils.ai.time_sync import format_capture_wall_clock
 
 
 def draw_ship_detection_overlay(
@@ -17,6 +18,9 @@ def draw_ship_detection_overlay(
     ocr_label_ttl: float,
     fps: float,
     resize_scale: float,
+    *,
+    frame_captured_mono: float | None = None,
+    camera_id: int | None = None,
 ):
     """
     Vẽ det confidence, track id + state, nhãn OCR (theo TTL), FPS; resize nếu resize_scale != 1.
@@ -85,10 +89,22 @@ def draw_ship_detection_overlay(
                     2,
                 )
 
+    if frame_captured_mono is not None:
+        sync_label = format_capture_wall_clock(frame_captured_mono, camera_id=camera_id)
+        cv2.putText(
+            display_frame,
+            sync_label,
+            (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (80, 220, 255),
+            2,
+        )
+
     cv2.putText(
         display_frame,
         f"FPS: {fps:.1f}",
-        (10, 30),
+        (10, 58 if frame_captured_mono is not None else 30),
         cv2.FONT_HERSHEY_SIMPLEX,
         1.0,
         (0, 255, 0),
@@ -99,7 +115,7 @@ def draw_ship_detection_overlay(
     cv2.putText(
         display_frame,
         f"confirmed: {n_conf}",
-        (10, 60),
+        (10, 88 if frame_captured_mono is not None else 60),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
         (200, 255, 200),

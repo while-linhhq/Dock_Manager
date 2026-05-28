@@ -48,6 +48,7 @@ from app.utils.ai.yolo_detector import load_yolo_detector
 from app.services.ai.yolo_worker import YoloWorkerThread
 from app.services import pipeline_preview
 from app.utils.ai.pipeline_utils import put_queue_drop_oldest
+from app.utils.port_timing_config import resolve_positive_seconds
 
 init_windows_cuda_path("pre")
 
@@ -196,16 +197,16 @@ class PipelineService:
     @staticmethod
     def _tracker_kwargs(runtime_cfg: dict[str, Any], *, on_track_removed) -> dict[str, Any]:
         return {
-            'min_hits': runtime_cfg['track_min_hits'],
-            'max_tentative_misses': runtime_cfg['track_max_tentative_misses'],
-            'max_lost_frames': runtime_cfg['track_max_lost_frames'],
+            'min_hits': 1,
+            'max_tentative_misses': 1,
+            'max_lost_frames': 1,
             'iou_threshold': runtime_cfg['track_iou_threshold'],
             'reid_window_sec': runtime_cfg['track_reid_window_sec'],
             'reid_max_centroid_dist': runtime_cfg['track_reid_max_dist'],
             'on_track_removed': on_track_removed,
-            'min_confirm_sec': runtime_cfg.get('track_min_confirm_sec'),
-            'max_tentative_sec': runtime_cfg.get('track_max_tentative_sec'),
-            'max_lost_sec': runtime_cfg.get('track_max_lost_sec'),
+            'min_confirm_sec': runtime_cfg['track_min_confirm_sec'],
+            'max_tentative_sec': runtime_cfg['track_max_tentative_sec'],
+            'max_lost_sec': runtime_cfg['track_max_lost_sec'],
         }
 
     def _load_runtime_config(self) -> dict[str, Any]:
@@ -223,35 +224,17 @@ class PipelineService:
             value = cfg_map.get(key)
             return str(value).strip() if value is not None else default
 
+        record_fps = (
+            float(rf)
+            if (rf := self._to_float(cfg_map.get('record_fps', ''), float(settings.RECORD_FPS))) > 0
+            else float(settings.RECORD_FPS)
+        )
+
         return {
             'model_path': _s('model_path', settings.MODEL_PATH),
             'device': _s('device', settings.DEVICE),
             'conf': self._to_float(cfg_map.get('conf', ''), float(settings.CONF)),
             'enable_ocr': self._to_bool(cfg_map.get('enable_ocr', ''), bool(settings.ENABLE_OCR)),
-            'ocr_interval_frames': max(
-                1,
-                self._to_int(cfg_map.get('ocr_interval_frames', ''), int(settings.OCR_INTERVAL_FRAMES)),
-            ),
-            'ocr_interval_sec': self._optional_positive_float(
-                cfg_map,
-                'ocr_interval_sec',
-                getattr(settings, 'OCR_INTERVAL_SEC', None),
-            ),
-            'track_min_confirm_sec': self._optional_positive_float(
-                cfg_map,
-                'track_min_confirm_sec',
-                getattr(settings, 'TRACK_MIN_CONFIRM_SEC', None),
-            ),
-            'track_max_tentative_sec': self._optional_positive_float(
-                cfg_map,
-                'track_max_tentative_sec',
-                getattr(settings, 'TRACK_MAX_TENTATIVE_SEC', None),
-            ),
-            'track_max_lost_sec': self._optional_positive_float(
-                cfg_map,
-                'track_max_lost_sec',
-                getattr(settings, 'TRACK_MAX_LOST_SEC', None),
-            ),
             'ocr_label_ttl_sec': self._to_float(
                 cfg_map.get('ocr_label_ttl_sec', ''),
                 float(settings.OCR_LABEL_TTL_SEC),
@@ -259,21 +242,6 @@ class PipelineService:
             'ocr_audit_enable': self._to_bool(
                 cfg_map.get('ocr_audit_enable', ''),
                 bool(settings.OCR_AUDIT_ENABLE),
-            ),
-            'track_min_hits': max(
-                1,
-                self._to_int(cfg_map.get('track_min_hits', ''), int(settings.TRACK_MIN_HITS)),
-            ),
-            'track_max_tentative_misses': max(
-                1,
-                self._to_int(
-                    cfg_map.get('track_max_tentative_misses', ''),
-                    int(settings.TRACK_MAX_TENTATIVE_MISSES),
-                ),
-            ),
-            'track_max_lost_frames': max(
-                1,
-                self._to_int(cfg_map.get('track_max_lost_frames', ''), int(settings.TRACK_MAX_LOST_FRAMES)),
             ),
             'track_iou_threshold': self._to_float(
                 cfg_map.get('track_iou_threshold', ''),
@@ -305,14 +273,10 @@ class PipelineService:
                 1,
                 self._to_int(cfg_map.get('record_no_boat_gap_sec', ''), int(settings.RECORD_NO_BOAT_GAP_SEC)),
             ),
-            'record_fps': (
-                float(rf)
-                if (rf := self._to_float(cfg_map.get('record_fps', ''), float(settings.RECORD_FPS))) > 0
-                else float(settings.RECORD_FPS)
-            ),
+            'record_fps': record_fps,
             'sync_tolerance_ms': max(
                 0,
-                self._to_int(cfg_map.get('sync_tolerance_ms', ''), 400),
+                self._to_int(cfg_map.get('sync_tolerance_ms', ''), 1200),
             ),
             'reid_embedding_model_path': _s(
                 'reid_embedding_model_path',
@@ -420,6 +384,34 @@ class PipelineService:
                 cfg_map.get('anchor_color_hsv_tolerance_h', ''),
                 int(settings.ANCHOR_COLOR_HSV_TOLERANCE_H),
             ),
+            'ocr_interval_sec': resolve_positive_seconds(
+                cfg_map,
+                sec_key='ocr_interval_sec',
+                legacy_frame_key='ocr_interval_frames',
+                default_sec=float(settings.OCR_INTERVAL_SEC),
+                fps=record_fps,
+            ),
+            'track_min_confirm_sec': resolve_positive_seconds(
+                cfg_map,
+                sec_key='track_min_confirm_sec',
+                legacy_frame_key='track_min_hits',
+                default_sec=float(settings.TRACK_MIN_CONFIRM_SEC),
+                fps=record_fps,
+            ),
+            'track_max_tentative_sec': resolve_positive_seconds(
+                cfg_map,
+                sec_key='track_max_tentative_sec',
+                legacy_frame_key='track_max_tentative_misses',
+                default_sec=float(settings.TRACK_MAX_TENTATIVE_SEC),
+                fps=record_fps,
+            ),
+            'track_max_lost_sec': resolve_positive_seconds(
+                cfg_map,
+                sec_key='track_max_lost_sec',
+                legacy_frame_key='track_max_lost_frames',
+                default_sec=float(settings.TRACK_MAX_LOST_SEC),
+                fps=record_fps,
+            ),
         }
 
     @property
@@ -441,16 +433,61 @@ class PipelineService:
     def bg_registry(self) -> BackgroundModelRegistry | None:
         return self._bg_registry
 
+    def get_synchronized_frames(
+        self,
+        camera_ids: list[int],
+        *,
+        timeout_sec: float = 2.0,
+    ) -> dict[int, Any] | None:
+        """Return one aligned BGR frame per camera (same time window)."""
+        if self._group_frame_hub is None:
+            return None
+        ids = [int(camera_id) for camera_id in camera_ids]
+        if not ids:
+            return None
+        try:
+            from app.utils.ai.frame_quality import is_usable_bgr_frame
+
+            batch = self._group_frame_hub.get_last_aligned_batch(ids, copy_frames=True)
+            if batch is None:
+                batch = self._group_frame_hub.wait_aligned_batch(
+                    ids,
+                    timeout_sec=timeout_sec,
+                )
+            if batch is None:
+                return None
+            frames: dict[int, Any] = {}
+            for camera_id, timed in batch.items():
+                frame = timed.frame
+                if frame is not None and is_usable_bgr_frame(frame):
+                    frames[int(camera_id)] = frame
+            if len(frames) != len(ids):
+                return None
+            return frames
+        except Exception:
+            _log.exception('get_synchronized_frames failed')
+            return None
+
     def get_latest_camera_frame(self, camera_id: int):
+        frames = self.get_synchronized_frames([int(camera_id)], timeout_sec=0.8)
+        if frames is not None:
+            return frames.get(int(camera_id))
         if self._group_frame_hub is None:
             return None
         try:
+            from app.utils.ai.frame_quality import is_usable_bgr_frame
+
             snapshot = self._group_frame_hub.frame_buffer.snapshot(copy_frames=True)
         except Exception:
             _log.exception('get_latest_camera_frame: snapshot failed')
             return None
         timed = snapshot.get(int(camera_id))
-        return timed.frame if timed is not None else None
+        if timed is None:
+            return None
+        frame = timed.frame
+        if frame is not None and is_usable_bgr_frame(frame):
+            return frame
+        return None
 
     @staticmethod
     def _utc_staging_day() -> str:
@@ -507,8 +544,14 @@ class PipelineService:
             conf = float(t.conf)
             if job.update_fused:
                 self._media_collector.update_fused_detection(tid, conf, frame)
-            cam = int(job.camera_id if job.camera_id is not None else getattr(t, 'camera_id', None) or 0)
-            self._media_collector.update_single_detection(tid, conf, cam, frame)
+                continue
+            cam = int(
+                job.camera_id
+                if job.camera_id is not None
+                else getattr(t, 'camera_id', None) or 0
+            )
+            if cam > 0:
+                self._media_collector.update_single_detection(tid, conf, cam, frame)
 
     def _enqueue_media_sample(
         self,
@@ -1144,7 +1187,6 @@ class PipelineService:
 
         # Use settings for all params
         ocr_active = enable_ocr if enable_ocr is not None else runtime_cfg['enable_ocr']
-        ocr_interval = runtime_cfg['ocr_interval_frames']
         ocr_label_ttl = runtime_cfg['ocr_label_ttl_sec']
         
         db_cb = self._on_track_removed_db
@@ -1178,8 +1220,8 @@ class PipelineService:
         )
         self._yolo_worker = YoloWorkerThread(
             self._detector, self._boat_tracker, self._frame_queue, self._result_queue,
-            self._ocr_queue, self._video_queue, self._stop, ocr_interval, ocr_active,
-            ocr_interval_sec=runtime_cfg.get('ocr_interval_sec'),
+            self._ocr_queue, self._video_queue, self._stop, ocr_active,
+            ocr_interval_sec=runtime_cfg['ocr_interval_sec'],
             ocr_cache=self.ocr_cache, ocr_lock=self.ocr_lock, ocr_label_ttl=ocr_label_ttl,
             record_overlay_resize_scale=runtime_cfg['resize_scale'],
             enable_preview_stream=True,
@@ -1416,21 +1458,17 @@ class PipelineService:
                 source=member.camera.rtsp_url,
                 record_fps=runtime_cfg['record_fps'],
                 enable_ocr=ocr_active,
-                ocr_interval_frames=runtime_cfg['ocr_interval_frames'],
+                ocr_interval_sec=runtime_cfg['ocr_interval_sec'],
                 ocr_label_ttl_sec=runtime_cfg['ocr_label_ttl_sec'],
                 save_min_interval_sec=runtime_cfg['save_min_interval_sec'],
                 ocr_audit_save_frames=runtime_cfg['ocr_audit_save_frames'],
                 resize_scale=runtime_cfg['resize_scale'],
-                track_min_hits=runtime_cfg['track_min_hits'],
-                track_max_tentative_misses=runtime_cfg['track_max_tentative_misses'],
-                track_max_lost_frames=runtime_cfg['track_max_lost_frames'],
                 track_iou_threshold=runtime_cfg['track_iou_threshold'],
                 track_reid_window_sec=runtime_cfg['track_reid_window_sec'],
                 track_reid_max_dist=runtime_cfg['track_reid_max_dist'],
-                track_min_confirm_sec=runtime_cfg.get('track_min_confirm_sec'),
-                track_max_tentative_sec=runtime_cfg.get('track_max_tentative_sec'),
-                track_max_lost_sec=runtime_cfg.get('track_max_lost_sec'),
-                ocr_interval_sec=runtime_cfg.get('ocr_interval_sec'),
+                track_min_confirm_sec=runtime_cfg['track_min_confirm_sec'],
+                track_max_tentative_sec=runtime_cfg['track_max_tentative_sec'],
+                track_max_lost_sec=runtime_cfg['track_max_lost_sec'],
                 clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
@@ -1508,7 +1546,6 @@ class PipelineService:
             self._detector_signature = detector_sig
 
         ocr_active = enable_ocr if enable_ocr is not None else runtime_cfg['enable_ocr']
-        ocr_interval = runtime_cfg['ocr_interval_frames']
         ocr_label_ttl = runtime_cfg['ocr_label_ttl_sec']
 
         def combined_on_removed(tb, hist):
@@ -1559,9 +1596,8 @@ class PipelineService:
             self._ocr_queue,
             None,
             self._stop,
-            ocr_interval,
             ocr_active,
-            ocr_interval_sec=runtime_cfg.get('ocr_interval_sec'),
+            ocr_interval_sec=runtime_cfg['ocr_interval_sec'],
             ocr_cache=self.ocr_cache,
             ocr_lock=self.ocr_lock,
             ocr_label_ttl=ocr_label_ttl,
@@ -1709,14 +1745,19 @@ class PipelineService:
             })
 
         tracker = BoatTracker(
-            min_hits=settings.TRACK_MIN_HITS,
-            max_tentative_misses=settings.TRACK_MAX_TENTATIVE_MISSES,
-            max_lost_frames=settings.TRACK_MAX_LOST_FRAMES,
+            min_hits=1,
+            max_tentative_misses=1,
+            max_lost_frames=1,
             iou_threshold=settings.TRACK_IOU_THRESHOLD,
             reid_window_sec=settings.TRACK_REID_WINDOW_SEC,
             reid_max_centroid_dist=settings.TRACK_REID_MAX_DIST,
-            on_track_removed=on_removed_test
+            on_track_removed=on_removed_test,
+            min_confirm_sec=float(settings.TRACK_MIN_CONFIRM_SEC),
+            max_tentative_sec=float(settings.TRACK_MAX_TENTATIVE_SEC),
+            max_lost_sec=float(settings.TRACK_MAX_LOST_SEC),
         )
+        ocr_interval_sec = float(settings.OCR_INTERVAL_SEC)
+        last_ocr_ts = 0.0
 
         recognizer = ShipIdRecognizer() if enable_ocr else None
         
@@ -1744,7 +1785,8 @@ class PipelineService:
             tracked_boats = tracker.update(boxes_list, det_confs, ts=now)
             
             # OCR if enabled
-            if enable_ocr and recognizer and (frame_count % settings.OCR_INTERVAL_FRAMES == 0):
+            if enable_ocr and recognizer and (now - last_ocr_ts >= ocr_interval_sec):
+                last_ocr_ts = now
                 confirmed = [tb for tb in tracked_boats if tb.state == "CONFIRMED"]
                 for tb in confirmed:
                     h, w = frame.shape[:2]

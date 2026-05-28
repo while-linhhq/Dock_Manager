@@ -15,6 +15,7 @@ from app.repositories.user_repository import user_repo
 from app.services import pipeline_preview
 from app.services.ai import seam_anchor_baseline
 from app.services.ai.multi_frame_reader import capture_snapshot
+from app.utils.ai.frame_quality import is_usable_bgr_frame
 from app.services.pipeline_service import pipeline_service
 from app.utils.ws_safe import SafeWebSocket
 
@@ -22,16 +23,8 @@ router = APIRouter()
 
 
 class PipelineStartRequest(BaseModel):
-    source: Optional[str] = None
-    camera_id: Optional[int] = None
-    camera_group_id: Optional[int] = None
+    camera_group_id: int
     enable_ocr: bool = True
-
-    @model_validator(mode='after')
-    def validate_source_or_camera(self) -> 'PipelineStartRequest':
-        if not self.source and self.camera_id is None and self.camera_group_id is None:
-            raise ValueError('Either source, camera_id, or camera_group_id is required')
-        return self
 
 
 class PipelineTestVideoRequest(BaseModel):
@@ -45,42 +38,16 @@ async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db
     if pipeline_service.is_running:
         return {"message": "Pipeline is already running"}
     try:
-        resolved_source = req.source
-        camera_name = None
-        camera_group_name = None
-
-        if req.camera_group_id is not None:
-            group = camera_group_repo.get(db, req.camera_group_id)
-            if not group:
-                raise HTTPException(status_code=404, detail='Camera group not found')
-            if not group.is_active:
-                raise HTTPException(status_code=400, detail='Camera group is inactive')
-            await asyncio.to_thread(pipeline_service.start_group, group, req.enable_ocr)
-            camera_group_name = group.name
-            return {
-                "message": "Pipeline started",
-                "camera_group_id": req.camera_group_id,
-                "camera_group_name": camera_group_name,
-            }
-
-        if req.camera_id is not None:
-            camera = camera_repo.get(db, req.camera_id)
-            if not camera:
-                raise HTTPException(status_code=404, detail='Camera not found')
-            # Không chặn is_active: khởi chạy pipeline là thao tác chủ động; cờ active chủ yếu
-            # dùng cho thống kê / danh sách mặc định. RTSP vẫn có thể hợp lệ khi camera «tắt».
-            resolved_source = camera.rtsp_url
-            camera_name = camera.camera_name
-
-        if not resolved_source:
-            raise HTTPException(status_code=400, detail='No source resolved for pipeline')
-
-        await asyncio.to_thread(pipeline_service.start, resolved_source, req.enable_ocr)
+        group = camera_group_repo.get(db, req.camera_group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail='Camera group not found')
+        if not group.is_active:
+            raise HTTPException(status_code=400, detail='Camera group is inactive')
+        await asyncio.to_thread(pipeline_service.start_group, group, req.enable_ocr)
         return {
             "message": "Pipeline started",
-            "source": resolved_source,
-            "camera_id": req.camera_id,
-            "camera_name": camera_name,
+            "camera_group_id": req.camera_group_id,
+            "camera_group_name": group.name,
         }
     except HTTPException:
         raise
@@ -248,10 +215,22 @@ async def lock_seam_anchor_background(
 
     locked: list[dict] = []
     failures: list[dict] = []
+    live_frames: dict[int, object] | None = None
+    if use_live_buffer:
+        live_frames = pipeline_service.get_synchronized_frames(
+            [int(camera_id) for camera_id in camera_ids],
+            timeout_sec=2.5,
+        )
+
     for camera_id in camera_ids:
         frame = None
         source = 'capture'
-        if use_live_buffer:
+        if live_frames is not None:
+            frame = live_frames.get(int(camera_id))
+            if frame is not None:
+                source = 'live_sync'
+
+        if frame is None and use_live_buffer:
             frame = pipeline_service.get_latest_camera_frame(int(camera_id))
             if frame is not None:
                 source = 'live'
@@ -265,6 +244,10 @@ async def lock_seam_anchor_background(
             if frame is None:
                 failures.append({'camera_id': camera_id, 'reason': 'capture_failed'})
                 continue
+
+        if not is_usable_bgr_frame(frame):
+            failures.append({'camera_id': camera_id, 'reason': 'frame_quality_rejected'})
+            continue
 
         baseline_path = seam_anchor_baseline.save_baseline(group_id, int(camera_id), frame)
         applied = False

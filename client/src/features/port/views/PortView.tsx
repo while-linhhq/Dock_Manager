@@ -3,11 +3,11 @@ import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { usePortStore } from '../store/portStore';
-import type { CameraCreate, PortConfigCreate, PipelineStartRequest, PortConfigRead } from '../services/portApi';
+import type { CameraCreate, PortConfigCreate, PortConfigRead } from '../services/portApi';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
-import { cameraSchema, configSchema, pipelineSchema } from '../port-schemas';
+import { cameraSchema, configSchema } from '../port-schemas';
 import { PortMainTabs, type PortMainTab } from '../components/PortMainTabs';
 import { PortDetectionsSection } from '../components/PortDetectionsSection';
 import { PortConfigsSection } from '../components/PortConfigsSection';
@@ -38,11 +38,8 @@ export const PortView: React.FC = () => {
   );
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
-  const [isPipelineModalOpen, setIsPipelineModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingConfigKey, setEditingConfigKey] = useState<string | null>(null);
-  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  const [pipelineTabCameraId, setPipelineTabCameraId] = useState<string>('');
   const [pipelineTabEnableOcr, setPipelineTabEnableOcr] = useState(true);
   const [detQ, setDetQ] = useState('');
   const [detAccepted, setDetAccepted] = useState<'all' | 'yes' | 'no'>('all');
@@ -56,11 +53,9 @@ export const PortView: React.FC = () => {
 
   const {
     detections,
-    cameras,
     configs,
     isLoading,
     fetchDetections,
-    fetchCameras,
     fetchConfigs,
     verifyDetection,
     upsertCamera,
@@ -81,11 +76,6 @@ export const PortView: React.FC = () => {
     resolver: zodResolver(configSchema),
   });
 
-  const pipelineForm = useForm<PipelineStartRequest>({
-    resolver: zodResolver(pipelineSchema),
-    defaultValues: { source: '', enable_ocr: true },
-  });
-
   const handleTabChange = (tab: PortMainTab) => {
     const next = new URLSearchParams(searchParams);
     if (tab === 'detections') {
@@ -98,33 +88,10 @@ export const PortView: React.FC = () => {
 
   useEffect(() => {
     if (activeTab === 'detections') fetchDetections();
-    if (activeTab === 'pipeline') fetchCameras();
     if (activeTab === 'configs' || activeTab === 'payment' || activeTab === 'seam-anchor') {
       fetchConfigs();
     }
-  }, [activeTab, fetchDetections, fetchCameras, fetchConfigs]);
-
-  useEffect(() => {
-    if (!pipelineTabCameraId) {
-      return;
-    }
-    const cam = cameras.find((c) => String(c.id) === pipelineTabCameraId);
-    if (!cam || !cam.is_active) {
-      const timer = window.setTimeout(() => setPipelineTabCameraId(''), 0);
-      return () => window.clearTimeout(timer);
-    }
-  }, [cameras, pipelineTabCameraId]);
-
-  useEffect(() => {
-    if (!selectedCameraId) {
-      return;
-    }
-    const cam = cameras.find((c) => String(c.id) === selectedCameraId);
-    if (cam && !cam.is_active) {
-      const timer = window.setTimeout(() => setSelectedCameraId(''), 0);
-      return () => window.clearTimeout(timer);
-    }
-  }, [cameras, selectedCameraId]);
+  }, [activeTab, fetchDetections, fetchConfigs]);
 
   const filteredDetections = useMemo(() => {
     return detections.filter((det) => {
@@ -244,31 +211,6 @@ export const PortView: React.FC = () => {
     }
   };
 
-  const onPipelineSubmit = async (data: PipelineStartRequest) => {
-    try {
-      const payload: PipelineStartRequest = {
-        enable_ocr: data.enable_ocr,
-      };
-      if (selectedCameraId) {
-        const picked = cameras.find((c) => String(c.id) === selectedCameraId);
-        if (picked && !picked.is_active) {
-          window.alert(
-            'Camera này đang tắt «Kích hoạt». Bật trong tab Camera, hoặc chỉ dùng nguồn RTSP thủ công (bỏ chọn camera).',
-          );
-          return;
-        }
-        payload.camera_id = Number(selectedCameraId);
-      } else if (data.source && data.source.trim()) {
-        payload.source = data.source.trim();
-      }
-      await startPipeline(payload);
-      setIsPipelineModalOpen(false);
-      setSelectedCameraId('');
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
   const handleEditConfig = (cfg: PortConfigRead) => {
     setEditingConfigKey(cfg.key);
     configForm.reset({
@@ -376,17 +318,11 @@ export const PortView: React.FC = () => {
 
       {activeTab === 'pipeline' && (
         <PortPipelineSection
-          cameras={cameras}
           isLoading={isLoading}
           startPipeline={startPipeline}
           stopPipeline={stopPipeline}
-          pipelineTabCameraId={pipelineTabCameraId}
-          setPipelineTabCameraId={setPipelineTabCameraId}
           pipelineTabEnableOcr={pipelineTabEnableOcr}
           setPipelineTabEnableOcr={setPipelineTabEnableOcr}
-          setSelectedCameraId={setSelectedCameraId}
-          pipelineForm={pipelineForm}
-          onOpenCustomSourceModal={() => setIsPipelineModalOpen(true)}
         />
       )}
 
@@ -402,13 +338,6 @@ export const PortView: React.FC = () => {
         configForm={configForm}
         onConfigSubmit={onConfigSubmit}
         editingConfigKey={editingConfigKey}
-        isPipelineModalOpen={isPipelineModalOpen}
-        onClosePipeline={() => setIsPipelineModalOpen(false)}
-        pipelineForm={pipelineForm}
-        onPipelineSubmit={onPipelineSubmit}
-        selectedCameraId={selectedCameraId}
-        setSelectedCameraId={setSelectedCameraId}
-        cameras={cameras}
       />
     </div>
   );

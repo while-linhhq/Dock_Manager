@@ -108,6 +108,8 @@ class GroupFrameHub:
         )
         raw_fps = float(runtime_cfg['record_fps'])
         record_fps = raw_fps if raw_fps > 0 else float(settings.RECORD_FPS)
+        # Readers publish at ~2x record_fps; coordinator emits aligned batches at record_fps.
+        reader_fps = min(60.0, max(record_fps * 2.0, record_fps + 5.0))
         self._readers = [
             MultiFrameReaderThread(
                 CameraSource(
@@ -116,12 +118,16 @@ class GroupFrameHub:
                 ),
                 self._frame_buffer,
                 stop_event,
-                target_fps=record_fps,
+                target_fps=reader_fps,
+                drain_rtsp_buffer=True,
+                max_drain_grabs=4,
             )
             for member in enabled_members
         ]
         self._interval = 1.0 / record_fps
         self._coordinator = threading.Thread(target=self._run_coordinator, daemon=True)
+        self._last_aligned_batch: dict[int, TimedFrame] | None = None
+        self._aligned_batch_lock = threading.Lock()
         self._seam_anchor_queue: queue.Queue[dict[int, TimedFrame] | None] = queue.Queue(
             maxsize=1
         )
@@ -134,6 +140,67 @@ class GroupFrameHub:
     @property
     def frame_buffer(self) -> LatestFrameBuffer:
         return self._frame_buffer
+
+    def wait_aligned_batch(
+        self,
+        camera_ids: list[int] | None = None,
+        *,
+        timeout_sec: float = 1.5,
+    ) -> dict[int, TimedFrame] | None:
+        return self._synchronizer.wait_aligned_batch(camera_ids, timeout_sec=timeout_sec)
+
+    def get_last_aligned_batch(
+        self,
+        camera_ids: list[int] | None = None,
+        *,
+        copy_frames: bool = True,
+    ) -> dict[int, TimedFrame] | None:
+        with self._aligned_batch_lock:
+            if self._last_aligned_batch is None:
+                return None
+            source = self._last_aligned_batch
+        if camera_ids is None:
+            ids = list(source.keys())
+        else:
+            ids = [int(camera_id) for camera_id in camera_ids]
+        batch = {
+            camera_id: source[camera_id]
+            for camera_id in ids
+            if camera_id in source
+        }
+        if len(batch) != len(ids):
+            return None
+        if not copy_frames:
+            return batch
+        return {
+            camera_id: TimedFrame(
+                item.camera_id,
+                item.frame.copy(),
+                item.captured_at,
+                item.sequence,
+            )
+            for camera_id, item in batch.items()
+        }
+
+    def _draw_batch_sync_label(self, fused: Any, batch: dict[int, TimedFrame]) -> Any:
+        from app.utils.ai.time_sync import format_capture_wall_clock
+
+        if fused is None or fused.size == 0 or not batch:
+            return fused
+        timestamps = [item.captured_at for item in batch.values()]
+        anchor_ts = max(timestamps)
+        spread_ms = int((max(timestamps) - min(timestamps)) * 1000.0)
+        label = f'SYNC {format_capture_wall_clock(anchor_ts)} d{spread_ms}ms'
+        cv2.putText(
+            fused,
+            label,
+            (10, fused.shape[0] - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (80, 220, 255),
+            2,
+        )
+        return fused
 
     def _overlay_fused(
         self,
@@ -201,22 +268,45 @@ class GroupFrameHub:
                 if next_emit <= now:
                     next_emit = now + self._interval
 
-                batch = self._synchronizer.next_batch()
+                batch = self._synchronizer.try_aligned_batch()
+                if batch is None:
+                    short_wait = min(0.08, self._interval * 0.4)
+                    batch = self._synchronizer.wait_aligned_batch(timeout_sec=short_wait)
                 if not batch:
                     continue
+
+                with self._aligned_batch_lock:
+                    self._last_aligned_batch = {
+                        camera_id: TimedFrame(
+                            item.camera_id,
+                            item.frame.copy(),
+                            item.captured_at,
+                            item.sequence,
+                        )
+                        for camera_id, item in batch.items()
+                    }
 
                 if self._distribute_per_camera:
                     for camera_id, timed_frame in batch.items():
                         camera_queue = self._per_camera_queues.get(int(camera_id))
                         if camera_queue is None:
                             continue
-                        put_queue_drop_oldest(camera_queue, timed_frame.frame.copy())
+                        put_queue_drop_oldest(
+                            camera_queue,
+                            TimedFrame(
+                                timed_frame.camera_id,
+                                timed_frame.frame.copy(),
+                                timed_frame.captured_at,
+                                timed_frame.sequence,
+                            ),
+                        )
 
                 self._enqueue_seam_anchor(batch)
 
                 fused = self._fuser.fuse(batch)
                 if fused is None or fused.size == 0:
                     continue
+                fused = self._draw_batch_sync_label(fused, batch)
                 fused = self._overlay_fused(fused, batch, self._overlay_members_record)
 
                 self._push_dashboard_preview(fused)

@@ -121,9 +121,30 @@ def copy_object_same_bucket(*, bucket: str, src_key: str, dest_key: str) -> None
     if src_key == dest_key:
         return
     from minio.commonconfig import CopySource
+    from minio.error import S3Error
 
     client = get_minio_client()
-    client.copy_object(bucket, dest_key, CopySource(bucket, src_key))
+    try:
+        client.copy_object(bucket, dest_key, CopySource(bucket, src_key))
+        return
+    except S3Error as exc:
+        # Some reverse proxies/tunnels can reject x-amz-copy-source with AccessDenied
+        # even when normal GET/PUT with the same credentials is allowed.
+        if exc.code != 'AccessDenied':
+            raise
+
+    response = client.get_object(bucket, src_key)
+    try:
+        client.put_object(
+            bucket,
+            dest_key,
+            data=response,
+            length=-1,
+            part_size=10 * 1024 * 1024,
+        )
+    finally:
+        response.close()
+        response.release_conn()
 
 
 def remove_object(*, bucket: str, object_key: str) -> None:

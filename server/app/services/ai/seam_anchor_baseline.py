@@ -11,6 +11,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.utils.ai.frame_quality import is_usable_bgr_frame
+
 _log = logging.getLogger(__name__)
 
 _BASELINE_ROOT = Path('app/data-docker/runtime-media/seam_baselines')
@@ -23,6 +25,13 @@ def _baseline_path(group_id: int | None, camera_id: int) -> Path:
 
 def save_baseline(group_id: int | None, camera_id: int, frame_bgr: np.ndarray) -> str | None:
     if frame_bgr is None or frame_bgr.size == 0:
+        return None
+    if not is_usable_bgr_frame(frame_bgr):
+        _log.warning(
+            'seam_baseline: rejected low-quality frame camera_id=%s group_id=%s',
+            camera_id,
+            group_id,
+        )
         return None
     target = _baseline_path(group_id, camera_id)
     try:

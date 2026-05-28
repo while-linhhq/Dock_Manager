@@ -135,29 +135,33 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
     setCompareLoading(true);
     try {
       const media = await portApi.getDetectionMedia(det.id);
-      const fallback: DetectionMediaRead[] = [];
-      if (det.audit_image_path || det.audit_image_url) {
-        fallback.push({
-          id: -1,
-          detection_id: Number(det.id),
-          media_type: 'image',
-          file_path: det.audit_image_path || det.audit_image_url || '',
-          file_size: null,
-          created_at: det.created_at,
-        });
+      if (media.length > 0) {
+        setCompareMedia(media);
+      } else {
+        // Fallback to detection-level paths only when the media table has no records
+        const fallback: DetectionMediaRead[] = [];
+        if (det.audit_image_path || det.audit_image_url) {
+          fallback.push({
+            id: -1,
+            detection_id: Number(det.id),
+            media_type: 'image',
+            file_path: det.audit_image_path || det.audit_image_url || '',
+            file_size: null,
+            created_at: det.created_at,
+          });
+        }
+        if (det.video_path || det.video_url) {
+          fallback.push({
+            id: -2,
+            detection_id: Number(det.id),
+            media_type: 'video',
+            file_path: det.video_path || det.video_url || '',
+            file_size: null,
+            created_at: det.created_at,
+          });
+        }
+        setCompareMedia(fallback);
       }
-      if (det.video_path || det.video_url) {
-        fallback.push({
-          id: -2,
-          detection_id: Number(det.id),
-          media_type: 'video',
-          file_path: det.video_path || det.video_url || '',
-          file_size: null,
-          created_at: det.created_at,
-        });
-      }
-      const merged = [...media, ...fallback.filter((f) => !media.some((m) => m.file_path === f.file_path))];
-      setCompareMedia(merged);
     } catch (error) {
       console.error(error);
       setCompareMedia([]);
@@ -388,7 +392,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
       </div>
 
       {previewImageUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 lg:pl-[calc(256px+1rem)]">
           <button
             type="button"
             className="absolute inset-0"
@@ -414,7 +418,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
       )}
 
       {compareOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-6">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-6 lg:pl-[calc(256px+1.5rem)]">
           <button
             type="button"
             className="absolute inset-0"

@@ -13,10 +13,10 @@ const AuthSessionSync: React.FC = () => {
 
 const App: React.FC = () => {
   return (
-    <React.StrictMode>
+    <>
       <AuthSessionSync />
       <AppRouter />
-    </React.StrictMode>
+    </>
   );
 };
 
