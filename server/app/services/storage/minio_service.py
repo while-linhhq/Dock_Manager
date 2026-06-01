@@ -75,6 +75,19 @@ def presign_get(minio_uri: str, ttl_seconds: int = 300) -> Optional[str]:
     )
 
 
+def get_object_bytes(minio_uri: str) -> Optional[bytes]:
+    ref = parse_minio_uri(minio_uri)
+    if ref is None:
+        return None
+    client = get_minio_client()
+    response = client.get_object(ref.bucket, ref.object_key)
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
 def put_file(
     *,
     local_path: str,
