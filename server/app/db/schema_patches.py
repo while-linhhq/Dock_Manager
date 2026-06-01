@@ -12,6 +12,16 @@ from app.db.session import engine
 
 logger = logging.getLogger(__name__)
 
+_patch_quiet = False
+_patch_applied: list[str] = []
+
+
+def _patch_done(label: str) -> None:
+    """Record a schema change; log only when not in quiet startup mode."""
+    _patch_applied.append(label)
+    if not _patch_quiet:
+        logger.info('schema_patches: %s', label)
+
 
 def _ensure_invoices_deleted_at() -> None:
     try:
@@ -41,7 +51,7 @@ def _ensure_invoices_deleted_at() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(stmt)
-        logger.info('schema_patches: added invoices.deleted_at')
+        _patch_done('added invoices.deleted_at')
     except Exception as err:
         logger.error('schema_patches: failed to add invoices.deleted_at: %s', err)
         raise
@@ -77,7 +87,7 @@ def _ensure_port_logs_ships_completed_today() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(stmt)
-        logger.info('schema_patches: added port_logs.ships_completed_today')
+        _patch_done('added port_logs.ships_completed_today')
     except Exception as err:
         logger.error('schema_patches: failed to add port_logs.ships_completed_today: %s', err)
         raise
@@ -111,7 +121,7 @@ def _ensure_orders_total_amount() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(stmt)
-        logger.info('schema_patches: added orders.total_amount')
+        _patch_done('added orders.total_amount')
     except Exception as err:
         logger.error('schema_patches: failed to add orders.total_amount: %s', err)
         raise
@@ -147,7 +157,7 @@ def _ensure_invoices_creation_source() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(stmt)
-        logger.info('schema_patches: added invoices.creation_source')
+        _patch_done('added invoices.creation_source')
     except Exception as err:
         logger.error('schema_patches: failed to add invoices.creation_source: %s', err)
         raise
@@ -181,7 +191,7 @@ def _ensure_detections_audit_image_path() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(stmt)
-        logger.info('schema_patches: added detections.audit_image_path')
+        _patch_done('added detections.audit_image_path')
     except Exception as err:
         logger.error('schema_patches: failed to add detections.audit_image_path: %s', err)
         raise
@@ -266,7 +276,7 @@ def _ensure_camera_groups() -> None:
         with engine.begin() as conn:
             for stmt in stmts:
                 conn.execute(stmt)
-        logger.info('schema_patches: ensured camera_groups tables')
+        _patch_done('ensured camera_groups tables')
     except Exception as err:
         logger.error('schema_patches: failed to ensure camera_groups tables: %s', err)
         raise
@@ -345,7 +355,7 @@ def _ensure_camera_groups_layout_pipeline() -> None:
         with engine.begin() as conn:
             for stmt in stmts:
                 conn.execute(stmt)
-        logger.info('schema_patches: ensured camera_groups layout pipeline schema')
+        _patch_done('ensured camera_groups layout pipeline schema')
     except Exception as err:
         logger.error('schema_patches: failed to ensure camera_groups layout pipeline schema: %s', err)
         raise
@@ -431,7 +441,7 @@ def _ensure_anchored_identities() -> None:
             conn.execute(stmt)
             for index_stmt in index_stmts:
                 conn.execute(index_stmt)
-        logger.info('schema_patches: ensured anchored_identities table')
+        _patch_done('ensured anchored_identities table')
     except Exception as err:
         logger.error('schema_patches: failed to create anchored_identities: %s', err)
         raise
@@ -478,7 +488,7 @@ def _ensure_sepay_port_configs() -> None:
                     stmt,
                     {'key': key, 'value': default_value, 'description': description},
                 )
-        logger.info('schema_patches: ensured sepay port_configs keys')
+        _patch_done('ensured sepay port_configs keys')
     except Exception as err:
         logger.error('schema_patches: failed to seed sepay port_configs: %s', err)
         raise
@@ -522,7 +532,7 @@ def _ensure_fee_configs_berth_limit() -> None:
         with engine.begin() as conn:
             for stmt in stmts:
                 conn.execute(stmt)
-        logger.info('schema_patches: ensured fee_configs berth limit columns')
+        _patch_done('ensured fee_configs berth limit columns')
     except Exception as err:
         logger.error('schema_patches: failed to add fee_configs berth limit columns: %s', err)
         raise
@@ -560,7 +570,7 @@ def _ensure_invoices_is_over_berth_limit() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(stmt)
-        logger.info('schema_patches: added invoices.is_over_berth_limit')
+        _patch_done('added invoices.is_over_berth_limit')
     except Exception as err:
         logger.error('schema_patches: failed to add invoices.is_over_berth_limit: %s', err)
         raise
@@ -606,7 +616,7 @@ def _ensure_invoices_financial_snapshots() -> None:
         with engine.begin() as conn:
             for stmt in stmts:
                 conn.execute(stmt)
-        logger.info('schema_patches: ensured invoice financial snapshot columns')
+        _patch_done('ensured invoice financial snapshot columns')
     except Exception as err:
         logger.error('schema_patches: failed to add invoice snapshot columns: %s', err)
         raise
@@ -671,7 +681,7 @@ def _ensure_bulk_payment_sessions() -> None:
             conn.execute(stmt)
             if index_stmt is not None:
                 conn.execute(index_stmt)
-        logger.info('schema_patches: ensured bulk_payment_sessions table')
+        _patch_done('ensured bulk_payment_sessions table')
     except Exception as err:
         logger.error('schema_patches: failed to create bulk_payment_sessions: %s', err)
         raise
@@ -776,13 +786,16 @@ def _migrate_port_config_frames_to_seconds() -> None:
             for legacy_key in LEGACY_FRAME_CONFIG_KEYS:
                 conn.execute(delete_legacy, {'key': legacy_key})
 
-        logger.info('schema_patches: migrated frame port_configs to seconds')
+        _patch_done('migrated frame port_configs to seconds')
     except Exception as err:
         logger.error('schema_patches: failed to migrate frame port_configs: %s', err)
         raise
 
 
-def apply_schema_patches() -> None:
+def apply_schema_patches(*, quiet: bool = False) -> list[str]:
+    global _patch_quiet, _patch_applied
+    _patch_quiet = quiet
+    _patch_applied = []
     _ensure_invoices_deleted_at()
     _ensure_port_logs_ships_completed_today()
     _ensure_orders_total_amount()
@@ -797,3 +810,4 @@ def apply_schema_patches() -> None:
     _ensure_sepay_port_configs()
     _migrate_port_config_frames_to_seconds()
     _ensure_bulk_payment_sessions()
+    return list(_patch_applied)

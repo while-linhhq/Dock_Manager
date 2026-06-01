@@ -128,7 +128,8 @@ class PipelineService:
         self._single_video_queue: queue.Queue = queue.Queue(maxsize=30)
         self.ocr_cache: dict[str, Any] = {}
         self.ocr_lock = threading.Lock()
-        self._runtime_media_base = _SERVER_ROOT / 'app' / 'data-docker' / 'runtime-media'
+        # Outside data-docker/ (Docker-owned root) — writable by dev user without sudo
+        self._runtime_media_base = _SERVER_ROOT / 'app' / 'runtime-media'
         self._media_collector = TrackMediaCollector()
         self._video_registry = TrackVideoRegistry()
         self._latest_fused_lock = threading.Lock()

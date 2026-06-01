@@ -34,7 +34,6 @@ def start_sepay_background_sync() -> None:
     if _task is not None and not _task.done():
         return
     _task = asyncio.create_task(_sync_loop(), name='sepay-sync')
-    logger.info('SEPay background sync task started')
 
 
 async def stop_sepay_background_sync() -> None:

@@ -21,8 +21,11 @@ logs/
 # Playwright MCP local snapshots
 .playwright-mcp/
 
-# Local Docker-mounted data (PostgreSQL/MinIO/runtime media)
+# Local Docker-mounted data (PostgreSQL/MinIO)
 server/app/data-docker/
+
+# Pipeline temp media (video record, OCR audit, seam baselines)
+server/app/runtime-media/
 
 # Local DB export blobs (images/videos under sql dumps — do not version)
 server/app/db/sqlCommand/detections/

@@ -15,7 +15,7 @@ from app.utils.ai.frame_quality import is_usable_bgr_frame
 
 _log = logging.getLogger(__name__)
 
-_BASELINE_ROOT = Path('app/data-docker/runtime-media/seam_baselines')
+_BASELINE_ROOT = Path('app/runtime-media/seam_baselines')
 
 
 def _baseline_path(group_id: int | None, camera_id: int) -> Path:

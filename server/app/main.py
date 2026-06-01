@@ -42,6 +42,7 @@ def _configure_logging() -> None:
                 'uvicorn.access': {'level': level},
                 # Our app logs
                 'app': {'level': level},
+                'app.startup': {'level': level, 'propagate': True},
             },
         }
     )
@@ -54,16 +55,13 @@ access_logger = logging.getLogger('app.api.access')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.db.schema_patches import apply_schema_patches
+    from app.core.startup_report import run_startup_checks
 
     try:
-        apply_schema_patches()
+        run_startup_checks()
     except Exception:
-        logger.exception('Schema patches failed — fix DB or run app/db/add_invoice_deleted_at.sql')
+        logger.exception('Startup checks failed')
         raise
-    from app.services.storage.minio_probe import log_minio_probe_at_startup
-
-    log_minio_probe_at_startup()
 
     from app.core.config import settings as app_settings
 
@@ -80,8 +78,11 @@ async def lifespan(app: FastAPI):
         await stop_sepay_background_sync()
     from app.services.pipeline_service import pipeline_service
 
+    from app.core.startup_report import log_shutdown
+
+    log_shutdown()
     if pipeline_service.is_running:
-        logger.info('Shutting down: stopping AI pipeline before process exit')
+        logger.info('Stopping AI pipeline before process exit')
         try:
             pipeline_service.stop()
         except Exception:

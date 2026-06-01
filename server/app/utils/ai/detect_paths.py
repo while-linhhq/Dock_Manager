@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-RUNS_DETECT = os.path.join("app", "data-docker", "runtime-media", "detect")
+RUNS_DETECT = os.path.join("app", "runtime-media", "detect")
 
 
 def cap_dir_for_today(base: str = RUNS_DETECT) -> str:

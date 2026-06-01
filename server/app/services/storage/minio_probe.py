@@ -51,23 +51,7 @@ def probe_minio(*, list_prefix: str = 'detections/', max_list: int = 5000) -> di
 
 
 def log_minio_probe_at_startup() -> None:
-    try:
-        summary = probe_minio()
-        _log.info(
-            'MinIO API %s bucket=%s listed=%s layout final=%s legacy=%s staging_video=%s',
-            summary['endpoint'],
-            summary['bucket'],
-            summary['listed'],
-            summary['counts'].get('final', 0),
-            summary['counts'].get('legacy', 0),
-            summary['counts'].get('staging_video', 0),
-        )
-        if summary['final_samples']:
-            _log.info('MinIO new-layout sample: %s', summary['final_samples'][0])
-        elif summary['counts'].get('staging_video', 0) > 0 and summary['counts'].get('final', 0) == 0:
-            _log.warning(
-                'MinIO has staging videos but no final detections/{{day}}/{{id}}/videos/ paths — '
-                'check track finalize / promote (restart pipeline after code deploy)',
-            )
-    except Exception:
-        _log.exception('MinIO startup probe failed (endpoint=%s)', settings.MINIO_ENDPOINT)
+    """Legacy entrypoint — prefer ``app.core.startup_report.run_startup_checks``."""
+    from app.core.startup_report import _check_minio
+
+    _check_minio()
