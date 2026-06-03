@@ -27,6 +27,9 @@ server/app/data-docker/
 # Pipeline temp media (video record, OCR audit, seam baselines)
 server/app/runtime-media/
 
+# Training snapshot crops (collected at runtime)
+server/snapshot/
+
 # Local DB export blobs (images/videos under sql dumps — do not version)
 server/app/db/sqlCommand/detections/
 

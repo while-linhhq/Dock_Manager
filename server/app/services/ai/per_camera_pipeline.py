@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -19,8 +20,18 @@ from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
 from app.services.ai.ocr_worker import OcrQueueItem, OcrWorkerThread
+from app.services.ai.training_snapshot_collector import (
+    TrainingSnapshotCollector,
+    TrainingSnapshotConfig,
+)
+from app.services.ai.visual_id_worker import VisualQueueItem
 from app.utils.ai.overlay import draw_ship_detection_overlay
-from app.utils.ai.pipeline_utils import clamp_box, drain_queue_latest, put_queue_drop_oldest
+from app.utils.ai.pipeline_utils import (
+    clamp_box,
+    drain_queue_latest,
+    ocr_cache_key_track,
+    put_queue_drop_oldest,
+)
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 
 _COLOR_TENTATIVE = (128, 128, 128)
@@ -48,6 +59,11 @@ class PerCameraPipelineConfig:
     clahe_clip_limit: float
     clahe_tile_size: int
     edge_zone_ratio: float
+    enable_visual_id: bool = False
+    visual_interval_sec: float = 1.0
+    visual_min_crop_area: int = 4096
+    enable_training_snapshot: bool = False
+    training_snapshot_interval_sec: float = 5.0
     enable_preview_stream: bool = False
 
 
@@ -69,7 +85,9 @@ class PerCameraPipeline(threading.Thread):
         on_overlay_media_sample=None,
         input_frame_queue: queue.Queue | None = None,
         shared_ocr_queue: queue.Queue | None = None,
+        shared_visual_queue: queue.Queue | None = None,
         single_camera_video_queue: queue.Queue | None = None,
+        training_snapshot_collector: TrainingSnapshotCollector | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -114,6 +132,7 @@ class PerCameraPipeline(threading.Thread):
         )
         self._shared_ocr_queue = shared_ocr_queue
         self._ocr_queue: queue.Queue | None = None
+        self._visual_queue: queue.Queue | None = shared_visual_queue
         self._ocr_worker: OcrWorkerThread | None = None
         if config.enable_ocr:
             if shared_ocr_queue is not None:
@@ -137,6 +156,17 @@ class PerCameraPipeline(threading.Thread):
         self._frame_count = 0
         self._fps_started_at: float | None = None
         self._last_ocr_ts = 0.0
+        self._last_visual_ts = 0.0
+        self._training_snapshot: TrainingSnapshotCollector | None = training_snapshot_collector
+        if self._training_snapshot is None and config.enable_training_snapshot:
+            base = Path(runs_base).resolve().parents[2] / 'snapshot'
+            self._training_snapshot = TrainingSnapshotCollector(
+                TrainingSnapshotConfig(
+                    enabled=True,
+                    interval_sec=float(config.training_snapshot_interval_sec),
+                    base_dir=base,
+                )
+            )
 
     @property
     def tracker(self) -> BoatTracker:
@@ -262,6 +292,26 @@ class PerCameraPipeline(threading.Thread):
                 put_queue_drop_oldest(self._single_camera_video_queue, item)
 
         self._queue_ocr(raw_frame, tracked_boats)
+        self._queue_visual(raw_frame, tracked_boats)
+        self._maybe_save_training_snapshots(raw_frame, tracked_boats)
+
+    def _maybe_save_training_snapshots(
+        self,
+        raw_frame: np.ndarray,
+        tracked_boats: list[TrackedBoat],
+    ) -> None:
+        collector = self._training_snapshot
+        if collector is None or not collector.enabled:
+            return
+        for track in tracked_boats:
+            collector.maybe_save(
+                camera_id=int(self.config.camera_id),
+                raw_frame=raw_frame,
+                track=track,
+                ocr_cache=self._ocr_cache,
+                ocr_lock=self._ocr_lock,
+                boat_tracker=self._tracker,
+            )
 
     def _enrich_track(self, frame: np.ndarray, track: TrackedBoat) -> None:
         if track.state != TrackState.CONFIRMED:
@@ -327,6 +377,31 @@ class PerCameraPipeline(threading.Thread):
         else:
             put_queue_drop_oldest(self._ocr_queue, (frame.copy(), items))
 
+    def _queue_visual(self, frame: np.ndarray, tracked_boats: list[TrackedBoat]) -> None:
+        if not self.config.enable_visual_id or self._visual_queue is None:
+            return
+        now = time.time()
+        if now - self._last_visual_ts < float(self.config.visual_interval_sec):
+            return
+        self._last_visual_ts = now
+
+        confirmed = [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+        if not confirmed:
+            return
+        items = [(track.track_id, track.box.copy()) for track in confirmed]
+        put_queue_drop_oldest(
+            self._visual_queue,
+            VisualQueueItem(
+                frame=frame.copy(),
+                boxes_list=items,
+                boat_tracker=self._tracker,
+                camera_id=int(self.config.camera_id),
+                ocr_cache=self._ocr_cache,
+                ocr_lock=self._ocr_lock,
+                on_visual_result=self._on_visual_result,
+            ),
+        )
+
     def _on_ocr_result(self, track_id: str, ship_id: str, confidence: float) -> None:
         self._reid_manager.report_ocr_result(
             int(self.config.camera_id),
@@ -340,6 +415,33 @@ class PerCameraPipeline(threading.Thread):
         )
         if global_ship_id:
             self._tracker.update_track_metadata(str(track_id), ship_id=global_ship_id)
+
+    def _on_visual_result(
+        self,
+        track_id: str,
+        ship_id: str,
+        confidence: float,
+        source: str,
+        top_k: list[dict],
+    ) -> None:
+        # Visual ID acts as fallback signal when OCR is unavailable/weak.
+        if not ship_id:
+            return
+        self._tracker.update_track_metadata(str(track_id), ship_id=ship_id)
+        ck = ocr_cache_key_track(str(track_id), int(self.config.camera_id))
+        with self._ocr_lock:
+            entry = self._ocr_cache.get(ck) if isinstance(self._ocr_cache.get(ck), dict) else {}
+            best_score = float(top_k[0].get('score', confidence)) if top_k else float(confidence)
+            entry.update(
+                {
+                    'visual_ship_id': str(ship_id).strip().upper(),
+                    'visual_confidence': best_score,
+                    'visual_source': source,
+                    'visual_top_k': top_k,
+                    'time': time.time(),
+                }
+            )
+            self._ocr_cache[ck] = entry
 
     def _on_local_track_removed(
         self,

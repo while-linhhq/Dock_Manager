@@ -1,4 +1,4 @@
-"""Vẽ overlay lên frame preview (det conf, track id/state, OCR label, FPS)."""
+"""Vẽ overlay lên frame preview (det conf, global id, OCR, vector match, FPS)."""
 from __future__ import annotations
 
 import time
@@ -23,7 +23,7 @@ def draw_ship_detection_overlay(
     camera_id: int | None = None,
 ):
     """
-    Vẽ det confidence, track id + state, nhãn OCR (theo TTL), FPS; resize nếu resize_scale != 1.
+    Vẽ det confidence, global id + state, OCR ship_id, vector best ship + similarity, FPS.
     Nếu ocr_cache và ocr_lock là None: bỏ qua phần OCR (bbox đã vẽ ở worker).
     """
     now = time.time()
@@ -40,7 +40,8 @@ def draw_ship_detection_overlay(
             (180, 220, 255),
             2,
         )
-        label = f"T{tb.track_id} [{tb.state.value}]"
+        global_id = str(tb.ship_id or 'N/A')
+        label = f"GID {global_id} [{tb.state.value}]"
         cv2.putText(
             display_frame,
             label,
@@ -50,19 +51,6 @@ def draw_ship_detection_overlay(
             (220, 220, 100),
             2,
         )
-
-    for tb in tracked_boats:
-        if tb.ship_id:
-            b = tb.box
-            cv2.putText(
-                display_frame,
-                tb.ship_id,
-                (int(b[0]), int(b[1]) - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 255),
-                2,
-            )
 
     if ocr_cache is not None and ocr_lock is not None:
         with ocr_lock:
@@ -74,20 +62,33 @@ def draw_ship_detection_overlay(
                 ent = ocr_cache.get(ck)
                 if not ent:
                     continue
-                txt = str(ent.get('text') or '').strip()
-                if not txt:
-                    continue
                 b = tb.box
                 y = min(int(b[3]) + 24, display_frame.shape[0] - 6)
-                cv2.putText(
-                    display_frame,
-                    txt,
-                    (int(b[0]), y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 220, 255),
-                    2,
-                )
+                ocr_ship_id = str(ent.get('text') or '').strip()
+                if ocr_ship_id:
+                    cv2.putText(
+                        display_frame,
+                        f"OCR: {ocr_ship_id}",
+                        (int(b[0]), y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 220, 255),
+                        2,
+                    )
+                    y = min(y + 20, display_frame.shape[0] - 6)
+                visual_ship_id = str(ent.get('visual_ship_id') or '').strip()
+                visual_conf = float(ent.get('visual_confidence') or 0.0)
+                if visual_ship_id:
+                    conf_pct = max(0.0, min(1.0, visual_conf)) * 100.0
+                    cv2.putText(
+                        display_frame,
+                        f"VEC: {visual_ship_id} ({conf_pct:.1f}%)",
+                        (int(b[0]), y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.52,
+                        (120, 255, 120),
+                        2,
+                    )
 
     if frame_captured_mono is not None:
         sync_label = format_capture_wall_clock(frame_captured_mono, camera_id=camera_id)

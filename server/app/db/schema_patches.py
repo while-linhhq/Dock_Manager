@@ -494,6 +494,208 @@ def _ensure_sepay_port_configs() -> None:
         raise
 
 
+def _ensure_visual_stack_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'enable_visual_id': (
+            'true',
+            'Enable visual vessel identification (manual enrollment + vector search).',
+        ),
+        'visual_id_interval_sec': (
+            '1.0',
+            'Seconds between visual-id attempts for confirmed tracks.',
+        ),
+        'visual_min_crop_area': (
+            '4096',
+            'Minimum crop area (pixels) to run visual embedding extraction.',
+        ),
+        'visual_match_threshold': (
+            '0.72',
+            'Minimum similarity score to accept visual-id match.',
+        ),
+        'visual_margin_threshold': (
+            '0.04',
+            'Minimum top1-top2 score margin to avoid ambiguous visual matches.',
+        ),
+        'visual_top_k': (
+            '5',
+            'Number of nearest visual candidates returned from vector search.',
+        ),
+        'visual_model_path': (
+            '',
+            'Path to ViT/TorchScript model for visual embedding extraction.',
+        ),
+        'visual_backbone': (
+            'vit_base_patch16_224',
+            'Backbone model name for visual embedding extractor.',
+        ),
+        'visual_embedding_dim': (
+            '1024',
+            'Embedding dimension expected by visual model output.',
+        ),
+        'visual_batch_size': (
+            '8',
+            'Batch size for visual embedding extraction worker.',
+        ),
+        'visual_device': (
+            '0',
+            'Device for visual embedding extraction (`0`, `cuda:0`, or `cpu`).',
+        ),
+        'redis_url': (
+            'redis://127.0.0.1:6379/0',
+            'Redis URL used for runtime visual-id cache.',
+        ),
+        'redis_key_prefix': (
+            'dock_manager',
+            'Redis key prefix for visual-id runtime cache.',
+        ),
+        'redis_visual_ttl_sec': (
+            '300',
+            'TTL (seconds) for visual-id runtime cache entries.',
+        ),
+        'qdrant_host': (
+            '127.0.0.1',
+            'Qdrant host for visual embedding vector search.',
+        ),
+        'qdrant_port': (
+            '6333',
+            'Qdrant HTTP API port.',
+        ),
+        'qdrant_api_key': (
+            '',
+            'Qdrant API key (optional for secured deployments).',
+        ),
+        'qdrant_collection': (
+            'vessel_visual_embeddings',
+            'Qdrant collection used to store vessel visual embeddings.',
+        ),
+        'qdrant_vector_size': (
+            '1024',
+            'Vector dimension used by Qdrant collection.',
+        ),
+        'qdrant_distance': (
+            'COSINE',
+            'Distance metric used by Qdrant collection (COSINE / DOT / EUCLID).',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed visual stack port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured visual stack port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed visual stack port_configs: %s', err)
+        raise
+
+
+def _ensure_training_snapshot_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'enable_training_snapshot': (
+            'false',
+            'Enable saving full-quality vessel crops for model training.',
+        ),
+        'training_snapshot_interval_sec': (
+            '5.0',
+            'Seconds between training snapshot saves per camera.',
+        ),
+        'training_snapshot_base_dir': (
+            'snapshot',
+            'Directory under server/ for training snapshots (ship_id subfolders + others).',
+        ),
+        'training_snapshot_jpeg_quality': (
+            '95',
+            'JPEG quality (50-100) for saved training crops.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed training snapshot port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+            # Remove legacy snapshot threshold knobs (kept historically but no longer used).
+            delete_keys = [
+                'training_snapshot_min_ocr_confidence',
+                'training_snapshot_min_visual_confidence',
+            ]
+            for k in delete_keys:
+                conn.execute(
+                    text('DELETE FROM port_configs WHERE key = :key'),
+                    {'key': k},
+                )
+        _patch_done('ensured training snapshot port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed training snapshot port_configs: %s', err)
+        raise
+
+
 def _ensure_fee_configs_berth_limit() -> None:
     try:
         inspector = inspect(engine)
@@ -808,6 +1010,8 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()
     _ensure_sepay_port_configs()
+    _ensure_visual_stack_port_configs()
+    _ensure_training_snapshot_port_configs()
     _migrate_port_config_frames_to_seconds()
     _ensure_bulk_payment_sessions()
     return list(_patch_applied)

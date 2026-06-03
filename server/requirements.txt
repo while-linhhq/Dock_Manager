@@ -40,3 +40,6 @@ matplotlib>=3.8.0
 pandas>=2.0.0
 minio
 imageio-ffmpeg
+redis>=5.0.0
+qdrant-client>=1.11.0
+timm>=1.0.0

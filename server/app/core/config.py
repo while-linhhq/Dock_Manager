@@ -82,6 +82,38 @@ class Settings(BaseSettings):
     ANCHOR_MIN_STATIONARY_SEC: float = 8.0
     ANCHOR_COLOR_HSV_TOLERANCE_H: int = 15
 
+    # Visual ID (ViT + vector search)
+    ENABLE_VISUAL_ID: bool = True
+    VISUAL_ID_INTERVAL_SEC: float = 1.0
+    VISUAL_MIN_CROP_AREA: int = 4096
+    VISUAL_MATCH_THRESHOLD: float = 0.72
+    VISUAL_MARGIN_THRESHOLD: float = 0.04
+    VISUAL_TOP_K: int = 5
+    VISUAL_MODEL_PATH: str = ""
+    VISUAL_BACKBONE: str = "vit_base_patch16_224"
+    VISUAL_EMBEDDING_DIM: int = 768
+    VISUAL_BATCH_SIZE: int = 8
+    VISUAL_DEVICE: str = "0"
+
+    # Redis cache
+    REDIS_URL: str = "redis://127.0.0.1:6379/0"
+    REDIS_KEY_PREFIX: str = "dock_manager"
+    REDIS_VISUAL_TTL_SEC: int = 300
+
+    # Qdrant vector DB
+    QDRANT_HOST: str = "127.0.0.1"
+    QDRANT_PORT: int = 6333
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION: str = "vessel_visual_embeddings"
+    QDRANT_VECTOR_SIZE: int = 768
+    QDRANT_DISTANCE: str = "COSINE"
+
+    # Training snapshot collection (crop saves for model training)
+    ENABLE_TRAINING_SNAPSHOT: bool = False
+    TRAINING_SNAPSHOT_INTERVAL_SEC: float = 5.0
+    TRAINING_SNAPSHOT_BASE_DIR: str = "snapshot"
+    TRAINING_SNAPSHOT_JPEG_QUALITY: int = 95
+
     # SEPay (bank transfer QR + API sync)
     SEPAY_API_TOKEN: str = ''
     SEPAY_CRON_SECRET: str = ''

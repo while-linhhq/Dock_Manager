@@ -47,6 +47,12 @@ def final_image_key(day_dd_mm_yyyy: str, detection_id: int, filename: str) -> st
     return prefix_key('detections', day_dd_mm_yyyy, str(detection_id), 'images', filename)
 
 
+def visual_reference_preview_key(ship_id: str, point_id: str) -> str:
+    """JPEG preview for manual vessel visual enrollment (Qdrant point_id as filename stem)."""
+    safe_point = _safe_segment(str(point_id).strip()) or 'point'
+    return prefix_key('vessels', _safe_segment(str(ship_id).strip()), 'visual-references', f'{safe_point}.jpg')
+
+
 def classify_object_key(object_key: str) -> str:
     key = object_key.lstrip('/')
     if FINAL_VIDEO_RE.match(key) or FINAL_IMAGE_RE.match(key):

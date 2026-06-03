@@ -10,6 +10,8 @@ const DEPRECATED_CONFIG_KEYS = new Set([
   'track_min_hits',
   'track_max_tentative_misses',
   'track_max_lost_frames',
+  'training_snapshot_min_ocr_confidence',
+  'training_snapshot_min_visual_confidence',
 ]);
 import {
   FilterField,
@@ -20,6 +22,10 @@ import {
 type CategoryId =
   | 'model'
   | 'ocr'
+  | 'visual'
+  | 'redis'
+  | 'qdrant'
+  | 'snapshot'
   | 'track'
   | 'record'
   | 'reid'
@@ -39,6 +45,10 @@ interface Category {
 const CATEGORIES: Category[] = [
   { id: 'model', label: 'Mô hình & Nhận diện', description: 'Tham số YOLO: model, confidence, resize, CLAHE', color: 'text-violet-500 bg-violet-500/10 border-violet-500/20' },
   { id: 'ocr', label: 'OCR', description: 'Nhận diện mã tàu, chu kỳ OCR, log audit', color: 'text-blue-500 bg-blue-500/10 border-blue-500/20' },
+  { id: 'visual', label: 'Visual ID', description: 'Nhận diện tàu bằng đặc trưng sâu (ViT)', color: 'text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20' },
+  { id: 'redis', label: 'Redis', description: 'Cache runtime cho visual worker', color: 'text-rose-500 bg-rose-500/10 border-rose-500/20' },
+  { id: 'qdrant', label: 'Qdrant', description: 'Vector DB cho tìm kiếm embedding tàu', color: 'text-lime-500 bg-lime-500/10 border-lime-500/20' },
+  { id: 'snapshot', label: 'Training Snapshot', description: 'Thu thập crop tàu chất lượng cao để train model', color: 'text-sky-500 bg-sky-500/10 border-sky-500/20' },
   { id: 'track', label: 'Theo dõi (Tracking)', description: 'IoU, thời gian xác nhận/lost (giây), cửa sổ Re-ID', color: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' },
   { id: 'record', label: 'Ghi Video', description: 'Bật/tắt recording, FPS, thời lượng tối đa', color: 'text-orange-500 bg-orange-500/10 border-orange-500/20' },
   { id: 'reid', label: 'Nhúng Re-ID', description: 'Model embedding, ngưỡng similarity, handoff', color: 'text-cyan-500 bg-cyan-500/10 border-cyan-500/20' },
@@ -64,6 +74,30 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   ocr_audit_enable: 'ocr',
   ocr_audit_save_frames: 'ocr',
   save_min_interval_sec: 'ocr',
+  enable_visual_id: 'visual',
+  visual_id_interval_sec: 'visual',
+  visual_min_crop_area: 'visual',
+  visual_match_threshold: 'visual',
+  visual_margin_threshold: 'visual',
+  visual_top_k: 'visual',
+  visual_model_path: 'visual',
+  visual_backbone: 'visual',
+  visual_embedding_dim: 'visual',
+  visual_batch_size: 'visual',
+  visual_device: 'visual',
+  redis_url: 'redis',
+  redis_key_prefix: 'redis',
+  redis_visual_ttl_sec: 'redis',
+  qdrant_host: 'qdrant',
+  qdrant_port: 'qdrant',
+  qdrant_api_key: 'qdrant',
+  qdrant_collection: 'qdrant',
+  qdrant_vector_size: 'qdrant',
+  qdrant_distance: 'qdrant',
+  enable_training_snapshot: 'snapshot',
+  training_snapshot_interval_sec: 'snapshot',
+  training_snapshot_base_dir: 'snapshot',
+  training_snapshot_jpeg_quality: 'snapshot',
   track_min_confirm_sec: 'track',
   track_max_tentative_sec: 'track',
   track_max_lost_sec: 'track',
@@ -100,7 +134,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
 
 function getCategoryId(key: string): CategoryId {
   if (key in KEY_PREFIX_MAP) return KEY_PREFIX_MAP[key];
-  for (const prefix of ['anchor_', 'seam_', 'reid_', 'record_', 'track_', 'ocr_', 'bg_', 'fused_']) {
+  for (const prefix of ['anchor_', 'seam_', 'reid_', 'record_', 'track_', 'ocr_', 'bg_', 'fused_', 'visual_', 'redis_', 'qdrant_', 'training_snapshot_', 'enable_training_snapshot']) {
     if (key.startsWith(prefix)) return KEY_PREFIX_MAP[prefix.replace('_', '')] ?? 'other';
   }
   return 'other';
@@ -125,6 +159,34 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   ocr_audit_enable: 'Bật/tắt audit logging cho OCR.',
   ocr_audit_save_frames: 'Lưu frame đầy đủ phục vụ OCR audit.',
   save_min_interval_sec: 'Khoảng thời gian tối thiểu giữa các lần lưu ảnh detection (giây).',
+
+  enable_visual_id: 'Bật/tắt nhận diện tàu bằng đặc trưng sâu (manual enrollment + vector search).',
+  visual_id_interval_sec: 'Khoảng thời gian (giây) giữa các lần visual-id trên track CONFIRMED.',
+  visual_min_crop_area: 'Diện tích crop tối thiểu (pixel) để chạy trích đặc trưng.',
+  visual_match_threshold: 'Ngưỡng điểm similarity để chấp nhận kết quả visual-id.',
+  visual_margin_threshold: 'Chênh lệch tối thiểu top1-top2 để tránh match mơ hồ.',
+  visual_top_k: 'Số ứng viên gần nhất trả về từ vector search.',
+  visual_model_path: 'Đường dẫn model TorchScript ViT (để trống sẽ dùng backbone mặc định).',
+  visual_backbone: 'Tên backbone cho extractor (ví dụ `vit_base_patch16_224`).',
+  visual_embedding_dim: 'Kích thước vector embedding đầu ra.',
+  visual_batch_size: 'Batch size cho visual embedding worker.',
+  visual_device: 'Thiết bị suy luận visual (`0`, `cuda:0`, `cpu`).',
+
+  redis_url: 'URL kết nối Redis dùng cho runtime cache.',
+  redis_key_prefix: 'Prefix key trên Redis để tách namespace dự án.',
+  redis_visual_ttl_sec: 'TTL (giây) cho cache visual-id runtime.',
+
+  qdrant_host: 'Host Qdrant.',
+  qdrant_port: 'Port HTTP API Qdrant.',
+  qdrant_api_key: 'API key Qdrant (để trống nếu local không auth).',
+  qdrant_collection: 'Tên collection lưu embedding tàu.',
+  qdrant_vector_size: 'Số chiều vector embedding.',
+  qdrant_distance: 'Metric khoảng cách vector: COSINE / DOT / EUCLID.',
+
+  enable_training_snapshot: 'Bật/tắt thu thập crop tàu để train model (lưu vào server/snapshot).',
+  training_snapshot_interval_sec: 'Chu kỳ (giây) chụp và lưu snapshot mỗi camera.',
+  training_snapshot_base_dir: 'Thư mục gốc (tương đối server/ hoặc đường dẫn tuyệt đối).',
+  training_snapshot_jpeg_quality: 'Chất lượng JPEG (50–100) cho ảnh crop.',
 
   track_min_confirm_sec: 'Thời gian (giây) trước khi TENTATIVE thành CONFIRMED.',
   track_max_tentative_sec: 'Thời gian tối đa (giây) không match trước khi xóa tentative track.',

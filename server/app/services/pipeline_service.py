@@ -9,7 +9,6 @@ from typing import Any
 import datetime
 import mimetypes
 
-import cv2
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.db.session import SessionLocal
@@ -38,7 +37,16 @@ from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.group_frame_hub import GroupFrameHub
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
+from app.services.ai.training_snapshot_collector import (
+    TrainingSnapshotCollector,
+    TrainingSnapshotConfig,
+)
+from app.services.ai.identity_fusion import IdentityFusion
+from app.services.ai.runtime_cache_redis import RuntimeCacheRedis
 from app.services.ai.seam_anchor_verifier import SeamAnchorConfig, SeamAnchorVerifier
+from app.services.ai.vector_store_qdrant import QdrantVectorStore
+from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
+from app.services.ai.visual_id_worker import VisualIdWorkerThread
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
 from app.services.ai.track_media_collector import TrackMediaCollector
 from app.services.ai.track_video_registry import RecordedVideo, TrackVideoRegistry
@@ -117,6 +125,7 @@ class PipelineService:
         self._group_frame_hub: GroupFrameHub | None = None
         self._yolo_worker: YoloWorkerThread | None = None
         self._ocr_worker: OcrWorkerThread | None = None
+        self._visual_worker: VisualIdWorkerThread | None = None
         self._video_worker: VideoRecorderThread | None = None
         self._single_video_worker: VideoRecorderThread | None = None
         self._per_camera_pipelines: list[PerCameraPipeline] = []
@@ -124,6 +133,7 @@ class PipelineService:
         self._frame_queue: queue.Queue = queue.Queue(maxsize=5)
         self._result_queue: queue.Queue = queue.Queue(maxsize=10)
         self._ocr_queue: queue.Queue = queue.Queue(maxsize=10)
+        self._visual_queue: queue.Queue = queue.Queue(maxsize=10)
         self._video_queue: queue.Queue = queue.Queue(maxsize=30)
         self._single_video_queue: queue.Queue = queue.Queue(maxsize=30)
         self.ocr_cache: dict[str, Any] = {}
@@ -146,16 +156,46 @@ class PipelineService:
         self._active_group_id: int | None = None
         self._db: Session | None = None
         self._gpu_status: dict[str, Any] | None = None
+        self._runtime_cache: RuntimeCacheRedis | None = None
+        self._vector_store: QdrantVectorStore | None = None
+        self._identity_fusion: IdentityFusion | None = None
+        self._visual_extractor: VisualEmbeddingExtractor | None = None
 
     @staticmethod
     def _configure_dashboard_preview(runtime_cfg: dict[str, Any]) -> None:
         pipeline_preview.set_target_fps(float(runtime_cfg['record_fps']))
         pipeline_preview.set_max_width(int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)))
 
+    def _init_visual_stack(self, runtime_cfg: dict[str, Any]) -> None:
+        self._runtime_cache = RuntimeCacheRedis(
+            url=runtime_cfg['redis_url'],
+            key_prefix=runtime_cfg['redis_key_prefix'],
+            default_ttl_sec=runtime_cfg['redis_visual_ttl_sec'],
+        )
+        self._vector_store = QdrantVectorStore(
+            host=runtime_cfg['qdrant_host'],
+            port=runtime_cfg['qdrant_port'],
+            api_key=runtime_cfg['qdrant_api_key'] or None,
+            collection_name=runtime_cfg['qdrant_collection'],
+            vector_size=runtime_cfg['qdrant_vector_size'],
+            distance=runtime_cfg['qdrant_distance'],
+        )
+        self._identity_fusion = IdentityFusion(
+            match_threshold=runtime_cfg['visual_match_threshold'],
+            margin_threshold=runtime_cfg['visual_margin_threshold'],
+        )
+        self._visual_extractor = VisualEmbeddingExtractor(
+            model_path=runtime_cfg['visual_model_path'] or None,
+            backbone=runtime_cfg['visual_backbone'],
+            device=runtime_cfg['visual_device'] or runtime_cfg['device'],
+            embedding_dim=runtime_cfg['visual_embedding_dim'],
+        )
+
     def _reset_runtime_queues(self) -> None:
         self._frame_queue = queue.Queue(maxsize=5)
         self._result_queue = queue.Queue(maxsize=10)
         self._ocr_queue = queue.Queue(maxsize=10)
+        self._visual_queue = queue.Queue(maxsize=10)
         self._video_queue = queue.Queue(maxsize=30)
         self._single_video_queue = queue.Queue(maxsize=30)
         self._media_sample_queue = queue.Queue(maxsize=5)
@@ -391,6 +431,87 @@ class PipelineService:
                 legacy_frame_key='ocr_interval_frames',
                 default_sec=float(settings.OCR_INTERVAL_SEC),
                 fps=record_fps,
+            ),
+            'enable_visual_id': self._to_bool(
+                cfg_map.get('enable_visual_id', ''),
+                bool(settings.ENABLE_VISUAL_ID),
+            ),
+            'visual_id_interval_sec': resolve_positive_seconds(
+                cfg_map,
+                sec_key='visual_id_interval_sec',
+                legacy_frame_key='visual_id_interval_frames',
+                default_sec=float(settings.VISUAL_ID_INTERVAL_SEC),
+                fps=record_fps,
+            ),
+            'visual_min_crop_area': max(
+                256,
+                self._to_int(cfg_map.get('visual_min_crop_area', ''), int(settings.VISUAL_MIN_CROP_AREA)),
+            ),
+            'visual_match_threshold': self._to_float(
+                cfg_map.get('visual_match_threshold', ''),
+                float(settings.VISUAL_MATCH_THRESHOLD),
+            ),
+            'visual_margin_threshold': self._to_float(
+                cfg_map.get('visual_margin_threshold', ''),
+                float(settings.VISUAL_MARGIN_THRESHOLD),
+            ),
+            'visual_top_k': max(
+                1,
+                self._to_int(cfg_map.get('visual_top_k', ''), int(settings.VISUAL_TOP_K)),
+            ),
+            'visual_model_path': _s('visual_model_path', settings.VISUAL_MODEL_PATH),
+            'visual_backbone': _s('visual_backbone', settings.VISUAL_BACKBONE),
+            'visual_embedding_dim': max(
+                64,
+                self._to_int(cfg_map.get('visual_embedding_dim', ''), int(settings.VISUAL_EMBEDDING_DIM)),
+            ),
+            'visual_batch_size': max(
+                1,
+                self._to_int(cfg_map.get('visual_batch_size', ''), int(settings.VISUAL_BATCH_SIZE)),
+            ),
+            'visual_device': _s('visual_device', settings.VISUAL_DEVICE),
+            'redis_url': _s('redis_url', settings.REDIS_URL),
+            'redis_key_prefix': _s('redis_key_prefix', settings.REDIS_KEY_PREFIX),
+            'redis_visual_ttl_sec': max(
+                10,
+                self._to_int(cfg_map.get('redis_visual_ttl_sec', ''), int(settings.REDIS_VISUAL_TTL_SEC)),
+            ),
+            'qdrant_host': _s('qdrant_host', settings.QDRANT_HOST),
+            'qdrant_port': max(
+                1,
+                self._to_int(cfg_map.get('qdrant_port', ''), int(settings.QDRANT_PORT)),
+            ),
+            'qdrant_api_key': _s('qdrant_api_key', settings.QDRANT_API_KEY),
+            'qdrant_collection': _s('qdrant_collection', settings.QDRANT_COLLECTION),
+            'qdrant_vector_size': max(
+                1,
+                self._to_int(cfg_map.get('qdrant_vector_size', ''), int(settings.QDRANT_VECTOR_SIZE)),
+            ),
+            'qdrant_distance': _s('qdrant_distance', settings.QDRANT_DISTANCE),
+            'enable_training_snapshot': self._to_bool(
+                cfg_map.get('enable_training_snapshot', ''),
+                bool(settings.ENABLE_TRAINING_SNAPSHOT),
+            ),
+            'training_snapshot_interval_sec': resolve_positive_seconds(
+                cfg_map,
+                sec_key='training_snapshot_interval_sec',
+                legacy_frame_key='training_snapshot_interval_frames',
+                default_sec=float(settings.TRAINING_SNAPSHOT_INTERVAL_SEC),
+                fps=record_fps,
+            ),
+            'training_snapshot_base_dir': _s(
+                'training_snapshot_base_dir',
+                settings.TRAINING_SNAPSHOT_BASE_DIR,
+            ),
+            'training_snapshot_jpeg_quality': max(
+                50,
+                min(
+                    100,
+                    self._to_int(
+                        cfg_map.get('training_snapshot_jpeg_quality', ''),
+                        int(settings.TRAINING_SNAPSHOT_JPEG_QUALITY),
+                    ),
+                ),
             ),
             'track_min_confirm_sec': resolve_positive_seconds(
                 cfg_map,
@@ -1360,6 +1481,11 @@ class PipelineService:
         embedding_extractor = EmbeddingExtractor(
             model_path=runtime_cfg['reid_embedding_model_path'] or None,
             device=runtime_cfg['device'],
+            use_visual_model=bool(runtime_cfg['enable_visual_id']),
+            visual_model_path=runtime_cfg['visual_model_path'] or None,
+            visual_backbone=runtime_cfg['visual_backbone'],
+            visual_embedding_dim=runtime_cfg['visual_embedding_dim'],
+            visual_device=runtime_cfg['visual_device'] or runtime_cfg['device'],
         )
 
         reid_manager = self._reid_manager
@@ -1372,6 +1498,25 @@ class PipelineService:
         )
         if self._seam_anchor_verifier is not None:
             self._reid_manager.set_seam_anchor_verifier(self._seam_anchor_verifier)
+
+        visual_enabled = bool(runtime_cfg['enable_visual_id'])
+        if visual_enabled:
+            self._init_visual_stack(runtime_cfg)
+            if self._visual_extractor is not None and self._identity_fusion is not None:
+                self._visual_queue = queue.Queue(maxsize=max(20, len(camera_order) * 8))
+                self._visual_worker = VisualIdWorkerThread(
+                    worker_name='visual-id-worker',
+                    visual_queue=self._visual_queue,
+                    extractor=self._visual_extractor,
+                    vector_store=self._vector_store,
+                    runtime_cache=self._runtime_cache,
+                    identity_fusion=self._identity_fusion,
+                    stop_event=self._stop,
+                    top_k=runtime_cfg['visual_top_k'],
+                    min_crop_area=runtime_cfg['visual_min_crop_area'],
+                    score_threshold=runtime_cfg['visual_match_threshold'],
+                )
+                self._visual_worker.start()
 
         self._start_media_sample_worker()
 
@@ -1441,6 +1586,25 @@ class PipelineService:
         )
 
         self._per_camera_pipelines = []
+        # Allow .env flag to force-enable training snapshots even if legacy
+        # port_configs still carries seeded default "false".
+        snapshot_enabled = bool(runtime_cfg['enable_training_snapshot']) or bool(
+            settings.ENABLE_TRAINING_SNAPSHOT
+        )
+        training_snapshot_collector: TrainingSnapshotCollector | None = None
+        if snapshot_enabled:
+            snap_rel = str(runtime_cfg['training_snapshot_base_dir'] or 'snapshot').strip()
+            snap_base = Path(snap_rel) if Path(snap_rel).is_absolute() else _SERVER_ROOT / snap_rel
+            training_snapshot_collector = TrainingSnapshotCollector(
+                TrainingSnapshotConfig(
+                    enabled=True,
+                    interval_sec=float(runtime_cfg['training_snapshot_interval_sec']),
+                    base_dir=snap_base,
+                    jpeg_quality=int(runtime_cfg['training_snapshot_jpeg_quality']),
+                )
+            )
+            _log.info('Training snapshot collector enabled base_dir=%s interval_sec=%s', snap_base, runtime_cfg['training_snapshot_interval_sec'])
+
         primary = self._primary_record_camera_id
         for member in ordered_members:
             camera_id = int(member.camera_id)
@@ -1473,6 +1637,11 @@ class PipelineService:
                 clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
+                enable_visual_id=visual_enabled,
+                visual_interval_sec=runtime_cfg['visual_id_interval_sec'],
+                visual_min_crop_area=runtime_cfg['visual_min_crop_area'],
+                enable_training_snapshot=snapshot_enabled,
+                training_snapshot_interval_sec=runtime_cfg['training_snapshot_interval_sec'],
                 enable_preview_stream=False,
             )
             self._per_camera_pipelines.append(
@@ -1491,7 +1660,9 @@ class PipelineService:
                     on_overlay_media_sample=self._recording_single_media_sample,
                     input_frame_queue=self._group_frame_hub.queue_for_camera(camera_id),
                     shared_ocr_queue=self._ocr_queue if ocr_active else None,
+                    shared_visual_queue=self._visual_queue if visual_enabled else None,
                     single_camera_video_queue=single_cam_q,
+                    training_snapshot_collector=training_snapshot_collector,
                 )
             )
 
@@ -1512,6 +1683,13 @@ class PipelineService:
             else None,
             embedding_extractor.backend,
         )
+        if visual_enabled and self._visual_extractor is not None:
+            _log.info(
+                'Visual ID enabled backend=%s qdrant_healthy=%s redis_healthy=%s',
+                self._visual_extractor.backend,
+                self._vector_store.healthy if self._vector_store is not None else False,
+                self._runtime_cache.healthy if self._runtime_cache is not None else False,
+            )
 
     def start_group(self, group: Any, enable_ocr: bool | None = None) -> None:
         if self.is_running:
@@ -1656,6 +1834,8 @@ class PipelineService:
             self._yolo_worker.join(timeout=2.0)
         if self._ocr_worker:
             self._ocr_worker.join(timeout=2.0)
+        if self._visual_worker:
+            self._visual_worker.join(timeout=2.0)
         if self._video_worker:
             self._video_worker.join(timeout=2.0)
             self._video_worker.shutdown_finalize()
@@ -1675,12 +1855,17 @@ class PipelineService:
             self._boat_tracker.flush_shutdown_logs()
             
         self._reader = self._yolo_worker = self._ocr_worker = self._video_worker = None
+        self._visual_worker = None
         self._single_video_worker = None
         self._group_frame_hub = None
         self._per_camera_pipelines = []
         self._reid_manager = None
         self._seam_anchor_verifier = None
         self._bg_registry = None
+        self._runtime_cache = None
+        self._vector_store = None
+        self._identity_fusion = None
+        self._visual_extractor = None
         self._active_group_id = None
         pipeline_preview.clear()
         self._gpu_status = None

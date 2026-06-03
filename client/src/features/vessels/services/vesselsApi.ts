@@ -28,6 +28,19 @@ export type VesselTypeCreate = {
   description?: string;
 }
 
+export type VesselVisualReference = {
+  id: string;
+  preview_url?: string | null;
+  payload?: {
+    filename?: string;
+    enrolled_at?: string;
+    source?: string;
+    ship_id?: string;
+    vessel_name?: string;
+    preview_uri?: string;
+  };
+};
+
 export const vesselsApi = {
   getVessels: async (skip: number = 0, limit: number = 100, activeOnly: boolean = false): Promise<VesselRead[]> => {
     return httpClient.get<VesselRead[]>(`/vessels/?skip=${skip}&limit=${limit}&active_only=${activeOnly}`);
@@ -43,6 +56,31 @@ export const vesselsApi = {
   },
   deleteVessel: async (id: string): Promise<void> => {
     return httpClient.delete(`/vessels/${id}`);
+  },
+  uploadVesselReferenceImages: async (
+    id: string,
+    files: File[],
+  ): Promise<{
+    ok: boolean;
+    count?: number;
+    enrolled?: Array<{ ok: boolean; point_id: string; filename?: string; source: string }>;
+    failed?: Array<{ filename: string; detail: string }>;
+    point_id?: string;
+    source?: string;
+  }> => {
+    const form = new FormData();
+    files.forEach((file) => form.append('images', file));
+    return httpClient.post(`/vessels/${id}/visual-enroll`, form);
+  },
+  getVesselReferenceImages: async (
+    id: string,
+  ): Promise<{ count: number; items: VesselVisualReference[] }> => {
+    return httpClient.get<{ count: number; items: VesselVisualReference[] }>(
+      `/vessels/${id}/visual-enroll`,
+    );
+  },
+  deleteVesselReferenceImage: async (id: string, pointId: string): Promise<void> => {
+    return httpClient.delete(`/vessels/${id}/visual-enroll/${pointId}`);
   },
   getVesselTypes: async (): Promise<VesselTypeRead[]> => {
     return httpClient.get<VesselTypeRead[]>('/vessel-types/');

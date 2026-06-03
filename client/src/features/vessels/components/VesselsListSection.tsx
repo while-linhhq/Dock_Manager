@@ -1,5 +1,5 @@
 import React from 'react';
-import { CheckCircle2, Loader2, Plus, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, Pencil, Plus, Trash2, Upload, XCircle } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
@@ -31,6 +31,7 @@ export type VesselsListSectionProps = {
   isLoading: boolean;
   onEditVessel: (v: VesselRead) => void;
   onDeleteVessel: (id: string) => void;
+  onOpenUploadModal: (v: VesselRead) => void;
 };
 
 export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
@@ -53,6 +54,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
   isLoading,
   onEditVessel,
   onDeleteVessel,
+  onOpenUploadModal,
 }) => {
   return (
     <div className="space-y-6">
@@ -130,6 +132,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
                 <th className={dt.pad}>Mã Tàu (Ship ID)</th>
                 <th className={dt.pad}>Tên Tàu</th>
                 <th className={dt.pad}>Loại Tàu</th>
+                <th className={dt.pad}>Ảnh Mẫu</th>
                 <th className={dt.pad}>Chi Phí Theo Loại (tham chiếu)</th>
                 <th className={dt.pad}>Chủ Tàu</th>
                 <th className={dt.pad}>Trạng Thái</th>
@@ -139,7 +142,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
             <tbody className="divide-y divide-gray-100 dark:divide-white/5">
               {isLoading && vessels.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className={cn(dt.pad, 'py-12 text-center')}>
+                  <td colSpan={8} className={cn(dt.pad, 'py-12 text-center')}>
                     <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
@@ -155,6 +158,9 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
                     </td>
                     <td className={cn(dt.pad, dt.meta)}>
                       {resolveVesselTypeName(v, vesselTypes)}
+                    </td>
+                    <td className={cn(dt.pad, dt.mono)}>
+                      {typeof v.visual_reference_count === 'number' ? v.visual_reference_count : 0}
                     </td>
                     <td className={cn(dt.pad, dt.mono, 'max-w-[14rem]')}>
                       {formatApplicableFee(v)}
@@ -184,20 +190,42 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
                       </span>
                     </td>
                     <td className={cn(dt.pad, 'text-right')}>
-                      <div className="inline-flex items-center gap-3">
+                      <div className="inline-flex items-center gap-1">
                         <button
                           type="button"
                           onClick={() => onEditVessel(v)}
-                          className={cn(dt.action, 'text-blue-600 hover:text-blue-500 dark:text-blue-400')}
+                          className={cn(
+                            'p-2 rounded-lg transition-colors',
+                            'text-blue-600 hover:text-blue-500 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-500/10',
+                          )}
+                          title="Chỉnh sửa"
+                          aria-label="Chỉnh sửa"
                         >
-                          Chỉnh Sửa
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenUploadModal(v)}
+                          className={cn(
+                            'p-2 rounded-lg transition-colors',
+                            'text-emerald-600 hover:text-emerald-500 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-500/10',
+                          )}
+                          title="Upload ảnh mẫu"
+                          aria-label="Upload ảnh mẫu"
+                        >
+                          <Upload className="w-4 h-4" />
                         </button>
                         <button
                           type="button"
                           onClick={() => onDeleteVessel(String(v.id))}
-                          className={cn(dt.action, 'text-red-600 hover:text-red-500 dark:text-red-400')}
+                          className={cn(
+                            'p-2 rounded-lg transition-colors',
+                            'text-red-600 hover:text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10',
+                          )}
+                          title="Xóa tàu"
+                          aria-label="Xóa tàu"
                         >
-                          Xóa
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </td>
@@ -206,7 +234,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
               ) : (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className={cn(
                       dt.pad,
                       'py-12 text-center font-mono uppercase tracking-wide',

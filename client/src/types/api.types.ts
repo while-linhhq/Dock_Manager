@@ -47,6 +47,7 @@ export type VesselRead = {
   last_seen?: string | null;
   created_at?: string;
   updated_at?: string;
+  visual_reference_count?: number;
 }
 
 export type DetectionRead = {

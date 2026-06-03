@@ -21,6 +21,9 @@ test_video_persist_result.json
 # Generated exports (local downloads)
 exports/
 
+# Vessel visual reference preview JPEGs (local fallback when MinIO unavailable)
+data/visual-references/
+
 # Model weights (download at deploy/runtime)
 *.pt
 *.onnx
