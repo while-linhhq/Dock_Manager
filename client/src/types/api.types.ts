@@ -106,9 +106,17 @@ export type InvoiceRead = {
   detection_id?: number | string | null;
   invoice_number: string;
   subtotal?: number | string | null;
+  discount_amount?: number | string | null;
+  discount_requested_amount?: number | string | null;
+  discount_status?: 'none' | 'pending' | 'approved' | 'rejected' | string;
+  discount_reviewed_at?: string | null;
+  discount_reviewed_by?: number | null;
+  discount_reject_reason?: string | null;
+  discount_reviewed_by_label?: string | null;
   total_amount: number | string;
   tax_amount?: number | string;
   payment_status: string;
+  notes?: string | null;
   created_at: string;
   deleted_at?: string | null;
   items?: InvoiceLineItemRead[];
@@ -121,12 +129,20 @@ export type InvoiceRead = {
   berth_duration_hours?: number | string | null;
   berth_duration_seconds?: number | null;
   is_over_berth_limit?: boolean;
+  is_outside_operating_hours?: boolean;
   detection?: {
     id?: number;
     start_time?: string | null;
     end_time?: string | null;
   } | null;
 };
+
+export type FeeOperatingHours = Partial<
+  Record<
+    'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun',
+    { open: string; close: string } | { closed: true } | null
+  >
+>;
 
 export type FeeConfigRead = {
   id: number;
@@ -139,6 +155,9 @@ export type FeeConfigRead = {
   effective_to?: string | null;
   berth_limit_count?: number | null;
   berth_limit_unit?: 'day' | 'month' | null;
+  over_limit_penalty_amount?: number | string | null;
+  outside_hours_penalty_amount?: number | string | null;
+  operating_hours?: FeeOperatingHours | null;
   created_at: string;
   updated_at: string;
   vessel_type?: VesselTypeRead;

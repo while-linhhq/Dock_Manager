@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, Date, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Numeric, Boolean, Date, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -17,6 +17,9 @@ class FeeConfig(Base):
     effective_to = Column(Date, nullable=True)
     berth_limit_count = Column(Integer, nullable=True)
     berth_limit_unit = Column(String(10), nullable=True)  # day | month
+    over_limit_penalty_amount = Column(Numeric(12, 2), nullable=True)
+    outside_hours_penalty_amount = Column(Numeric(12, 2), nullable=True)
+    operating_hours = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

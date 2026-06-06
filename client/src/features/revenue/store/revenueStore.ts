@@ -32,6 +32,8 @@ interface RevenueState {
   recordPayment: (invoiceId: string | number, data: PaymentCreate) => Promise<void>;
   recordBulkPayments: (data: BulkPaymentCreate) => Promise<BulkPaymentRead>;
   deleteInvoice: (id: string | number) => Promise<void>;
+  updateInvoiceDiscount: (id: string | number, discountAmount: number) => Promise<void>;
+  updateInvoiceNotes: (id: string | number, notes: string) => Promise<void>;
   upsertFeeConfig: (id: string | number | null, data: FeeConfigCreate) => Promise<void>;
   deleteFeeConfig: (id: string | number) => Promise<void>;
 }
@@ -179,6 +181,46 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
     }
   },
 
+  updateInvoiceNotes: async (id, notes) => {
+    set({ error: null });
+    const prevInvoices = get().invoices;
+    const normalized = notes.trim();
+    set((state) => ({
+      invoices: state.invoices.map((inv) =>
+        String(inv.id) === String(id) ? { ...inv, notes: normalized || null } : inv,
+      ),
+    }));
+    try {
+      const updated = await revenueApi.updateInvoice(id, { notes: normalized });
+      set((state) => ({
+        invoices: state.invoices.map((inv) =>
+          String(inv.id) === String(id) ? { ...inv, ...updated } : inv,
+        ),
+      }));
+    } catch (err: any) {
+      set({ invoices: prevInvoices, error: err.message || 'Failed to update invoice notes' });
+      throw err;
+    }
+  },
+
+  updateInvoiceDiscount: async (id, discountAmount) => {
+    set({ error: null });
+    const prevInvoices = get().invoices;
+    try {
+      const updated = await revenueApi.updateInvoice(id, {
+        discount_requested_amount: discountAmount,
+      });
+      set((state) => ({
+        invoices: state.invoices.map((inv) =>
+          String(inv.id) === String(id) ? { ...inv, ...updated } : inv,
+        ),
+      }));
+    } catch (err: any) {
+      set({ invoices: prevInvoices, error: err.message || 'Failed to request invoice discount' });
+      throw err;
+    }
+  },
+
   upsertFeeConfig: async (id, data) => {
     set({ isLoading: true, error: null });
     try {
@@ -192,6 +234,9 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
           effective_to: data.effective_to,
           berth_limit_count: data.berth_limit_count,
           berth_limit_unit: data.berth_limit_unit,
+          over_limit_penalty_amount: data.over_limit_penalty_amount,
+          outside_hours_penalty_amount: data.outside_hours_penalty_amount,
+          operating_hours: data.operating_hours,
         };
         await revenueApi.updateFeeConfig(id, patch);
       } else {

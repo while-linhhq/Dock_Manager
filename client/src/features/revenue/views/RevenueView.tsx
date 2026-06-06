@@ -26,6 +26,11 @@ import { RevenueMainTabs, type RevenueMainTab } from '../components/RevenueMainT
 import { RevenueInvoiceSection } from '../components/RevenueInvoiceSection';
 import { RevenueFeesSection } from '../components/RevenueFeesSection';
 import { RevenueModals } from '../components/RevenueModals';
+import {
+  emptyOperatingHours,
+  operatingHoursFromApi,
+  operatingHoursToApi,
+} from '../types/fee-operating-hours';
 import { RevenueExcelExportChoiceModal } from '../components/RevenueExcelExportChoiceModal';
 import { SepayPaymentModal } from '../components/SepayPaymentModal';
 import {
@@ -79,6 +84,8 @@ export const RevenueView: React.FC = () => {
     recordPayment,
     recordBulkPayments,
     deleteInvoice,
+    updateInvoiceDiscount,
+    updateInvoiceNotes,
     upsertFeeConfig,
     deleteFeeConfig,
   } = useRevenueStore();
@@ -106,6 +113,9 @@ export const RevenueView: React.FC = () => {
       base_fee: 0,
       berth_limit_count: undefined,
       berth_limit_unit: undefined,
+      over_limit_penalty_amount: undefined,
+      outside_hours_penalty_amount: undefined,
+      operating_hours: {},
     },
   });
 
@@ -146,14 +156,17 @@ export const RevenueView: React.FC = () => {
 
   const filteredInvoices = useMemo(() => {
     return invoices.filter((inv) => {
+      const matchedVessel = filterVessels.find(
+        (vessel) => String(vessel.id) === String(inv.vessel_id ?? ''),
+      );
       if (
         !matchesAnyField(
           invQ,
           inv.invoice_number,
           String(inv.order_id ?? ''),
+          inv.vessel_ship_id ?? matchedVessel?.ship_id,
           String(inv.vessel_id ?? ''),
           String(inv.detection_id ?? ''),
-          inv.payment_status,
           inv.created_by_label ?? '',
         )
       ) {
@@ -166,7 +179,6 @@ export const RevenueView: React.FC = () => {
           return false;
         }
       }
-      const matchedVessel = filterVessels.find((vessel) => String(vessel.id) === String(inv.vessel_id ?? ''));
       if (invShipIdFilter && String(inv.vessel_id ?? matchedVessel?.id ?? '') !== invShipIdFilter) {
         return false;
       }
@@ -349,6 +361,15 @@ export const RevenueView: React.FC = () => {
         vessel_type_id: data.vessel_type_id ? Number(data.vessel_type_id) : undefined,
         berth_limit_count: hasBerthLimit ? data.berth_limit_count : null,
         berth_limit_unit: hasBerthLimit ? data.berth_limit_unit : null,
+        over_limit_penalty_amount:
+          data.over_limit_penalty_amount != null && data.over_limit_penalty_amount > 0
+            ? data.over_limit_penalty_amount
+            : null,
+        outside_hours_penalty_amount:
+          data.outside_hours_penalty_amount != null && data.outside_hours_penalty_amount > 0
+            ? data.outside_hours_penalty_amount
+            : null,
+        operating_hours: operatingHoursToApi(data.operating_hours ?? emptyOperatingHours()),
       };
       await upsertFeeConfig(editingFeeId, payload);
       setIsFeeModalOpen(false);
@@ -378,6 +399,15 @@ export const RevenueView: React.FC = () => {
         fee.berth_limit_unit === 'day' || fee.berth_limit_unit === 'month'
           ? fee.berth_limit_unit
           : undefined,
+      over_limit_penalty_amount:
+        fee.over_limit_penalty_amount != null && Number(fee.over_limit_penalty_amount) > 0
+          ? Number(fee.over_limit_penalty_amount)
+          : undefined,
+      outside_hours_penalty_amount:
+        fee.outside_hours_penalty_amount != null && Number(fee.outside_hours_penalty_amount) > 0
+          ? Number(fee.outside_hours_penalty_amount)
+          : undefined,
+      operating_hours: operatingHoursFromApi(fee.operating_hours),
     });
     setIsFeeModalOpen(true);
   };
@@ -402,6 +432,9 @@ export const RevenueView: React.FC = () => {
           base_fee: 0,
           berth_limit_count: undefined,
           berth_limit_unit: undefined,
+          over_limit_penalty_amount: undefined,
+          outside_hours_penalty_amount: undefined,
+          operating_hours: emptyOperatingHours(),
         });
       }
       await deleteFeeConfig(fee.id);
@@ -420,6 +453,9 @@ export const RevenueView: React.FC = () => {
       base_fee: 0,
       berth_limit_count: undefined,
       berth_limit_unit: undefined,
+      over_limit_penalty_amount: undefined,
+      outside_hours_penalty_amount: undefined,
+      operating_hours: emptyOperatingHours(),
     });
     setIsFeeModalOpen(true);
   };
@@ -534,6 +570,8 @@ export const RevenueView: React.FC = () => {
             setIsPaymentChoiceModalOpen(true);
           }}
           onDeleteInvoice={handleDeleteInvoice}
+          onUpdateDiscount={updateInvoiceDiscount}
+          onUpdateNotes={updateInvoiceNotes}
           payableCount={payableFilteredInvoices.length}
           bulkPaymentTotal={bulkPaymentTotal}
           onOpenBulkPayment={() => setIsBulkPaymentChoiceModalOpen(true)}
@@ -669,6 +707,7 @@ export const RevenueView: React.FC = () => {
         onPaymentSubmit={onPaymentSubmit}
         paymentModalTitle={paymentModalTitle}
         lockPaymentMethod={lockPaymentMethod}
+        paymentInvoice={pendingPaymentInvoice}
         isFeeModalOpen={isFeeModalOpen}
         onCloseFee={() => setIsFeeModalOpen(false)}
         feeForm={feeForm}

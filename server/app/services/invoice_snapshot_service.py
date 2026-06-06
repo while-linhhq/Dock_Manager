@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.invoice import Invoice
 from app.services.berth_limit_service import compute_invoice_over_berth_limit
+from app.services.fee_penalty_service import compute_invoice_outside_operating_hours
 
 
 def is_invoice_financially_locked(invoice: Invoice) -> bool:
@@ -12,6 +13,7 @@ def is_invoice_financially_locked(invoice: Invoice) -> bool:
 
 
 def seal_invoice_on_paid(db: Session, invoice: Invoice) -> None:
-    """Ghi cờ quá giới hạn neo tại thời điểm thanh toán (không tính lại sau)."""
+    """Ghi cờ neo tại thời điểm thanh toán (không tính lại sau)."""
     invoice.is_over_berth_limit = compute_invoice_over_berth_limit(db, invoice)
+    invoice.is_outside_operating_hours = compute_invoice_outside_operating_hours(db, invoice)
     db.flush()

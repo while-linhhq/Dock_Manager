@@ -13,7 +13,17 @@ import {
   FEE_BILLING_UNITS,
   normalizeFeeBillingUnit,
 } from '../../../utils/fee-billing-unit';
-import type { OrderRead } from '../../../types/api.types';
+import type { InvoiceRead, OrderRead } from '../../../types/api.types';
+import { InvoicePaymentSummary } from './InvoicePaymentSummary';
+import { FeeOperatingHoursEditor } from './FeeOperatingHoursEditor';
+import type { OperatingHours } from '../types/fee-operating-hours';
+import {
+  FeeField,
+  FeeSection,
+  feeControlClass,
+  feeErrorClass,
+  feeMonoControlClass,
+} from './fee-config-form-ui';
 
 export type RevenueModalsProps = {
   isInvoiceModalOpen: boolean;
@@ -27,6 +37,7 @@ export type RevenueModalsProps = {
   onPaymentSubmit: (data: PaymentCreate) => void | Promise<void>;
   paymentModalTitle?: string;
   lockPaymentMethod?: 'cash';
+  paymentInvoice?: InvoiceRead | null;
   isFeeModalOpen: boolean;
   onCloseFee: () => void;
   feeForm: UseFormReturn<FeeFormValues>;
@@ -49,6 +60,7 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
   onPaymentSubmit,
   paymentModalTitle = 'Ghi Nhận Thanh Toán',
   lockPaymentMethod,
+  paymentInvoice = null,
   isFeeModalOpen,
   onCloseFee,
   feeForm,
@@ -133,8 +145,14 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
         </form>
       </Modal>
 
-      <Modal isOpen={isPaymentModalOpen} onClose={onClosePayment} title={paymentModalTitle}>
-        <form onSubmit={paymentForm.handleSubmit(onPaymentSubmit)} className="space-y-4">
+      <Modal
+        isOpen={isPaymentModalOpen}
+        onClose={onClosePayment}
+        title={paymentModalTitle}
+        className="max-w-md sm:max-w-lg"
+      >
+        <form onSubmit={paymentForm.handleSubmit(onPaymentSubmit)} className="space-y-3">
+          {paymentInvoice ? <InvoicePaymentSummary invoice={paymentInvoice} /> : null}
           <Input
             label="Số Tiền"
             type="number"
@@ -195,150 +213,165 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
         isOpen={isFeeModalOpen}
         onClose={onCloseFee}
         title={editingFeeId ? 'Chỉnh Sửa Cấu Hình Phí' : 'Thêm Cấu Hình Phí Mới'}
+        className="max-w-[min(100vw-1.5rem,40rem)]"
+        bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
       >
-        <form onSubmit={feeForm.handleSubmit(onFeeSubmit)} className="space-y-4">
-          <Input
-            label="Tên Phí"
-            placeholder="VD: Phí Cập Cảng"
-            {...feeForm.register('fee_name')}
-            error={feeForm.formState.errors.fee_name?.message}
-          />
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
-              Loại Tàu Áp Dụng
-            </label>
-            <select
-              {...feeForm.register('vessel_type_id')}
-              className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm font-mono dark:text-white transition-all"
+        <form
+          onSubmit={feeForm.handleSubmit(onFeeSubmit)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+          <FeeSection title="Thông tin phí">
+            <FeeField
+              label="Tên phí"
+              error={feeForm.formState.errors.fee_name?.message}
             >
-              <option value="">Chọn loại tàu...</option>
-              {vesselTypes.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.type_name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
-              Đơn vị tính phí
-            </label>
-            <select
-              {...feeForm.register('unit')}
-              className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm dark:text-white transition-all"
-            >
-              {FEE_BILLING_UNITS.map((u) => (
-                <option key={u} value={u}>
-                  {FEE_BILLING_UNIT_LABELS[u]}
-                </option>
-              ))}
-            </select>
-          </div>
-          <Input
-            label={
-              FEE_BILLING_UNIT_AMOUNT_LABELS[
-                normalizeFeeBillingUnit(feeUnit) as keyof typeof FEE_BILLING_UNIT_AMOUNT_LABELS
-              ]
-            }
-            type="number"
-            disabled={feeUnit === 'none'}
-            {...feeForm.register('base_fee', { valueAsNumber: true })}
-            error={feeForm.formState.errors.base_fee?.message}
-          />
-          {feeUnit === 'none' && (
-            <p className="text-[10px] text-gray-500 ml-1">
-              Mức phí cố định 0 — áp dụng cho tàu công ty / miễn phí.
-            </p>
-          )}
-          {feeUnit === 'per_berth_visit' && (
-            <p className="text-[10px] text-gray-500 dark:text-gray-400 ml-1 leading-relaxed">
-              Mỗi lần tàu cập bến (1 detection / lượt neo) tính đúng 1 lượt × mức phí quy định.
-              Hóa đơn tự động sẽ ghi nhận số tiền ngay khi kết thúc theo dõi.
-            </p>
-          )}
-          <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 space-y-3">
-            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-              Giới hạn neo đậu
-            </p>
-            <p className="text-[10px] text-gray-500 dark:text-gray-400 leading-relaxed">
-              Áp dụng cho từng tàu (theo mã tàu): số lần cập bến tối đa trong ngày/tháng, không
-              gộp cả loại tàu. Để trống = không giới hạn.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
-                  Số lượng
-                </label>
+              <input
+                type="text"
+                placeholder="VD: Phí cập cảng"
+                className={feeControlClass}
+                {...feeForm.register('fee_name')}
+              />
+            </FeeField>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <FeeField label="Loại tàu">
+                <select
+                  {...feeForm.register('vessel_type_id')}
+                  className={feeControlClass}
+                >
+                  <option value="">Chọn loại tàu...</option>
+                  {vesselTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.type_name}
+                    </option>
+                  ))}
+                </select>
+              </FeeField>
+              <FeeField label="Đơn vị phí">
+                <select {...feeForm.register('unit')} className={feeControlClass}>
+                  {FEE_BILLING_UNITS.map((u) => (
+                    <option key={u} value={u}>
+                      {FEE_BILLING_UNIT_LABELS[u]}
+                    </option>
+                  ))}
+                </select>
+              </FeeField>
+              <FeeField
+                label={
+                  FEE_BILLING_UNIT_AMOUNT_LABELS[
+                    normalizeFeeBillingUnit(feeUnit) as keyof typeof FEE_BILLING_UNIT_AMOUNT_LABELS
+                  ]
+                }
+                error={feeForm.formState.errors.base_fee?.message}
+              >
+                <input
+                  type="number"
+                  disabled={feeUnit === 'none'}
+                  className={feeMonoControlClass}
+                  {...feeForm.register('base_fee', { valueAsNumber: true })}
+                />
+              </FeeField>
+            </div>
+          </FeeSection>
+
+          <FeeSection title="Giới hạn & phạt">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <FeeField label="Số lượng">
                 <input
                   type="number"
                   min={1}
-                  placeholder="Không giới hạn"
+                  placeholder="∞"
+                  title="Để trống = không giới hạn"
+                  className={feeMonoControlClass}
                   {...feeForm.register('berth_limit_count', { valueAsNumber: true })}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm dark:text-white transition-all"
                 />
-                {feeForm.formState.errors.berth_limit_count && (
-                  <p className="text-[10px] text-red-500 font-bold uppercase tracking-tighter ml-1">
-                    {feeForm.formState.errors.berth_limit_count.message}
-                  </p>
-                )}
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">
-                  Đơn vị
-                </label>
+              </FeeField>
+              <FeeField label="Đơn vị">
                 <select
                   {...feeForm.register('berth_limit_unit')}
-                  className="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-xl focus:border-blue-500 focus:ring-0 text-sm dark:text-white transition-all"
+                  className={feeControlClass}
                 >
                   <option value="">—</option>
-                  <option value="day">Theo ngày</option>
-                  <option value="month">Theo tháng</option>
+                  <option value="day">Ngày</option>
+                  <option value="month">Tháng</option>
                 </select>
-                {feeForm.formState.errors.berth_limit_unit && (
-                  <p className="text-[10px] text-red-500 font-bold uppercase tracking-tighter ml-1">
-                    {feeForm.formState.errors.berth_limit_unit.message}
-                  </p>
-                )}
-              </div>
+              </FeeField>
+              <FeeField label="Phạt vượt (₫)">
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  placeholder="0"
+                  className={feeMonoControlClass}
+                  {...feeForm.register('over_limit_penalty_amount', { valueAsNumber: true })}
+                />
+              </FeeField>
+              <FeeField
+                label="Phạt ngoài giờ (₫)"
+                error={feeForm.formState.errors.outside_hours_penalty_amount?.message}
+              >
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  placeholder="0"
+                  className={feeMonoControlClass}
+                  {...feeForm.register('outside_hours_penalty_amount', { valueAsNumber: true })}
+                />
+              </FeeField>
             </div>
+            {(feeForm.formState.errors.berth_limit_count ||
+              feeForm.formState.errors.berth_limit_unit ||
+              feeForm.formState.errors.over_limit_penalty_amount) && (
+              <p className={feeErrorClass}>
+                {feeForm.formState.errors.berth_limit_count?.message ||
+                  feeForm.formState.errors.berth_limit_unit?.message ||
+                  feeForm.formState.errors.over_limit_penalty_amount?.message}
+              </p>
+            )}
+          </FeeSection>
+
+          <FeeSection title="Giờ neo đậu">
+            <FeeOperatingHoursEditor
+              value={(feeForm.watch('operating_hours') ?? {}) as OperatingHours}
+              onChange={(next) =>
+                feeForm.setValue('operating_hours', next, { shouldValidate: true })
+              }
+              disabled={isLoading}
+            />
+          </FeeSection>
           </div>
-          <div className="space-y-1.5 ml-1">
-            <div className="flex items-center space-x-2">
+
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-[#121214]">
+            <label className="flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
                 id="fee_is_active"
                 {...feeForm.register('is_active')}
-                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              <label
-                htmlFor="fee_is_active"
-                className="text-[10px] font-bold text-gray-700 dark:text-gray-300 uppercase tracking-widest"
+              <span className="text-[10px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                Đang áp dụng
+              </span>
+            </label>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={onCloseFee} className="min-w-[5.5rem]">
+                Hủy
+              </Button>
+              <Button
+                type="submit"
+                disabled={isLoading}
+                className="min-w-[5.5rem] bg-blue-600 text-white hover:bg-blue-700"
               >
-                Đang áp dụng (định giá / hiển thị phí tham chiếu)
-              </label>
+                {isLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : editingFeeId ? (
+                  'Cập Nhật'
+                ) : (
+                  'Thêm Mới'
+                )}
+              </Button>
             </div>
-            <p className="text-[10px] text-gray-500 dark:text-gray-400 pl-6 leading-relaxed">
-              Bỏ chọn = tạm ngừng, bản ghi vẫn lưu. Để gỡ hoàn toàn, dùng nút «Xóa» trên thẻ cấu hình
-              (xóa vĩnh viễn trong cơ sở dữ liệu).
-            </p>
-          </div>
-          <div className="pt-4 flex space-x-3">
-            <Button type="button" variant="outline" onClick={onCloseFee} className="flex-1">
-              Hủy
-            </Button>
-            <Button
-              type="submit"
-              disabled={isLoading}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : editingFeeId ? (
-                'Cập Nhật'
-              ) : (
-                'Thêm Mới'
-              )}
-            </Button>
           </div>
         </form>
       </Modal>

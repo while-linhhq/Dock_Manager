@@ -36,8 +36,7 @@ class QdrantVectorStore:
 
     def _init_client(self) -> None:
         try:
-            from qdrant_client import QdrantClient
-            from qdrant_client.http.models import Distance, VectorParams
+            from qdrant_client import QdrantClient, models
         except Exception:
             logger.warning('qdrant-client package unavailable; vector store disabled')
             return
@@ -47,14 +46,13 @@ class QdrantVectorStore:
                 port=self._port,
                 api_key=self._api_key,
                 timeout=3.0,
-                check_compatibility=False,
             )
             self._healthy = bool(self._client.collection_exists(self._collection_name))
             if not self._healthy:
-                distance = getattr(Distance, self._distance, Distance.COSINE)
+                distance = getattr(models.Distance, self._distance, models.Distance.COSINE)
                 self._client.create_collection(
                     collection_name=self._collection_name,
-                    vectors_config=VectorParams(size=self._vector_size, distance=distance),
+                    vectors_config=models.VectorParams(size=self._vector_size, distance=distance),
                 )
                 self._healthy = True
         except Exception:
@@ -107,15 +105,18 @@ class QdrantVectorStore:
             )
             return False
         try:
+            from qdrant_client import models
+
             self._client.upsert(
                 collection_name=self._collection_name,
                 points=[
-                    {
-                        'id': str(point_id),
-                        'vector': vector.tolist(),
-                        'payload': payload or {},
-                    }
+                    models.PointStruct(
+                        id=str(point_id),
+                        vector=vector.tolist(),
+                        payload=payload or {},
+                    )
                 ],
+                wait=True,
             )
             return True
         except Exception:
@@ -136,15 +137,16 @@ class QdrantVectorStore:
         if vector.shape[0] != self._vector_size:
             return []
         try:
-            points = self._client.search(
+            response = self._client.query_points(
                 collection_name=self._collection_name,
-                query_vector=vector.tolist(),
+                query=vector.tolist(),
                 limit=max(1, int(top_k)),
                 score_threshold=score_threshold,
                 query_filter=query_filter,
+                with_payload=True,
             )
             out: list[dict[str, Any]] = []
-            for point in points:
+            for point in response.points:
                 out.append(
                     {
                         'id': str(point.id),
@@ -166,14 +168,19 @@ class QdrantVectorStore:
         if self._client is None:
             return []
         try:
-            from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+            from qdrant_client import models
         except Exception:
             return []
         try:
             points, _ = self._client.scroll(
                 collection_name=self._collection_name,
-                scroll_filter=Filter(
-                    must=[FieldCondition(key='ship_id', match=MatchValue(value=str(ship_id)))]
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key='ship_id',
+                            match=models.MatchValue(value=str(ship_id)),
+                        )
+                    ]
                 ),
                 limit=max(1, int(limit)),
                 with_payload=True,
@@ -191,16 +198,18 @@ class QdrantVectorStore:
         if self._client is None:
             return False
         try:
+            from qdrant_client import models
+
             raw_id = str(point_id).strip()
             try:
                 point_ids: list[str | uuid.UUID] = [uuid.UUID(raw_id)]
             except ValueError:
                 point_ids = [raw_id]
 
-            # Plain list of IDs — compatible with qdrant-client 1.18+ REST API.
             self._client.delete(
                 collection_name=self._collection_name,
-                points_selector=point_ids,
+                points_selector=models.PointIdsList(points=point_ids),
+                wait=True,
             )
             return True
         except Exception:

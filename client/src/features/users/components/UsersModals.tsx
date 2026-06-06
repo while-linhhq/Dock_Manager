@@ -41,6 +41,7 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
     { key: 'dashboard', label: 'Dashboard' },
     { key: 'orders', label: 'Đơn hàng' },
     { key: 'revenue', label: 'Thu nhập' },
+    { key: 'discount_approval', label: 'Duyệt giảm giá' },
     { key: 'vessels', label: 'Mã tàu' },
     { key: 'port', label: 'Quản lý cảng' },
     { key: 'stats', label: 'Thống kê' },

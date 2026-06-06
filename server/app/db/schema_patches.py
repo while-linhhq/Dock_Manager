@@ -740,6 +740,101 @@ def _ensure_fee_configs_berth_limit() -> None:
         raise
 
 
+def _ensure_fee_configs_penalty_fields() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('fee_configs'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('fee_configs')}
+        needed = {'over_limit_penalty_amount', 'outside_hours_penalty_amount', 'operating_hours'}
+        if needed.issubset(cols):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect fee_configs table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        stmts = [
+            text(
+                'ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS '
+                'over_limit_penalty_amount NUMERIC(12,2)'
+            ),
+            text(
+                'ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS '
+                'outside_hours_penalty_amount NUMERIC(12,2)'
+            ),
+            text('ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS operating_hours JSONB'),
+        ]
+    elif dialect == 'sqlite':
+        if 'over_limit_penalty_amount' not in cols:
+            stmts.append(text('ALTER TABLE fee_configs ADD COLUMN over_limit_penalty_amount NUMERIC(12,2)'))
+        if 'outside_hours_penalty_amount' not in cols:
+            stmts.append(
+                text('ALTER TABLE fee_configs ADD COLUMN outside_hours_penalty_amount NUMERIC(12,2)')
+            )
+        if 'operating_hours' not in cols:
+            stmts.append(text('ALTER TABLE fee_configs ADD COLUMN operating_hours JSON'))
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add fee_configs penalty columns manually',
+            dialect,
+        )
+        return
+
+    if not stmts:
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        _patch_done('ensured fee_configs penalty and operating_hours columns')
+    except Exception as err:
+        logger.error('schema_patches: failed to add fee_configs penalty columns: %s', err)
+        raise
+
+
+def _ensure_invoices_is_outside_operating_hours() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('invoices'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('invoices')}
+        if 'is_outside_operating_hours' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect invoices table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmt = None
+    if dialect == 'postgresql':
+        stmt = text(
+            'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS '
+            'is_outside_operating_hours BOOLEAN NOT NULL DEFAULT FALSE'
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            'ALTER TABLE invoices ADD COLUMN is_outside_operating_hours BOOLEAN NOT NULL DEFAULT 0'
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add invoices.is_outside_operating_hours manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added invoices.is_outside_operating_hours')
+    except Exception as err:
+        logger.error('schema_patches: failed to add invoices.is_outside_operating_hours: %s', err)
+        raise
+
+
 def _ensure_invoices_is_over_berth_limit() -> None:
     try:
         inspector = inspect(engine)
@@ -775,6 +870,140 @@ def _ensure_invoices_is_over_berth_limit() -> None:
         _patch_done('added invoices.is_over_berth_limit')
     except Exception as err:
         logger.error('schema_patches: failed to add invoices.is_over_berth_limit: %s', err)
+        raise
+
+
+def _ensure_invoices_discount_amount() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('invoices'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('invoices')}
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect invoices table: %s', err)
+        return
+
+    if 'discount_amount' in cols:
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(12, 2) '
+            "NOT NULL DEFAULT 0"
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            'ALTER TABLE invoices ADD COLUMN discount_amount NUMERIC(12, 2) NOT NULL DEFAULT 0'
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add invoices.discount_amount manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added invoices.discount_amount')
+    except Exception as err:
+        logger.error('schema_patches: failed to add invoices.discount_amount: %s', err)
+        raise
+
+
+def _ensure_invoices_discount_workflow() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('invoices'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('invoices')}
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect invoices table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        if 'discount_requested_amount' not in cols:
+            stmts.append(
+                text(
+                    'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_requested_amount '
+                    'NUMERIC(12, 2) NOT NULL DEFAULT 0'
+                )
+            )
+        if 'discount_status' not in cols:
+            stmts.append(
+                text(
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_status "
+                    "VARCHAR(20) NOT NULL DEFAULT 'none'"
+                )
+            )
+        if 'discount_reviewed_at' not in cols:
+            stmts.append(
+                text(
+                    'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_reviewed_at TIMESTAMPTZ'
+                )
+            )
+        if 'discount_reviewed_by' not in cols:
+            stmts.append(
+                text(
+                    'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_reviewed_by INTEGER '
+                    'REFERENCES users(id) ON DELETE SET NULL'
+                )
+            )
+        if 'discount_reject_reason' not in cols:
+            stmts.append(
+                text('ALTER TABLE invoices ADD COLUMN IF NOT EXISTS discount_reject_reason TEXT')
+            )
+    elif dialect == 'sqlite':
+        if 'discount_requested_amount' not in cols:
+            stmts.append(
+                text(
+                    'ALTER TABLE invoices ADD COLUMN discount_requested_amount '
+                    'NUMERIC(12, 2) NOT NULL DEFAULT 0'
+                )
+            )
+        if 'discount_status' not in cols:
+            stmts.append(
+                text(
+                    "ALTER TABLE invoices ADD COLUMN discount_status VARCHAR(20) NOT NULL DEFAULT 'none'"
+                )
+            )
+        if 'discount_reviewed_at' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN discount_reviewed_at DATETIME'))
+        if 'discount_reviewed_by' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN discount_reviewed_by INTEGER'))
+        if 'discount_reject_reason' not in cols:
+            stmts.append(text('ALTER TABLE invoices ADD COLUMN discount_reject_reason TEXT'))
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add invoice discount workflow columns manually',
+            dialect,
+        )
+        return
+
+    if not stmts:
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+            conn.execute(
+                text(
+                    """
+                    UPDATE invoices
+                    SET discount_status = 'approved',
+                        discount_requested_amount = discount_amount
+                    WHERE discount_amount > 0
+                      AND (discount_status IS NULL OR discount_status = 'none')
+                    """
+                )
+            )
+        _patch_done('ensured invoice discount workflow columns')
+    except Exception as err:
+        logger.error('schema_patches: failed to add invoice discount workflow columns: %s', err)
         raise
 
 
@@ -1004,7 +1233,11 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_invoices_creation_source()
     _ensure_detections_audit_image_path()
     _ensure_fee_configs_berth_limit()
+    _ensure_fee_configs_penalty_fields()
     _ensure_invoices_is_over_berth_limit()
+    _ensure_invoices_is_outside_operating_hours()
+    _ensure_invoices_discount_amount()
+    _ensure_invoices_discount_workflow()
     _ensure_invoices_financial_snapshots()
     _ensure_camera_groups()
     _ensure_camera_groups_layout_pipeline()

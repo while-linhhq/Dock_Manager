@@ -47,6 +47,9 @@ export type FeeConfigCreate = {
   effective_to?: string | null;
   berth_limit_count?: number | null;
   berth_limit_unit?: 'day' | 'month' | null;
+  over_limit_penalty_amount?: number | null;
+  outside_hours_penalty_amount?: number | null;
+  operating_hours?: Record<string, unknown> | null;
 }
 
 export type FeeConfigUpdatePayload = {
@@ -58,6 +61,9 @@ export type FeeConfigUpdatePayload = {
   effective_to?: string | null;
   berth_limit_count?: number | null;
   berth_limit_unit?: 'day' | 'month' | null;
+  over_limit_penalty_amount?: number | null;
+  outside_hours_penalty_amount?: number | null;
+  operating_hours?: Record<string, unknown> | null;
 }
 
 export type SepayBankInfo = {
@@ -70,6 +76,11 @@ export type SepayBankInfo = {
 export type InvoicePaymentStatus = {
   payment_status: string;
   paid_at?: string | null;
+};
+
+export type InvoiceUpdatePayload = {
+  discount_requested_amount?: number;
+  notes?: string;
 };
 
 export type InvoiceListParams = {
@@ -125,6 +136,12 @@ export const revenueApi = {
         unit_price: it.unit_price,
       })),
     });
+  },
+  updateInvoice: async (
+    id: string | number,
+    data: InvoiceUpdatePayload,
+  ): Promise<InvoiceRead> => {
+    return httpClient.put<InvoiceRead>(`/invoices/${id}`, data);
   },
   deleteInvoice: async (id: string | number): Promise<void> => {
     await httpClient.delete(`/invoices/${id}`);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { DollarSign, FileSpreadsheet, Loader2, Plus, Trash2 } from 'lucide-react';
+import { DollarSign, FileSpreadsheet, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../../components/TableFilterPanel/TableFilterPanel';
 import type { FeeConfigRead, VesselTypeRead } from '../../../types/api.types';
 import { formatFeeConfigDisplay } from '../../../utils/fee-billing-unit';
+import { summarizeOperatingHours, operatingHoursFromApi } from '../types/fee-operating-hours';
 import { feeConfigVesselTypeLabel } from '../utils/revenue-fee-helpers';
 
 export type RevenueFeesSectionProps = {
@@ -202,6 +203,22 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                     {fee.berth_limit_unit === 'day' ? 'ngày' : 'tháng'}
                   </p>
                 ) : null}
+                {fee.over_limit_penalty_amount != null && Number(fee.over_limit_penalty_amount) > 0 ? (
+                  <p className="text-[10px] text-rose-600 dark:text-rose-400 tracking-widest mt-1">
+                    Phạt vượt giới hạn: {Number(fee.over_limit_penalty_amount).toLocaleString('vi-VN')} ₫/lượt
+                  </p>
+                ) : null}
+                {fee.operating_hours ? (
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 leading-snug">
+                    Giờ neo: {summarizeOperatingHours(operatingHoursFromApi(fee.operating_hours))}
+                  </p>
+                ) : null}
+                {fee.outside_hours_penalty_amount != null &&
+                Number(fee.outside_hours_penalty_amount) > 0 ? (
+                  <p className="text-[10px] text-violet-600 dark:text-violet-400 tracking-widest mt-1">
+                    Phạt ngoài giờ: {Number(fee.outside_hours_penalty_amount).toLocaleString('vi-VN')} ₫/lượt
+                  </p>
+                ) : null}
               </div>
               <div className="pt-4 border-t border-gray-100 dark:border-white/5 flex justify-between items-end gap-3">
                 <div className="min-w-0 flex-1">
@@ -210,22 +227,31 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                     {formatFeeConfigDisplay(fee.base_fee, fee.unit)}
                   </p>
                 </div>
-                <div className="flex flex-col items-end gap-2 shrink-0">
+                <div className="flex items-end gap-1 shrink-0">
                   <button
                     type="button"
                     onClick={() => onEditFee(fee)}
-                    className="text-[10px] font-bold text-gray-500 hover:text-blue-600 uppercase tracking-widest transition-colors"
+                    className={cn(
+                      'p-2 rounded-lg transition-colors',
+                      'text-gray-500 hover:text-blue-600 hover:bg-blue-50 dark:text-gray-400 dark:hover:text-blue-400 dark:hover:bg-blue-500/10',
+                    )}
+                    title="Chỉnh sửa"
+                    aria-label="Chỉnh sửa"
                   >
-                    Chỉnh Sửa
+                    <Pencil className="w-4 h-4" />
                   </button>
                   <button
                     type="button"
                     onClick={() => onDeleteFee(fee)}
                     disabled={isLoading}
-                    className="inline-flex items-center gap-1 text-[10px] font-bold text-red-600/90 hover:text-red-500 uppercase tracking-widest transition-colors disabled:opacity-50"
+                    className={cn(
+                      'p-2 rounded-lg transition-colors',
+                      'text-red-600 hover:text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10 disabled:opacity-50',
+                    )}
+                    title="Xóa"
+                    aria-label="Xóa"
                   >
-                    <Trash2 className="w-3 h-3" />
-                    Xóa
+                    <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from '../../utils/cn';
 
@@ -8,28 +9,53 @@ interface ModalProps {
   title: string;
   children: React.ReactNode;
   className?: string;
+  bodyClassName?: string;
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, className }) => {
-  if (!isOpen) return null;
+export const Modal: React.FC<ModalProps> = ({
+  isOpen,
+  onClose,
+  title,
+  children,
+  className,
+  bodyClassName,
+}) => {
+  if (!isOpen) {
+    return null;
+  }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className={cn(
-        "relative bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200",
-        className
-      )}>
-        <div className="flex items-center justify-between p-6 border-b border-gray-100 dark:border-white/5">
-          <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-widest">{title}</h3>
-          <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-white transition-colors">
-            <X className="w-5 h-5" />
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4">
+      <div
+        className="absolute inset-0 z-0 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={cn(
+          'relative z-10 flex w-full max-w-lg max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden',
+          'rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#121214]',
+          'animate-in zoom-in-95 duration-200',
+          className,
+        )}
+      >
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-white/5">
+          <h3 className="pr-2 text-xs font-bold uppercase tracking-widest text-gray-900 dark:text-white">
+            {title}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="p-6">
-          {children}
-        </div>
+        <div className={cn('min-h-0 flex-1 overflow-hidden p-4', bodyClassName)}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };

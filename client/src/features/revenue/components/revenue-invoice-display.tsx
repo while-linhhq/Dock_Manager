@@ -1,9 +1,9 @@
-import React from 'react';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import type { InvoiceRead } from '../../../types/api.types';
 
 export { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
+export { OutsideHoursBadge } from '../../../components/Badge/OutsideHoursBadge';
 
 /** Số phút neo đậu từ API (seconds hoặc hours); null nếu không có dữ liệu. */
 export function getInvoiceBerthMinutes(inv: {
@@ -23,6 +23,20 @@ export function getInvoiceBerthMinutes(inv: {
   return totalSeconds / 60;
 }
 
+export function formatInvoiceBerthDurationLabel(inv: {
+  berth_duration_seconds?: number | null;
+  berth_duration_hours?: number | string | null;
+}): string {
+  const berthMinutes = getInvoiceBerthMinutes(inv);
+  if (berthMinutes === null) {
+    return '—';
+  }
+  const totalSeconds = Math.round(berthMinutes * 60);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} phút ${seconds} giây`;
+}
+
 export function normInvoicePaymentStatus(
   status: string,
 ): 'paid' | 'partial' | 'unpaid' | 'overdue' | 'cancelled' {
@@ -38,12 +52,66 @@ export function isInvoicePayable(inv: Pick<InvoiceRead, 'payment_status'>): bool
   return normInvoicePaymentStatus(inv.payment_status) !== 'paid';
 }
 
-export function getInvoiceDisplayAmount(inv: Pick<InvoiceRead, 'total_amount'>): number {
-  const n = Number(inv.total_amount ?? 0);
-  return Number.isFinite(n) ? n : 0;
+export type InvoiceAmountFields = Pick<
+  InvoiceRead,
+  'subtotal' | 'tax_amount' | 'total_amount' | 'discount_amount' | 'discount_status'
+>;
+
+export function getInvoiceDiscountStatus(
+  inv: Pick<InvoiceRead, 'discount_status'>,
+): 'none' | 'pending' | 'approved' | 'rejected' {
+  const raw = String(inv.discount_status ?? 'none').toLowerCase();
+  if (raw === 'pending' || raw === 'approved' || raw === 'rejected') {
+    return raw;
+  }
+  return 'none';
 }
 
-export function sumInvoiceDisplayAmounts(invoices: Pick<InvoiceRead, 'total_amount'>[]): number {
+export function getInvoiceApprovedDiscount(
+  inv: Pick<InvoiceRead, 'discount_amount' | 'discount_status'>,
+): number {
+  if (getInvoiceDiscountStatus(inv) !== 'approved') {
+    return 0;
+  }
+  const amount = Number(inv.discount_amount ?? 0);
+  return Number.isFinite(amount) ? Math.max(0, amount) : 0;
+}
+
+export function getInvoiceRequestedDiscount(
+  inv: Pick<InvoiceRead, 'discount_requested_amount'>,
+): number {
+  const amount = Number(inv.discount_requested_amount ?? 0);
+  return Number.isFinite(amount) ? Math.max(0, amount) : 0;
+}
+
+export function getInvoiceGrossAmount(inv: InvoiceAmountFields): number {
+  const sub = Number(inv.subtotal ?? 0);
+  const tax = Number(inv.tax_amount ?? 0);
+  const fromItems = (Number.isFinite(sub) ? sub : 0) + (Number.isFinite(tax) ? tax : 0);
+  if (fromItems > 0) {
+    return fromItems;
+  }
+  const total = Number(inv.total_amount ?? 0);
+  const disc = Number(inv.discount_amount ?? 0);
+  const gross = (Number.isFinite(total) ? total : 0) + (Number.isFinite(disc) ? disc : 0);
+  return Math.max(0, gross);
+}
+
+export function getInvoiceNetAmount(inv: InvoiceAmountFields): number {
+  const gross = getInvoiceGrossAmount(inv);
+  const discount = getInvoiceApprovedDiscount(inv);
+  return Math.max(0, gross - Math.min(discount, gross));
+}
+
+export function getInvoiceDisplayAmount(inv: InvoiceAmountFields): number {
+  const stored = Number(inv.total_amount ?? 0);
+  if (Number.isFinite(stored) && stored > 0) {
+    return stored;
+  }
+  return getInvoiceNetAmount(inv);
+}
+
+export function sumInvoiceDisplayAmounts(invoices: InvoiceAmountFields[]): number {
   return invoices.reduce((acc, inv) => acc + getInvoiceDisplayAmount(inv), 0);
 }
 
@@ -56,8 +124,9 @@ export function renderInvoiceRefFeesCell(inv: InvoiceRead) {
   if (!inv.items?.length) {
     return '—';
   }
+
   return (
-    <ul className="m-0 max-w-[14rem] list-none space-y-1 p-0">
+    <ul className="m-0 min-w-0 list-none space-y-0.5 p-0">
       {inv.items.map((it, idx) => {
         const unit = it.fee_config?.unit ?? null;
         const unitLabel =
@@ -72,7 +141,7 @@ export function renderInvoiceRefFeesCell(inv: InvoiceRead) {
                   : '';
         const price = Number(it.unit_price ?? 0);
         return (
-          <li key={it.id ?? idx} className={cn(dt.bodyMuted, 'leading-snug')}>
+          <li key={it.id ?? idx} className="text-xs leading-snug text-gray-600 dark:text-gray-300">
             <span className="font-medium text-gray-800 dark:text-gray-200">
               {(it.fee_config?.fee_name || 'Dòng phí').trim()}:
             </span>{' '}
@@ -101,9 +170,21 @@ export const paymentStatusLabels: Record<string, string> = {
 };
 
 export function formatInvoiceTotalCell(inv: InvoiceRead, aiTab: boolean) {
-  const n = Number(inv.total_amount ?? 0);
-  if (aiTab && n === 0) {
+  const gross = getInvoiceGrossAmount(inv);
+  const net = getInvoiceNetAmount(inv);
+  const status = getInvoiceDiscountStatus(inv);
+  const pending = getInvoiceRequestedDiscount(inv);
+  if (aiTab && gross <= 0 && net <= 0) {
     return <span className={cn(dt.bodyMuted)}>—</span>;
   }
-  return <>{formatMoney(inv.total_amount)} ₫</>;
+  return (
+    <>
+      {formatMoney(net)} ₫
+      {status === 'pending' && pending > 0 ? (
+        <span className="mt-0.5 block text-[10px] font-medium text-amber-600 dark:text-amber-400">
+          Chờ duyệt: {formatMoney(pending)} ₫
+        </span>
+      ) : null}
+    </>
+  );
 }

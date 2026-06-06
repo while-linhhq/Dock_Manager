@@ -80,6 +80,9 @@ class InvoiceBase(BaseModel):
     detection_id: Optional[int] = None
     subtotal: Optional[Decimal] = None
     tax_amount: Optional[Decimal] = None
+    discount_amount: Decimal = Decimal('0')
+    discount_requested_amount: Decimal = Decimal('0')
+    discount_status: str = 'none'
     total_amount: Decimal
     payment_status: str = 'UNPAID'
     due_date: Optional[date] = None
@@ -94,6 +97,7 @@ class InvoiceCreate(BaseModel):
     detection_id: Optional[int] = None
     subtotal: Optional[Decimal] = None
     tax_amount: Optional[Decimal] = None
+    discount_amount: Optional[Decimal] = None
     total_amount: Optional[Decimal] = None
     payment_status: str = 'UNPAID'
     due_date: Optional[date] = None
@@ -110,10 +114,15 @@ class InvoiceUpdate(BaseModel):
     detection_id: Optional[int] = None
     subtotal: Optional[Decimal] = None
     tax_amount: Optional[Decimal] = None
+    discount_requested_amount: Optional[Decimal] = None
     total_amount: Optional[Decimal] = None
     payment_status: Optional[str] = None
     due_date: Optional[date] = None
     notes: Optional[str] = None
+
+
+class DiscountReject(BaseModel):
+    reason: Optional[str] = None
 
 
 class InvoiceRead(InvoiceBase):
@@ -134,9 +143,15 @@ class InvoiceRead(InvoiceBase):
     berth_duration_hours: Optional[Decimal] = None
     berth_duration_seconds: Optional[int] = None
     is_over_berth_limit: bool = False
+    is_outside_operating_hours: bool = False
     vessel_ship_id_snapshot: Optional[str] = None
     vessel_type_name_snapshot: Optional[str] = None
     financial_locked_at: Optional[datetime] = None
+    discount_reviewed_at: Optional[datetime] = None
+    discount_reviewed_by: Optional[int] = None
+    discount_reject_reason: Optional[str] = None
+    discount_reviewer: Optional[InvoiceCreatorBrief] = None
+    discount_reviewed_by_label: str = '—'
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -185,6 +200,15 @@ class InvoiceRead(InvoiceBase):
                     )
                 except Exception:
                     pass
+
+        if self.discount_reviewer is not None:
+            reviewer = self.discount_reviewer
+            updates['discount_reviewed_by_label'] = (
+                (reviewer.full_name or '').strip()
+                or (reviewer.email or '').strip()
+                or (reviewer.username or '').strip()
+                or str(reviewer.id)
+            )
 
         if src == 'AI':
             updates['created_by_label'] = 'AI'

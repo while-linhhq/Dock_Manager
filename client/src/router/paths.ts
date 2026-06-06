@@ -3,6 +3,7 @@ export const PATHS = {
   LOGIN: '/login',
   ORDERS: '/orders',
   REVENUE: '/revenue',
+  DISCOUNT_APPROVAL: '/discount-approval',
   VESSELS: '/vessels',
   PORT: '/port',
   CAMERA_FUSION: '/cameras/fusion',

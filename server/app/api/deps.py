@@ -37,3 +37,14 @@ def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exception
     return user
+
+
+def require_discount_approver(current_user=Depends(get_current_user)):
+    from app.utils.rbac import can_approve_discount
+
+    if not can_approve_discount(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Không có quyền duyệt giảm giá',
+        )
+    return current_user

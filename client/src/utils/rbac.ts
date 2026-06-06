@@ -4,6 +4,7 @@ export type MenuKey =
   | 'dashboard'
   | 'orders'
   | 'revenue'
+  | 'discount_approval'
   | 'vessels'
   | 'port'
   | 'stats'
@@ -15,6 +16,7 @@ export const ALL_MENU_KEYS: MenuKey[] = [
   'dashboard',
   'orders',
   'revenue',
+  'discount_approval',
   'vessels',
   'port',
   'stats',
@@ -27,6 +29,7 @@ const MENU_ALIAS: Record<MenuKey, string[]> = {
   dashboard: ['dashboard', 'home'],
   orders: ['orders'],
   revenue: ['revenue', 'billing', 'invoices'],
+  discount_approval: ['discount_approval', 'discount-approval', 'discount'],
   vessels: ['vessels', 'ships'],
   port: ['port'],
   stats: ['stats', 'statistics'],

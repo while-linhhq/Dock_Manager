@@ -3,7 +3,14 @@ import { Banknote, QrCode } from 'lucide-react';
 import { Modal } from '../../../components/Modal/Modal';
 import { cn } from '../../../utils/cn';
 import type { InvoiceRead } from '../../../types/api.types';
-import { formatMoney } from './revenue-invoice-display';
+import {
+  formatMoney,
+  getInvoiceApprovedDiscount,
+  getInvoiceDiscountStatus,
+  getInvoiceGrossAmount,
+  getInvoiceNetAmount,
+  getInvoiceRequestedDiscount,
+} from './revenue-invoice-display';
 
 export type PaymentMethodChoice = 'transfer' | 'cash';
 
@@ -24,7 +31,11 @@ export const PaymentMethodChoiceModal: React.FC<PaymentMethodChoiceModalProps> =
     return null;
   }
 
-  const amount = Number(invoice.total_amount ?? 0);
+  const gross = getInvoiceGrossAmount(invoice);
+  const discountStatus = getInvoiceDiscountStatus(invoice);
+  const approvedDiscount = getInvoiceApprovedDiscount(invoice);
+  const pendingDiscount = getInvoiceRequestedDiscount(invoice);
+  const amount = getInvoiceNetAmount(invoice);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Chọn Phương Thức Thanh Toán">
@@ -34,6 +45,21 @@ export const PaymentMethodChoiceModal: React.FC<PaymentMethodChoiceModalProps> =
           <p className="mt-1 font-mono text-sm font-bold text-gray-900 dark:text-white">
             {invoice.invoice_number}
           </p>
+          {gross > 0 ? (
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              Tạm tính: <span className="font-mono">{formatMoney(gross)} ₫</span>
+            </p>
+          ) : null}
+          {approvedDiscount > 0 ? (
+            <p className="mt-1 text-xs font-mono text-emerald-600 dark:text-emerald-400">
+              Giảm giá (đã duyệt): −{formatMoney(approvedDiscount)} ₫
+            </p>
+          ) : null}
+          {discountStatus === 'pending' && pendingDiscount > 0 ? (
+            <p className="mt-1 text-xs font-mono text-amber-600 dark:text-amber-400">
+              Giảm giá (chờ duyệt): {formatMoney(pendingDiscount)} ₫ — chưa trừ vào tổng
+            </p>
+          ) : null}
           <p className="mt-2 text-lg font-bold text-blue-600 dark:text-blue-400">
             {formatMoney(amount)} ₫
           </p>

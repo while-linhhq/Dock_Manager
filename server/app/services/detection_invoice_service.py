@@ -16,6 +16,7 @@ from app.repositories.fee_config_repository import fee_config_repo
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.vessel_repository import vessel_repo
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate
+from app.services.fee_penalty_service import build_penalty_items
 from app.services.invoice_service import invoice_service
 from app.services.ship_id_utils import is_unknown_ship_id
 from app.utils.fee_billing_unit import normalize_fee_billing_unit
@@ -115,6 +116,14 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
                         amount=Decimal('0'),
                     )
                 )
+
+        penalty_items = build_penalty_items(
+            db,
+            detection=det,
+            vessel=vessel,
+            fees=fees,
+        )
+        items.extend(penalty_items)
 
         if not items:
             _log.info('Skip AI invoice detection_id=%s: all fee items resolved to none', detection_id)

@@ -1,10 +1,12 @@
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.db.session import get_db
-from app.api.deps import get_current_user
-from app.schemas.invoice import InvoiceCreate, InvoiceRead, InvoiceUpdate
+from app.api.deps import get_current_user, require_discount_approver
+from app.schemas.invoice import DiscountReject, InvoiceCreate, InvoiceRead, InvoiceUpdate
 from app.schemas.payment import (
     BulkPaymentCreate,
     BulkPaymentRead,
@@ -18,8 +20,10 @@ from app.repositories.invoice_repository import invoice_repo
 from app.repositories.order_repository import order_repo
 from app.repositories.payment_repository import payment_repo
 from app.services.detection_invoice_service import backfill_missing_ai_invoices
+from app.services.discount_approval_service import approve_discount, reject_discount, request_discount
 from app.services.invoice_service import invoice_service
 from app.services.berth_limit_service import compute_invoice_over_berth_limit
+from app.services.fee_penalty_service import compute_invoice_outside_operating_hours
 from app.services.invoice_snapshot_service import is_invoice_financially_locked
 from app.services.bulk_sepay_service import create_bulk_sepay_session, sync_bulk_sepay_session
 from app.services.invoice_payment_service import bulk_record_payments
@@ -33,7 +37,13 @@ def _invoice_to_read(db: Session, inv) -> InvoiceRead:
     if is_invoice_financially_locked(inv):
         return payload
     over = compute_invoice_over_berth_limit(db, inv)
-    return payload.model_copy(update={'is_over_berth_limit': over})
+    outside = compute_invoice_outside_operating_hours(db, inv)
+    return payload.model_copy(
+        update={
+            'is_over_berth_limit': over,
+            'is_outside_operating_hours': outside,
+        },
+    )
 
 
 @router.get('/', response_model=List[InvoiceRead])
@@ -64,6 +74,21 @@ def list_invoices(
         creation_source=creation_source,
         exclude_creation_source=exclude_creation_source,
     )
+    return [_invoice_to_read(db, inv) for inv in rows]
+
+
+@router.get('/discount-requests', response_model=List[InvoiceRead])
+def list_discount_requests(
+    status: str = Query('pending', description='pending | approved | rejected'),
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _=Depends(require_discount_approver),
+):
+    normalized = (status or 'pending').strip().lower()
+    if normalized not in {'pending', 'approved', 'rejected'}:
+        raise HTTPException(status_code=422, detail='status không hợp lệ')
+    rows = invoice_repo.get_by_discount_status(db, normalized, skip=skip, limit=limit)
     return [_invoice_to_read(db, inv) for inv in rows]
 
 
@@ -226,9 +251,54 @@ def update_invoice(
                 detail='Hóa đơn đã thanh toán — không thể sửa thông tin tài chính hoặc mã tàu.',
             )
 
+    if 'discount_requested_amount' in payload:
+        try:
+            requested = Decimal(str(payload['discount_requested_amount'])).quantize(Decimal('0.01'))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail='discount_requested_amount không hợp lệ') from exc
+        try:
+            updated_inv = request_discount(db, obj, requested)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _invoice_to_read(db, updated_inv)
+
+    payload.pop('discount_amount', None)
     updated = invoice_repo.update(db, invoice_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail='Invoice not found')
+    return _invoice_to_read(db, updated)
+
+
+@router.post('/{invoice_id:int}/discount/approve', response_model=InvoiceRead)
+def approve_invoice_discount(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_discount_approver),
+):
+    obj = invoice_repo.get(db, invoice_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    try:
+        updated = approve_discount(db, obj, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _invoice_to_read(db, updated)
+
+
+@router.post('/{invoice_id:int}/discount/reject', response_model=InvoiceRead)
+def reject_invoice_discount(
+    invoice_id: int,
+    data: DiscountReject,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_discount_approver),
+):
+    obj = invoice_repo.get(db, invoice_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail='Invoice not found')
+    try:
+        updated = reject_discount(db, obj, current_user.id, data.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _invoice_to_read(db, updated)
 
 

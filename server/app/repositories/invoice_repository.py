@@ -26,6 +26,7 @@ class InvoiceRepository:
                 joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
                 joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
                 joinedload(Invoice.detection),
+                joinedload(Invoice.discount_reviewer),
             )
             .filter(Invoice.id == invoice_id)
         )
@@ -43,7 +44,7 @@ class InvoiceRepository:
 
     def generate_unique_invoice_number(self, db: Session) -> str:
         for _ in range(16):
-            cand = f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(3).upper()}"
+            cand = f"INV-{datetime.now(timezone.utc).strftime('%y%m%d')}-{secrets.token_hex(3).upper()}"
             if self.get_by_number(db, cand) is None:
                 return cand
         raise RuntimeError('Could not allocate unique invoice_number')
@@ -133,6 +134,31 @@ class InvoiceRepository:
             )
         return q.offset(skip).limit(limit).all()
 
+    def get_by_discount_status(
+        self,
+        db: Session,
+        status: str,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List[Invoice]:
+        normalized = (status or 'pending').strip().lower()
+        return (
+            db.query(Invoice)
+            .options(
+                joinedload(Invoice.creator),
+                joinedload(Invoice.discount_reviewer),
+                joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
+                joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
+                joinedload(Invoice.detection),
+            )
+            .filter(Invoice.deleted_at.is_(None))
+            .filter(Invoice.discount_status == normalized)
+            .order_by(Invoice.updated_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
     def get_all_revenue_export(self, db: Session) -> List[Invoice]:
         """Mọi hóa đơn quản lý thu nhập: tạo tay + AI, mọi trạng thái, kể cả đã xóa."""
         return (
@@ -200,7 +226,7 @@ class InvoiceRepository:
         if not db_obj:
             return None
         for key, value in data.items():
-            if value is not None:
+            if value is not None or key == 'notes':
                 setattr(db_obj, key, value)
         db.commit()
         db.refresh(db_obj)

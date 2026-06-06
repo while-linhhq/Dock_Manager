@@ -5,7 +5,7 @@ import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import type { InvoiceRead } from '../../../types/api.types';
 import { revenueApi, type SepayBankInfo } from '../services/revenueApi';
-import { formatMoney } from './revenue-invoice-display';
+import { InvoicePaymentSummary } from './InvoicePaymentSummary';
 import { buildSepayQrUrl } from '../utils/sepay-payment-utils';
 
 const POLL_INTERVAL_MS = 3000;
@@ -136,7 +136,7 @@ export const SepayPaymentModal: React.FC<SepayPaymentModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title="Thanh Toán Chuyển Khoản (SEPay)"
-      className="max-w-md"
+      className="max-w-md sm:max-w-lg"
     >
       {isPaid ? (
         <div className="flex flex-col items-center gap-4 py-6 text-center">
@@ -151,19 +151,8 @@ export const SepayPaymentModal: React.FC<SepayPaymentModalProps> = ({
           </p>
         </div>
       ) : (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-white/5">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Hóa đơn</p>
-            <p className="mt-1 font-mono text-sm font-bold text-gray-900 dark:text-white">
-              {invoice.invoice_number}
-            </p>
-            <p className="mt-2 text-[10px] font-bold uppercase tracking-widest text-gray-500">
-              Số tiền
-            </p>
-            <p className="mt-1 text-lg font-bold text-blue-600 dark:text-blue-400">
-              {formatMoney(amount)} ₫
-            </p>
-          </div>
+        <div className="space-y-3">
+          <InvoicePaymentSummary invoice={invoice} />
 
           {isLoadingBank ? (
             <div className="flex justify-center py-8">
@@ -190,7 +179,7 @@ export const SepayPaymentModal: React.FC<SepayPaymentModalProps> = ({
                   <img
                     src={qrUrl}
                     alt="Mã QR chuyển khoản SEPay"
-                    className="h-56 w-56 rounded-xl border border-gray-200 bg-white object-contain p-2 dark:border-white/10"
+                    className="h-40 w-40 max-w-[min(10rem,42vw)] rounded-xl border border-gray-200 bg-white object-contain p-2 sm:h-44 sm:w-44 dark:border-white/10"
                   />
                   <p className="text-center text-[10px] text-gray-500">
                     Quét mã bằng app ngân hàng — nội dung CK phải đúng số hóa đơn

@@ -8,6 +8,7 @@ import { HomePage } from '../pages/HomePage';
 import { LoginPage } from '../pages/LoginPage';
 import { OrdersPage } from '../pages/OrdersPage';
 import { RevenuePage } from '../pages/RevenuePage';
+import { DiscountApprovalPage } from '../pages/DiscountApprovalPage';
 import { VesselsPage } from '../pages/VesselsPage';
 import { PortPage } from '../pages/PortPage';
 import { CameraFusionPage } from '../pages/CameraFusionPage';
@@ -78,6 +79,14 @@ const router = createBrowserRouter([
       { index: true, element: <HomePage /> },
       { path: PATHS.ORDERS, element: <RequireMenuAccess menu="orders"><OrdersPage /></RequireMenuAccess> },
       { path: PATHS.REVENUE, element: <RequireMenuAccess menu="revenue"><RevenuePage /></RequireMenuAccess> },
+      {
+        path: PATHS.DISCOUNT_APPROVAL,
+        element: (
+          <RequireMenuAccess menu="discount_approval">
+            <DiscountApprovalPage />
+          </RequireMenuAccess>
+        ),
+      },
       { path: PATHS.VESSELS, element: <RequireMenuAccess menu="vessels"><VesselsPage /></RequireMenuAccess> },
       { path: PATHS.PORT, element: <RequireMenuAccess menu="port"><PortPage /></RequireMenuAccess> },
       { path: PATHS.CAMERA_FUSION, element: <RequireMenuAccess menu="port"><CameraFusionPage /></RequireMenuAccess> },

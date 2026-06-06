@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.fee import FeeConfigCreate, FeeConfigUpdate, FeeConfigRead
+from app.schemas.fee import FeeConfigCreate, FeeConfigUpdate, FeeConfigRead, _validate_penalty_fields
 from app.repositories.fee_config_repository import fee_config_repo
 from app.services.ship_invoice_backfill_service import (
     fee_config_triggers_backfill,
@@ -59,7 +59,25 @@ def update_fee_config(
     if not before:
         raise HTTPException(status_code=404, detail='Fee config not found')
 
-    updated = fee_config_repo.update(db, fee_id, data.model_dump(exclude_unset=True))
+    patch = data.model_dump(exclude_unset=True)
+    try:
+        _validate_penalty_fields(
+            berth_limit_count=patch.get('berth_limit_count', before.berth_limit_count),
+            berth_limit_unit=patch.get('berth_limit_unit', before.berth_limit_unit),
+            over_limit_penalty_amount=patch.get(
+                'over_limit_penalty_amount',
+                before.over_limit_penalty_amount,
+            ),
+            outside_hours_penalty_amount=patch.get(
+                'outside_hours_penalty_amount',
+                before.outside_hours_penalty_amount,
+            ),
+            operating_hours=patch.get('operating_hours', before.operating_hours),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    updated = fee_config_repo.update(db, fee_id, patch)
     if not updated:
         raise HTTPException(status_code=404, detail='Fee config not found')
 
