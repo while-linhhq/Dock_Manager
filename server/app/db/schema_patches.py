@@ -642,11 +642,11 @@ def _ensure_training_snapshot_port_configs() -> None:
         ),
         'training_snapshot_base_dir': (
             'snapshot',
-            'Directory under server/ for training snapshots (ship_id subfolders + others).',
+            'Directory under server/ for training data: ship_id crops, others/, and yolo/images+labels.',
         ),
         'training_snapshot_jpeg_quality': (
             '95',
-            'JPEG quality (50-100) for saved training crops.',
+            'JPEG quality (50-100) for training crops and YOLO full frames.',
         ),
     }
 

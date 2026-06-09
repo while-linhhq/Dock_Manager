@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     QDRANT_VECTOR_SIZE: int = 768
     QDRANT_DISTANCE: str = "COSINE"
 
-    # Training snapshot collection (crop saves for model training)
+    # Training snapshot collection (crops + snapshot/yolo full-frame labels for YOLO)
     ENABLE_TRAINING_SNAPSHOT: bool = False
     TRAINING_SNAPSHOT_INTERVAL_SEC: float = 5.0
     TRAINING_SNAPSHOT_BASE_DIR: str = "snapshot"

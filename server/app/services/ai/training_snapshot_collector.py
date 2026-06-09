@@ -17,6 +17,8 @@ from app.utils.ai.pipeline_utils import clamp_box, ocr_cache_key_track
 logger = logging.getLogger(__name__)
 
 OTHERS_DIR = 'others'
+YOLO_SUBDIR = 'yolo'
+YOLO_BOAT_CLASS_ID = 0
 _SAFE_SHIP_ID_PATTERN = re.compile(r'[^A-Za-z0-9._-]+')
 
 
@@ -28,14 +30,41 @@ class TrainingSnapshotConfig:
     jpeg_quality: int = 95
 
 
+def format_yolo_label(
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    image_width: int,
+    image_height: int,
+    *,
+    class_id: int = YOLO_BOAT_CLASS_ID,
+) -> str:
+    """YOLO detection line: class x_center y_center width height (normalized 0–1)."""
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError('image dimensions must be positive')
+    x_center = ((x1 + x2) / 2) / image_width
+    y_center = ((y1 + y2) / 2) / image_height
+    box_w = (x2 - x1) / image_width
+    box_h = (y2 - y1) / image_height
+    return (
+        f'{class_id} {x_center:.6f} {y_center:.6f} {box_w:.6f} {box_h:.6f}\n'
+    )
+
+
 class TrainingSnapshotCollector:
-    """Save full-quality vessel crops for model training under base_dir/<ship_id>/ or others/."""
+    """
+    Save training data under base_dir:
+    - <ship_id>/ or others/ — vessel JPEG crops
+    - yolo/images + yolo/labels — full-frame JPEG + YOLO txt (same capture cadence)
+    """
 
     def __init__(self, config: TrainingSnapshotConfig) -> None:
         self._config = config
         self._lock = threading.Lock()
         self._last_capture_ts: dict[int, float] = {}
         self._saved_count = 0
+        self._yolo_saved_count = 0
 
     @property
     def enabled(self) -> bool:
@@ -82,30 +111,84 @@ class TrainingSnapshotCollector:
         if crop.size == 0:
             return False
 
-        dest_dir = self._config.base_dir / folder
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        # Use microseconds to avoid filename collisions within the same second.
         millis = int((now - int(now)) * 1000)
         ts = time.strftime('%Y%m%d_%H%M%S', time.localtime(now)) + f'_{millis:03d}'
         short_track = str(track.track_id).replace('/', '_')[-12:]
-        filename = f'{ts}_cam{camera_id}_{short_track}.jpg'
-        out_path = dest_dir / filename
+        stem = f'{ts}_cam{camera_id}_{short_track}'
+        jpeg_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(self._config.jpeg_quality)]
 
-        ok = cv2.imwrite(
-            str(out_path),
-            crop,
-            [int(cv2.IMWRITE_JPEG_QUALITY), int(self._config.jpeg_quality)],
+        dest_dir = self._config.base_dir / folder
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        crop_path = dest_dir / f'{stem}.jpg'
+
+        ok_crop = cv2.imwrite(str(crop_path), crop, jpeg_params)
+        if not ok_crop:
+            return False
+
+        ok_yolo = self._save_yolo_pair(
+            raw_frame=raw_frame,
+            stem=stem,
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            width=width,
+            height=height,
+            jpeg_params=jpeg_params,
         )
-        if ok:
-            self._saved_count += 1
-            logger.debug(
-                'training snapshot saved path=%s ship=%s camera=%s',
-                out_path,
-                folder,
+
+        self._saved_count += 1
+        if ok_yolo:
+            self._yolo_saved_count += 1
+        else:
+            logger.warning(
+                'training snapshot crop saved but YOLO pair failed stem=%s camera=%s',
+                stem,
                 camera_id,
             )
-        return bool(ok)
+
+        logger.debug(
+            'training snapshot saved crop=%s yolo=%s ship=%s camera=%s',
+            crop_path,
+            ok_yolo,
+            folder,
+            camera_id,
+        )
+        return True
+
+    def _save_yolo_pair(
+        self,
+        *,
+        raw_frame: np.ndarray,
+        stem: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        width: int,
+        height: int,
+        jpeg_params: list[int],
+    ) -> bool:
+        images_dir = self._config.base_dir / YOLO_SUBDIR / 'images'
+        labels_dir = self._config.base_dir / YOLO_SUBDIR / 'labels'
+        images_dir.mkdir(parents=True, exist_ok=True)
+        labels_dir.mkdir(parents=True, exist_ok=True)
+
+        image_path = images_dir / f'{stem}.jpg'
+        label_path = labels_dir / f'{stem}.txt'
+
+        if not cv2.imwrite(str(image_path), raw_frame, jpeg_params):
+            return False
+
+        try:
+            label_path.write_text(
+                format_yolo_label(x1, y1, x2, y2, width, height),
+                encoding='utf-8',
+            )
+        except OSError:
+            logger.exception('failed to write YOLO label %s', label_path)
+            return False
+        return True
 
     def _resolve_ship_id(
         self,

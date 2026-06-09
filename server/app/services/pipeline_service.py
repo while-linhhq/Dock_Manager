@@ -1603,7 +1603,12 @@ class PipelineService:
                     jpeg_quality=int(runtime_cfg['training_snapshot_jpeg_quality']),
                 )
             )
-            _log.info('Training snapshot collector enabled base_dir=%s interval_sec=%s', snap_base, runtime_cfg['training_snapshot_interval_sec'])
+            _log.info(
+                'Training snapshot collector enabled base_dir=%s (yolo: %s/yolo) interval_sec=%s',
+                snap_base,
+                snap_base,
+                runtime_cfg['training_snapshot_interval_sec'],
+            )
 
         primary = self._primary_record_camera_id
         for member in ordered_members:
