@@ -17,6 +17,7 @@ from app.models.export_log import ExportLog
 from app.models.camera import Camera
 from app.models.camera_group import CameraGroup, CameraGroupMember
 from app.models.anchored_identity import AnchoredIdentity
+from app.models.boundary_crossing_event import BoundaryCrossingEvent
 
 __all__ = [
     'Role',
@@ -39,4 +40,5 @@ __all__ = [
     'CameraGroup',
     'CameraGroupMember',
     'AnchoredIdentity',
+    'BoundaryCrossingEvent',
 ]

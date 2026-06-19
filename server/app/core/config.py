@@ -88,9 +88,7 @@ class Settings(BaseSettings):
     VISUAL_ID_INTERVAL_SEC: float = 1.0
     VISUAL_MIN_CROP_AREA: int = 4096
     VISUAL_MATCH_THRESHOLD: float = 0.55
-    VISUAL_MARGIN_THRESHOLD: float = 0.08
     VISUAL_TOP_K: int = 20
-    VISUAL_CONSENSUS_COUNT: int = 2
     VISUAL_MODEL_PATH: str = ""
     VISUAL_BACKBONE: str = "vit_base_patch14_dinov2"
     VISUAL_EMBEDDING_DIM: int = 768
@@ -138,6 +136,9 @@ class Settings(BaseSettings):
     # Use long-polling when Cloudflare blocks Zalo webhook (User-Agent Java/1.8.0_192, error 1010)
     ZALO_POLLING_ENABLED: bool = False
     ZALO_MEDIA_TTL_HOURS: int = 168
+    # Wait for detection image (+ video when expected) before sending Zalo notify
+    ZALO_NOTIFY_MEDIA_WAIT_SEC: int = 180
+    ZALO_NOTIFY_MEDIA_POLL_SEC: float = 3.0
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'

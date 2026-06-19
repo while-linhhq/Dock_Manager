@@ -121,8 +121,6 @@ async def lab_visual_search(
             qdrant=qdrant,
             top_k=settings.VISUAL_TOP_K,
             match_threshold=settings.VISUAL_MATCH_THRESHOLD,
-            margin_threshold=settings.VISUAL_MARGIN_THRESHOLD,
-            consensus_count=settings.VISUAL_CONSENSUS_COUNT,
         )
         return {
             'filename': filename,

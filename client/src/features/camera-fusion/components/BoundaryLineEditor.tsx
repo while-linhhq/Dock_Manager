@@ -7,12 +7,11 @@ import { useCameraSnapshot } from '../hooks/useCameraSnapshot';
 
 type Point = { x: number; y: number };
 type FrameRef = { w: number; h: number };
+type ActiveLayer = 1 | 2 | 'zone';
 
 type Props = {
   cameraId: number;
 };
-
-type ActiveLine = 1 | 2;
 
 function normalizeLegacyLine(raw: unknown): Point[] {
   if (Array.isArray(raw)) {
@@ -58,6 +57,22 @@ function toDisplayPoint(point: Point, frameRef: FrameRef, img: HTMLImageElement)
   };
 }
 
+function polygonToDisplay(
+  points: Point[],
+  frameRef: FrameRef,
+  img: HTMLImageElement,
+): string {
+  if (points.length < 3 || frameRef.w <= 0 || frameRef.h <= 0) {
+    return '';
+  }
+  return points
+    .map((point) => {
+      const d = toDisplayPoint(point, frameRef, img);
+      return `${d.x},${d.y}`;
+    })
+    .join(' ');
+}
+
 function polylineToDisplay(
   points: Point[],
   frameRef: FrameRef,
@@ -79,7 +94,9 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
   const imgRef = useRef<HTMLImageElement>(null);
   const [line1Points, setLine1Points] = useState<Point[]>([]);
   const [line2Points, setLine2Points] = useState<Point[]>([]);
-  const [activeLine, setActiveLine] = useState<ActiveLine>(1);
+  const [berthZonePoints, setBerthZonePoints] = useState<Point[]>([]);
+  const [activeLayer, setActiveLayer] = useState<ActiveLayer>(1);
+  const [bboxCrossThreshold, setBboxCrossThreshold] = useState(0.3);
   const [frameRef, setFrameRef] = useState<FrameRef>({ w: 0, h: 0 });
   const [displaySize, setDisplaySize] = useState({ w: 0, h: 0 });
   const [isSaving, setIsSaving] = useState(false);
@@ -89,7 +106,12 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
   const applyBoundaryLines = useCallback((lines: BoundaryLines) => {
     setLine1Points(normalizeLegacyLine(lines.line1));
     setLine2Points(normalizeLegacyLine(lines.line2));
+    setBerthZonePoints(normalizeLegacyLine(lines.berth_zone));
     setFrameRef({ w: lines.frame_w, h: lines.frame_h });
+    const threshold = lines.bbox_cross_threshold;
+    setBboxCrossThreshold(
+      typeof threshold === 'number' && Number.isFinite(threshold) ? threshold : 0.3,
+    );
   }, []);
 
   const syncDisplaySize = useCallback(() => {
@@ -105,7 +127,8 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
     let cancelled = false;
     setLine1Points([]);
     setLine2Points([]);
-    setActiveLine(1);
+    setBerthZonePoints([]);
+    setActiveLayer(1);
     setFrameRef({ w: 0, h: 0 });
     setMessage(null);
 
@@ -177,19 +200,23 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
     if (!native) {
       return;
     }
-    if (activeLine === 1) {
+    if (activeLayer === 1) {
       setLine1Points((prev) => [...prev, native]);
-    } else {
+    } else if (activeLayer === 2) {
       setLine2Points((prev) => [...prev, native]);
+    } else {
+      setBerthZonePoints((prev) => [...prev, native]);
     }
     setMessage(null);
   };
 
   const handleUndo = () => {
-    if (activeLine === 1) {
+    if (activeLayer === 1) {
       setLine1Points((prev) => prev.slice(0, -1));
-    } else {
+    } else if (activeLayer === 2) {
       setLine2Points((prev) => prev.slice(0, -1));
+    } else {
+      setBerthZonePoints((prev) => prev.slice(0, -1));
     }
     setMessage(null);
   };
@@ -200,7 +227,8 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
       await portApi.clearBoundaryLines(cameraId);
       setLine1Points([]);
       setLine2Points([]);
-      setActiveLine(1);
+      setBerthZonePoints([]);
+      setActiveLayer(1);
       const img = imgRef.current;
       setFrameRef({
         w: img?.naturalWidth ?? 0,
@@ -218,8 +246,14 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
     const img = imgRef.current;
     const frameW = frameRef.w > 0 ? frameRef.w : img?.naturalWidth ?? 0;
     const frameH = frameRef.h > 0 ? frameRef.h : img?.naturalHeight ?? 0;
-    if (line1Points.length < 2 || line2Points.length < 2 || frameW <= 0 || frameH <= 0) {
-      setMessage('Mỗi đường cần ít nhất 2 điểm.');
+    if (
+      line1Points.length < 2 ||
+      line2Points.length < 2 ||
+      berthZonePoints.length < 3 ||
+      frameW <= 0 ||
+      frameH <= 0
+    ) {
+      setMessage('Cần L1≥2 điểm, L2≥2 điểm, vùng nhận≥3 điểm.');
       return;
     }
     const toBoundaryPoints = (pts: Point[]): BoundaryPoint[] =>
@@ -230,6 +264,8 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
       frame_h: Math.round(frameH),
       line1: toBoundaryPoints(line1Points),
       line2: toBoundaryPoints(line2Points),
+      berth_zone: toBoundaryPoints(berthZonePoints),
+      bbox_cross_threshold: Math.max(0.05, Math.min(0.95, bboxCrossThreshold)),
     };
     setIsSaving(true);
     try {
@@ -249,13 +285,27 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
   };
 
   const img = imgRef.current;
+  const zoneDisplay =
+    img && berthZonePoints.length >= 3
+      ? polygonToDisplay(berthZonePoints, frameRef, img)
+      : '';
   const line1Polyline =
     img && frameRef.w > 0 ? polylineToDisplay(line1Points, frameRef, img) : '';
   const line2Polyline =
     img && frameRef.w > 0 ? polylineToDisplay(line2Points, frameRef, img) : '';
   void renderTick;
 
-  const activePoints = activeLine === 1 ? line1Points : line2Points;
+  const activePoints =
+    activeLayer === 1
+      ? line1Points
+      : activeLayer === 2
+        ? line2Points
+        : berthZonePoints;
+
+  const canSave =
+    line1Points.length >= 2 &&
+    line2Points.length >= 2 &&
+    berthZonePoints.length >= 3;
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-white/10 dark:bg-[#121214]">
@@ -264,33 +314,61 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
           Vẽ đường biên (camera {cameraId})
         </p>
         <p className="text-xs text-gray-500">
-          Chọn line1/line2, click thêm điểm để tạo đường gấp khúc. Tâm bbox đi line1 → line2 = vào cảng;
-          ngược lại = ra cảng.
+          Vùng nhận (đa giác xanh): IN khi ≥{Math.round(bboxCrossThreshold * 100)}% bbox trong
+          vùng <strong>và</strong> bbox chạm L1 rồi L2. OUT khi &lt;
+          {Math.round(bboxCrossThreshold * 100)}% trong vùng sau IN (không xét line). Mỗi track tối
+          đa 1 IN/OUT; chỉ tạo detection khi đã IN hợp lệ.
         </p>
+      </div>
+
+      <div className="mb-4">
+        <label className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+          % diện tích bbox trong vùng nhận ({Math.round(bboxCrossThreshold * 100)}%)
+        </label>
+        <input
+          type="range"
+          min={0.05}
+          max={0.8}
+          step={0.05}
+          value={bboxCrossThreshold}
+          onChange={(event) => setBboxCrossThreshold(Number(event.target.value))}
+          className="mt-1 w-full max-w-md"
+        />
       </div>
 
       <div className="mb-3 flex flex-wrap gap-2">
         <button
           type="button"
           className={`rounded-lg px-3 py-1 text-xs font-semibold ${
-            activeLine === 1
+            activeLayer === 1
               ? 'bg-green-600 text-white'
               : 'border border-gray-200 text-gray-600 dark:border-white/10 dark:text-gray-300'
           }`}
-          onClick={() => setActiveLine(1)}
+          onClick={() => setActiveLayer(1)}
         >
-          Line 1 — IN ({line1Points.length} điểm)
+          Line 1 ({line1Points.length})
         </button>
         <button
           type="button"
           className={`rounded-lg px-3 py-1 text-xs font-semibold ${
-            activeLine === 2
+            activeLayer === 2
               ? 'bg-red-600 text-white'
               : 'border border-gray-200 text-gray-600 dark:border-white/10 dark:text-gray-300'
           }`}
-          onClick={() => setActiveLine(2)}
+          onClick={() => setActiveLayer(2)}
         >
-          Line 2 — OUT ({line2Points.length} điểm)
+          Line 2 ({line2Points.length})
+        </button>
+        <button
+          type="button"
+          className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+            activeLayer === 'zone'
+              ? 'bg-emerald-700 text-white'
+              : 'border border-gray-200 text-gray-600 dark:border-white/10 dark:text-gray-300'
+          }`}
+          onClick={() => setActiveLayer('zone')}
+        >
+          Vùng nhận ({berthZonePoints.length})
         </button>
       </div>
 
@@ -316,6 +394,14 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
               className="pointer-events-none absolute inset-0 h-full w-full"
               viewBox={`0 0 ${displaySize.w} ${displaySize.h}`}
             >
+              {zoneDisplay ? (
+                <polygon
+                  points={zoneDisplay}
+                  fill="rgba(34,197,94,0.15)"
+                  stroke="#22c55e"
+                  strokeWidth={1}
+                />
+              ) : null}
               {line1Polyline ? (
                 <polyline
                   points={line1Polyline}
@@ -356,6 +442,18 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
                   />
                 );
               })}
+              {berthZonePoints.map((point, index) => {
+                const d = toDisplayPoint(point, frameRef, img);
+                return (
+                  <circle
+                    key={`zone-${index}-${point.x}-${point.y}`}
+                    cx={d.x}
+                    cy={d.y}
+                    r={4}
+                    fill="#22c55e"
+                  />
+                );
+              })}
             </svg>
           ) : null}
         </div>
@@ -364,10 +462,7 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
       )}
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button
-          onClick={handleSave}
-          disabled={isSaving || line1Points.length < 2 || line2Points.length < 2}
-        >
+        <Button onClick={handleSave} disabled={isSaving || !canSave}>
           Lưu
         </Button>
         <Button

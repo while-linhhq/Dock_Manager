@@ -4,6 +4,8 @@ import {
   ClipboardList,
   Coins,
   Loader2,
+  LogIn,
+  LogOut,
   ScanSearch,
   Sparkles,
 } from 'lucide-react';
@@ -13,7 +15,6 @@ import { DashboardAiFeedPanel } from '../components/DashboardAiFeedPanel';
 import { DashboardPeriodToggle } from '../components/DashboardPeriodToggle';
 import { DashboardRecentDetectionsSidebar } from '../components/DashboardRecentDetectionsSidebar';
 import { DashboardRevenueSidebarCharts } from '../components/DashboardRevenueSidebarCharts';
-import { DashboardSystemOverviewWidgets } from '../components/DashboardSystemOverviewWidgets';
 import type { DashboardPeriod } from '../../../types/api.types';
 
 const PERIOD_SUB: Record<DashboardPeriod, string> = {
@@ -71,7 +72,6 @@ const StatCard = ({ label, value, icon: Icon, trend, color, isLoading, subtitle 
 export const DashboardView: React.FC = () => {
   const {
     stats,
-    systemOverview,
     summary,
     summaryPeriod,
     recentDetections,
@@ -147,7 +147,24 @@ export const DashboardView: React.FC = () => {
         />
       </div>
 
-      <DashboardSystemOverviewWidgets data={systemOverview} isLoading={isLoading} />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <StatCard
+          label="INPUT (vượt line vào)"
+          subtitle={periodSubtitle}
+          value={summary?.boundary_in_total ?? 0}
+          icon={LogIn}
+          color="bg-teal-600 shadow-lg shadow-teal-600/20"
+          isLoading={cardsLoading}
+        />
+        <StatCard
+          label="OUTPUT (vượt line ra)"
+          subtitle={periodSubtitle}
+          value={summary?.boundary_out_total ?? 0}
+          icon={LogOut}
+          color="bg-rose-600 shadow-lg shadow-rose-600/20"
+          isLoading={cardsLoading}
+        />
+      </div>
 
       <DashboardAiFeedPanel
         pipelineStatus={pipelineStatus}

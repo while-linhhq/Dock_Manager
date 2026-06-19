@@ -12,6 +12,8 @@ const DEPRECATED_CONFIG_KEYS = new Set([
   'track_max_lost_frames',
   'training_snapshot_min_ocr_confidence',
   'training_snapshot_min_visual_confidence',
+  'visual_margin_threshold',
+  'visual_consensus_count',
 ]);
 import {
   FilterField,
@@ -45,7 +47,7 @@ interface Category {
 const CATEGORIES: Category[] = [
   { id: 'model', label: 'Mô hình & Nhận diện', description: 'Tham số YOLO: model, confidence, imgsz, resize, CLAHE', color: 'text-violet-500 bg-violet-500/10 border-violet-500/20' },
   { id: 'ocr', label: 'OCR', description: 'Nhận diện mã tàu, chu kỳ OCR, log audit', color: 'text-blue-500 bg-blue-500/10 border-blue-500/20' },
-  { id: 'visual', label: 'Visual ID', description: 'Nhận diện tàu bằng đặc trưng sâu (ViT)', color: 'text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20' },
+  { id: 'visual', label: 'Visual ID', description: 'Nhận diện tàu bằng embedding DINOv2 + Qdrant', color: 'text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20' },
   { id: 'redis', label: 'Redis', description: 'Cache runtime cho visual worker', color: 'text-rose-500 bg-rose-500/10 border-rose-500/20' },
   { id: 'qdrant', label: 'Qdrant', description: 'Vector DB cho tìm kiếm embedding tàu', color: 'text-lime-500 bg-lime-500/10 border-lime-500/20' },
   { id: 'snapshot', label: 'Training Snapshot', description: 'Thu thập crop tàu chất lượng cao để train model', color: 'text-sky-500 bg-sky-500/10 border-sky-500/20' },
@@ -79,7 +81,6 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   visual_id_interval_sec: 'visual',
   visual_min_crop_area: 'visual',
   visual_match_threshold: 'visual',
-  visual_margin_threshold: 'visual',
   visual_top_k: 'visual',
   visual_model_path: 'visual',
   visual_backbone: 'visual',
@@ -166,11 +167,11 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   enable_visual_id: 'Bật/tắt nhận diện tàu bằng đặc trưng sâu (manual enrollment + vector search).',
   visual_id_interval_sec: 'Khoảng thời gian (giây) giữa các lần visual-id trên track CONFIRMED.',
   visual_min_crop_area: 'Diện tích crop tối thiểu (pixel) để chạy trích đặc trưng.',
-  visual_match_threshold: 'Ngưỡng điểm similarity để chấp nhận kết quả visual-id.',
-  visual_margin_threshold: 'Chênh lệch tối thiểu top1-top2 để tránh match mơ hồ.',
+  visual_match_threshold:
+    'Ngưỡng similarity (0–1) chấp nhận mã số tàu khi OCR không có kết quả — tương tự detection_confidence_threshold.',
   visual_top_k: 'Số ứng viên gần nhất trả về từ vector search.',
-  visual_model_path: 'Đường dẫn model TorchScript ViT (để trống sẽ dùng backbone mặc định).',
-  visual_backbone: 'Tên backbone cho extractor (ví dụ `vit_base_patch16_224`).',
+  visual_model_path: 'Đường dẫn model TorchScript (để trống = DINOv2 timm mặc định).',
+  visual_backbone: 'Tên backbone timm (mặc định `vit_base_patch14_dinov2`).',
   visual_embedding_dim: 'Kích thước vector embedding đầu ra.',
   visual_batch_size: 'Batch size cho visual embedding worker.',
   visual_device: 'Thiết bị suy luận visual (`0`, `cuda:0`, `cpu`).',

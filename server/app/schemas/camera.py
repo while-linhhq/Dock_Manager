@@ -38,6 +38,16 @@ class BoundaryLines(BaseModel):
     frame_h: int
     line1: list[BoundaryPoint]
     line2: list[BoundaryPoint]
+    berth_zone: list[BoundaryPoint] = []
+    bbox_cross_threshold: float = 0.30
+
+    @field_validator('bbox_cross_threshold', mode='before')
+    @classmethod
+    def coerce_bbox_cross_threshold(cls, value: Any) -> float:
+        if value is None:
+            return 0.30
+        threshold = float(value)
+        return max(0.05, min(0.95, threshold))
 
     @field_validator('frame_w', 'frame_h', mode='before')
     @classmethod

@@ -14,16 +14,8 @@ class IdentityFusionResult:
 
 
 class IdentityFusion:
-    def __init__(
-        self,
-        *,
-        match_threshold: float,
-        margin_threshold: float,
-        consensus_count: int = 2,
-    ) -> None:
+    def __init__(self, *, match_threshold: float) -> None:
         self._match_threshold = float(match_threshold)
-        self._margin_threshold = float(margin_threshold)
-        self._consensus_count = max(1, int(consensus_count))
 
     def fuse(
         self,
@@ -34,8 +26,6 @@ class IdentityFusion:
         decision = resolve_visual_match(
             visual_top_k,
             match_threshold=self._match_threshold,
-            margin_threshold=self._margin_threshold,
-            consensus_count=self._consensus_count,
             ocr_hint=ocr_hint,
         )
         if decision.accepted:

@@ -34,6 +34,11 @@ class DashboardSummaryRead(BaseModel):
     detections_review_unassigned: int
     detection_volume_labels: List[str]
     detection_volume_counts: List[int]
+    boundary_in_total: int
+    boundary_out_total: int
+    boundary_volume_labels: List[str]
+    boundary_in_counts: List[int]
+    boundary_out_counts: List[int]
 
 
 class DashboardSystemOverviewRead(BaseModel):

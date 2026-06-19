@@ -26,6 +26,24 @@ def _draw_polyline(
     cv2.putText(frame, label, scaled[0], cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
 
+def _draw_berth_zone_fill(
+    frame: np.ndarray,
+    config: BoundaryConfig,
+    *,
+    sx: float,
+    sy: float,
+) -> None:
+    if len(config.berth_zone) < 3:
+        return
+    scaled = np.array(
+        [[int(p[0] * sx), int(p[1] * sy)] for p in config.berth_zone],
+        dtype=np.int32,
+    )
+    overlay = frame.copy()
+    cv2.fillPoly(overlay, [scaled], (34, 197, 94))
+    cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+
+
 def draw_boundary_lines(
     frame: np.ndarray,
     config: BoundaryConfig | None,
@@ -35,6 +53,7 @@ def draw_boundary_lines(
     h, w = frame.shape[:2]
     sx = w / max(1, config.frame_w)
     sy = h / max(1, config.frame_h)
+    _draw_berth_zone_fill(frame, config, sx=sx, sy=sy)
     _draw_polyline(frame, config.line1, (0, 200, 0), 'L1', sx=sx, sy=sy)
     _draw_polyline(frame, config.line2, (0, 0, 255), 'L2', sx=sx, sy=sy)
     return frame
@@ -53,7 +72,7 @@ def draw_boundary_lines_on_fused(
     for member in members:
         camera_id = int(member.camera_id)
         raw = boundary_by_camera.get(camera_id)
-        config = BoundaryConfig.from_dict(raw)
+        config = BoundaryConfig.for_overlay(raw)
         if config is None:
             continue
 
@@ -71,6 +90,17 @@ def draw_boundary_lines_on_fused(
             crop_right=int(getattr(member, 'crop_right', 0) or 0),
             enabled=bool(getattr(member, 'enabled', True)),
         )
+
+        if len(config.berth_zone) >= 3:
+            mapped_fill: list[tuple[int, int]] = []
+            for px, py in config.berth_zone:
+                pt = map_camera_point_to_fused_layout(px, py, fusion_member, src_h, src_w)
+                if pt is not None:
+                    mapped_fill.append(pt)
+            if len(mapped_fill) >= 3:
+                overlay = fused.copy()
+                cv2.fillPoly(overlay, [np.array(mapped_fill, dtype=np.int32)], (34, 197, 94))
+                cv2.addWeighted(overlay, 0.15, fused, 0.85, 0, fused)
 
         for points, color, label in (
             (config.line1, (0, 200, 0), 'L1'),

@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Loader2, Play, Ship } from 'lucide-react';
+import { Crop, Loader2, Play, Ship } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { FileDropzone } from './FileDropzone';
 import { aiLabApi } from '../services/aiLabApi';
-import type { LabDetectionFrame, LabDetectionResponse } from '../types/ai-lab.types';
+import { cropBboxAndDownload } from '../utils/crop-bbox-download';
+import type { LabBoatDetection, LabDetectionFrame, LabDetectionResponse } from '../types/ai-lab.types';
 
 const ACCEPT = 'image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,video/x-msvideo';
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.mp4', '.webm', '.mov', '.avi', '.mkv'];
@@ -19,6 +20,8 @@ export const DetectionLabPanel: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LabDetectionResponse | null>(null);
   const [frameIdx, setFrameIdx] = useState(0);
+  const [savingTrackId, setSavingTrackId] = useState<string | null>(null);
+  const [cropError, setCropError] = useState<string | null>(null);
 
   const activeFrame = result?.frames[frameIdx] ?? null;
   const isVideo = result?.media_type === 'video';
@@ -59,6 +62,29 @@ export const DetectionLabPanel: React.FC = () => {
       setResult(null);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const saveBboxCrop = async (boat: LabBoatDetection) => {
+    if (!file || !result || !activeFrame) {
+      return;
+    }
+    setSavingTrackId(boat.track_id);
+    setCropError(null);
+    try {
+      await cropBboxAndDownload({
+        file,
+        mediaType: result.media_type,
+        box: boat.box,
+        timeSec: activeFrame.time_sec,
+        frameIndex: activeFrame.frame_index,
+        sourceFilename: result.filename,
+        trackId: boat.track_id,
+      });
+    } catch (err) {
+      setCropError(err instanceof Error ? err.message : 'Cắt & lưu thất bại');
+    } finally {
+      setSavingTrackId(null);
     }
   };
 
@@ -167,18 +193,40 @@ export const DetectionLabPanel: React.FC = () => {
                 <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
                   Detections
                 </p>
+                {cropError ? (
+                  <p className="text-[11px] text-red-500">{cropError}</p>
+                ) : null}
                 {activeFrame.boats.map((boat) => (
                   <div
                     key={`${boat.track_id}-${boat.box.join('-')}`}
-                    className="rounded-lg bg-gray-50 dark:bg-white/[0.03] px-3 py-2 text-[11px] font-mono"
+                    className="rounded-lg bg-gray-50 dark:bg-white/[0.03] px-3 py-2 text-[11px] font-mono space-y-2"
                   >
-                    <p className="text-gray-900 dark:text-white">Track {boat.track_id}</p>
-                    <p className="text-gray-500">
-                      {boat.state} · conf {(boat.confidence * 100).toFixed(1)}%
-                    </p>
-                    <p className="text-gray-500 truncate">
-                      ship_id: {boat.ship_id ?? '—'}
-                    </p>
+                    <div>
+                      <p className="text-gray-900 dark:text-white">Track {boat.track_id}</p>
+                      <p className="text-gray-500">
+                        {boat.state} · conf {(boat.confidence * 100).toFixed(1)}%
+                      </p>
+                      <p className="text-gray-500 truncate">
+                        ship_id: {boat.ship_id ?? '—'}
+                      </p>
+                      <p className="text-gray-400">
+                        bbox: [{boat.box.join(', ')}]
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 w-full text-[10px] font-bold uppercase tracking-widest inline-flex items-center justify-center gap-1.5"
+                      disabled={!file || savingTrackId === boat.track_id}
+                      onClick={() => void saveBboxCrop(boat)}
+                    >
+                      {savingTrackId === boat.track_id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Crop className="h-3.5 w-3.5" />
+                      )}
+                      Cắt &amp; lưu
+                    </Button>
                   </div>
                 ))}
               </div>

@@ -4,10 +4,83 @@ from __future__ import annotations
 import time
 
 import cv2
+import numpy as np
 
 from app.services.ai.boat_tracker import TrackedBoat, TrackState
 from app.utils.ai.pipeline_utils import ocr_cache_key_track
 from app.utils.ai.time_sync import format_capture_wall_clock
+
+_BERTH_IN_FILL_BGR = (90, 230, 110)
+_BERTH_OUT_FILL_BGR = (110, 190, 255)
+_BERTH_FILL_ALPHA = 0.26
+BERTH_IN_FILL_BGR = _BERTH_IN_FILL_BGR
+BERTH_OUT_FILL_BGR = _BERTH_OUT_FILL_BGR
+BERTH_FILL_ALPHA = _BERTH_FILL_ALPHA
+
+
+def resolve_berth_visual_state(track: TrackedBoat) -> str | None:
+    """Return 'in' / 'out' for berth occupancy overlay, else None."""
+    if track.berth_out_ts is not None:
+        return 'out'
+    if track.berth_in_ts is not None:
+        return 'in'
+    return None
+
+
+def tint_bbox_overlay(
+    frame: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    color_bgr: tuple[int, int, int],
+    alpha: float = _BERTH_FILL_ALPHA,
+) -> None:
+    h, w = frame.shape[:2]
+    x1 = max(0, min(w - 1, int(x1)))
+    y1 = max(0, min(h - 1, int(y1)))
+    x2 = max(0, min(w, int(x2)))
+    y2 = max(0, min(h, int(y2)))
+    if x2 <= x1 or y2 <= y1:
+        return
+    roi = frame[y1:y2, x1:x2]
+    tint = np.full_like(roi, color_bgr, dtype=np.uint8)
+    cv2.addWeighted(tint, alpha, roi, 1.0 - alpha, 0, roi)
+
+
+def _tint_bbox_region(
+    frame: np.ndarray,
+    box: np.ndarray,
+    color_bgr: tuple[int, int, int],
+    alpha: float,
+) -> None:
+    tint_bbox_overlay(
+        frame,
+        int(box[0]),
+        int(box[1]),
+        int(box[2]),
+        int(box[3]),
+        color_bgr,
+        alpha,
+    )
+
+
+def draw_berth_state_bbox_overlays(
+    frame: np.ndarray,
+    tracked_boats: list[TrackedBoat],
+) -> np.ndarray:
+    """Light fill on ship bbox: green when IN berth, soft orange when OUT."""
+    if frame is None or frame.size == 0:
+        return frame
+    for track in tracked_boats:
+        if track.state != TrackState.CONFIRMED:
+            continue
+        state = resolve_berth_visual_state(track)
+        if state is None:
+            continue
+        color = _BERTH_IN_FILL_BGR if state == 'in' else _BERTH_OUT_FILL_BGR
+        _tint_bbox_region(frame, track.box, color, _BERTH_FILL_ALPHA)
+    return frame
 
 
 def draw_ship_detection_overlay(

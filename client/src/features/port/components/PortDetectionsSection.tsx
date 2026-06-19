@@ -173,7 +173,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   return (
     <div className="space-y-6">
       <TableFilterPanel onReset={resetDetFilters} activeCount={detFilterCount}>
-        <FilterField label="Từ khóa (mã tàu / track / vessel id)">
+        <FilterField label="Từ khóa (mã tàu / ID nhận diện / vessel id)">
           <input
             type="text"
             value={detQ}
@@ -268,6 +268,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
             <thead>
               <tr className={dt.headRow}>
                 <th className={dt.pad}>Thời Gian</th>
+                <th className={dt.pad}>ID Nhận Diện</th>
                 <th className={dt.pad}>Mã Tàu</th>
                 <th className={dt.pad}>Độ Tin Cậy</th>
                 <th className={dt.pad}>Ảnh Xác Minh</th>
@@ -278,7 +279,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
             <tbody className="divide-y divide-gray-100 dark:divide-white/5">
               {isLoading && detections.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className={cn(dt.pad, 'py-12 text-center')}>
+                  <td colSpan={7} className={cn(dt.pad, 'py-12 text-center')}>
                     <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
@@ -293,6 +294,12 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                         const iso = getDetectionDisplayTimeIso(det);
                         return formatDateTimeVN(iso);
                       })()}
+                    </td>
+                    <td
+                      className={cn(dt.pad, dt.mono, 'text-gray-600 dark:text-gray-300 max-w-[12rem]')}
+                      title={det.track_id ?? undefined}
+                    >
+                      <span className="block truncate">{det.track_id?.trim() || '—'}</span>
                     </td>
                     <td className={cn(dt.pad, dt.body, 'font-bold uppercase')}>
                       <div className="flex flex-wrap items-center gap-2">
@@ -373,7 +380,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
               ) : (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className={cn(
                       dt.pad,
                       'py-12 text-center font-mono uppercase tracking-wide',

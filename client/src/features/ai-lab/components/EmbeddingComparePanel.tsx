@@ -130,9 +130,7 @@ export const EmbeddingComparePanel: React.FC = () => {
                       <p className="mt-1 text-sm font-mono font-semibold text-gray-900 dark:text-white">
                         {match.ship_id || '—'}
                       </p>
-                      <p className="mt-1 text-xs text-gray-500">
-                        margin {result.margin.toFixed(3)} · source {result.source}
-                      </p>
+                      <p className="mt-1 text-xs text-gray-500">source {result.source}</p>
                     </>
                   ) : (
                     <p className="mt-2 text-sm text-gray-500">Không có match hợp lệ</p>

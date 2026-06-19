@@ -61,6 +61,16 @@ function detectionVolumeChartTitle(p: DashboardPeriod): string {
   return 'Lượt nhận diện theo giờ trong ngày';
 }
 
+function boundaryCrossingChartTitle(p: DashboardPeriod): string {
+  if (p === 'month') {
+    return 'Vượt line — INPUT/OUTPUT theo ngày trong tháng';
+  }
+  if (p === 'year') {
+    return 'Vượt line — INPUT/OUTPUT theo tháng trong năm';
+  }
+  return 'Vượt line — INPUT/OUTPUT theo giờ trong ngày';
+}
+
 export type DashboardAiAnalyticsChartsProps = {
   detections: DetectionRead[];
   stats: DashboardStats | null;
@@ -99,6 +109,34 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
     const fb = buildDetectionsByHourLast24h(detections);
     return { ...fb, fromSummary: false as const };
   }, [summary, detections]);
+
+  const boundarySeries = useMemo(() => {
+    const labels = summary?.boundary_volume_labels;
+    const inCounts = summary?.boundary_in_counts;
+    const outCounts = summary?.boundary_out_counts;
+    if (
+      labels &&
+      labels.length > 0 &&
+      inCounts &&
+      outCounts &&
+      inCounts.length === labels.length &&
+      outCounts.length === labels.length
+    ) {
+      return {
+        categories: labels,
+        inData: inCounts.map((n) => Number(n)),
+        outData: outCounts.map((n) => Number(n)),
+        hasData: true as const,
+      };
+    }
+    return {
+      categories: [] as string[],
+      inData: [] as number[],
+      outData: [] as number[],
+      hasData: false as const,
+    };
+  }, [summary]);
+
   const topShips = useMemo(() => {
     const summaryShipLabels = summary?.top_ship_labels;
     const summaryShipCounts = summary?.top_ship_counts;
@@ -160,6 +198,22 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
       tooltip: { y: { formatter: (v) => `${v} lượt` } },
     };
   }, [base, volumeSeries.categories]);
+
+  const boundaryBarOptions: ApexOptions = useMemo(() => {
+    const many = boundarySeries.categories.length > 14;
+    return {
+      ...base,
+      chart: { ...base.chart, type: 'bar', stacked: false },
+      plotOptions: { bar: { columnWidth: '55%', borderRadius: 4 } },
+      colors: ['#0d9488', '#e11d48'],
+      xaxis: {
+        categories: boundarySeries.categories,
+        labels: { rotate: many ? -45 : 0, rotateAlways: many },
+      },
+      yaxis: { min: 0, tickAmount: 4, labels: { formatter: (v) => String(Math.round(Number(v))) } },
+      tooltip: { y: { formatter: (v) => `${v} lượt` } },
+    };
+  }, [base, boundarySeries.categories]);
 
   const donutOptions: ApexOptions = useMemo(
     () => ({
@@ -279,6 +333,30 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
             type="area"
             height={280}
           />
+        </div>
+
+        <div className="lg:col-span-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-0.5 px-1">
+            {boundaryCrossingChartTitle(summaryPeriod)}
+          </p>
+          <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
+            INPUT = vượt line vào · OUTPUT = vượt line ra · Kỳ: {periodLabelVi(summaryPeriod)} (múi giờ VN)
+          </p>
+          {!boundarySeries.hasData ? (
+            <p className="py-16 text-center text-xs font-mono uppercase tracking-wide text-gray-500">
+              Chưa có sự kiện vượt line trong kỳ
+            </p>
+          ) : (
+            <ReactApexChart
+              options={boundaryBarOptions}
+              series={[
+                { name: 'INPUT (vào)', data: boundarySeries.inData },
+                { name: 'OUTPUT (ra)', data: boundarySeries.outData },
+              ]}
+              type="bar"
+              height={280}
+            />
+          )}
         </div>
 
         <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">

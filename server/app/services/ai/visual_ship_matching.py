@@ -73,14 +73,17 @@ def resolve_visual_match(
     hits: list[dict[str, Any]],
     *,
     match_threshold: float,
-    margin_threshold: float,
-    consensus_count: int = 2,
     top_m_for_mean: int = 3,
     ocr_hint: str | None = None,
 ) -> VisualMatchDecision:
+    """Accept visual match when best aggregated score >= match_threshold (OCR-style).
+
+    OCR hint, when present, takes priority. Visual only assigns ship_id when OCR is empty.
+    """
     ranked = aggregate_visual_hits(hits, top_m_for_mean=top_m_for_mean)
+    normalized_ocr = ocr_hint.strip().upper() if ocr_hint else None
+
     if not ranked:
-        normalized_ocr = ocr_hint.strip().upper() if ocr_hint else None
         return VisualMatchDecision(
             accepted=bool(normalized_ocr),
             ship_id=normalized_ocr,
@@ -94,25 +97,30 @@ def resolve_visual_match(
     best = ranked[0]
     second_score = ranked[1].aggregated_score if len(ranked) > 1 else 0.0
     margin = best.aggregated_score - second_score
-    normalized_ocr = ocr_hint.strip().upper() if ocr_hint else None
 
-    if normalized_ocr and best.ship_id == normalized_ocr:
-        boosted = min(1.0, best.aggregated_score + 0.05)
+    if normalized_ocr:
+        if best.ship_id == normalized_ocr and best.aggregated_score >= float(match_threshold):
+            boosted = min(1.0, best.aggregated_score + 0.05)
+            return VisualMatchDecision(
+                accepted=True,
+                ship_id=best.ship_id,
+                confidence=boosted,
+                source='fused-ocr-visual',
+                best=best,
+                ranked_ships=ranked,
+                margin=margin,
+            )
         return VisualMatchDecision(
-            accepted=True,
-            ship_id=best.ship_id,
-            confidence=boosted,
-            source='fused-ocr-visual',
+            accepted=bool(normalized_ocr),
+            ship_id=normalized_ocr,
+            confidence=best.aggregated_score,
+            source='ocr-hint',
             best=best,
             ranked_ships=ranked,
             margin=margin,
         )
 
-    accepted = (
-        best.aggregated_score >= float(match_threshold)
-        and margin >= float(margin_threshold)
-        and best.hit_count >= max(1, int(consensus_count))
-    )
+    accepted = best.aggregated_score >= float(match_threshold)
     if accepted:
         return VisualMatchDecision(
             accepted=True,
@@ -126,9 +134,9 @@ def resolve_visual_match(
 
     return VisualMatchDecision(
         accepted=False,
-        ship_id=normalized_ocr,
+        ship_id=None,
         confidence=best.aggregated_score,
-        source='ocr-hint' if normalized_ocr else 'unknown',
+        source='unknown',
         best=best,
         ranked_ships=ranked,
         margin=margin,

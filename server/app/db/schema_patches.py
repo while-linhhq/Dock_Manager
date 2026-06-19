@@ -518,19 +518,11 @@ def _ensure_visual_stack_port_configs() -> None:
         ),
         'visual_match_threshold': (
             '0.55',
-            'Minimum aggregated similarity score to accept visual-id match.',
-        ),
-        'visual_margin_threshold': (
-            '0.08',
-            'Minimum margin between best ship and second distinct ship.',
+            'Minimum aggregated similarity to accept ship ID when OCR has no result.',
         ),
         'visual_top_k': (
             '20',
             'Number of nearest visual candidates returned from vector search.',
-        ),
-        'visual_consensus_count': (
-            '2',
-            'Minimum enrolled points for the best ship in top-K hits.',
         ),
         'visual_model_path': (
             '',
@@ -623,6 +615,99 @@ def _ensure_visual_stack_port_configs() -> None:
         _patch_done('ensured visual stack port_configs keys')
     except Exception as err:
         logger.error('schema_patches: failed to seed visual stack port_configs: %s', err)
+        raise
+
+
+_DINOV2_PORT_CONFIG_VALUES: dict[str, tuple[str, str]] = {
+    'visual_match_threshold': (
+        '0.55',
+        'Minimum aggregated similarity to accept ship ID when OCR has no result.',
+    ),
+    'visual_top_k': (
+        '20',
+        'Number of nearest visual candidates returned from vector search.',
+    ),
+    'visual_model_path': (
+        '',
+        'Path to TorchScript visual model (empty = use timm DINOv2 backbone).',
+    ),
+    'visual_backbone': (
+        'vit_base_patch14_dinov2',
+        'Backbone model name for visual embedding extractor (DINOv2 recommended).',
+    ),
+    'visual_embedding_dim': (
+        '768',
+        'Embedding dimension expected by visual model output.',
+    ),
+    'qdrant_collection': (
+        'vessel_visual_embeddings_dinov2',
+        'Qdrant collection used to store vessel visual embeddings.',
+    ),
+    'qdrant_vector_size': (
+        '768',
+        'Vector dimension used by Qdrant collection.',
+    ),
+}
+
+_LEGACY_VISUAL_BACKBONES = frozenset(
+    {
+        'vit_base_patch16_224',
+        'vit_base_patch14_dinov2.lvd142m',
+    }
+)
+_LEGACY_QDRANT_COLLECTIONS = frozenset({'vessel_visual_embeddings'})
+
+
+def _migrate_visual_stack_dinov2_port_configs() -> None:
+    """Upgrade pre-DINOv2 port_configs (ImageNet ViT 1024-dim) to DINOv2 defaults."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    try:
+        with engine.begin() as conn:
+            backbone_row = conn.execute(
+                text("SELECT value FROM port_configs WHERE key = 'visual_backbone' LIMIT 1")
+            ).fetchone()
+            collection_row = conn.execute(
+                text("SELECT value FROM port_configs WHERE key = 'qdrant_collection' LIMIT 1")
+            ).fetchone()
+            dim_row = conn.execute(
+                text("SELECT value FROM port_configs WHERE key = 'visual_embedding_dim' LIMIT 1")
+            ).fetchone()
+
+            backbone = str(backbone_row[0] or '').strip() if backbone_row else ''
+            collection = str(collection_row[0] or '').strip() if collection_row else ''
+            dim = str(dim_row[0] or '').strip() if dim_row else ''
+
+            needs_migration = (
+                backbone in _LEGACY_VISUAL_BACKBONES
+                or collection in _LEGACY_QDRANT_COLLECTIONS
+                or dim == '1024'
+            )
+            if not needs_migration:
+                return
+
+            update_stmt = text(
+                """
+                UPDATE port_configs
+                SET value = :value, description = :description, updated_at = NOW()
+                WHERE key = :key
+                """
+            )
+            for key, (value, description) in _DINOV2_PORT_CONFIG_VALUES.items():
+                conn.execute(
+                    update_stmt,
+                    {'key': key, 'value': value, 'description': description},
+                )
+
+        _patch_done('migrated visual stack port_configs to DINOv2 defaults')
+    except Exception as err:
+        logger.error('schema_patches: failed to migrate visual stack to DINOv2: %s', err)
         raise
 
 
@@ -1477,6 +1562,71 @@ def _ensure_cameras_boundary_lines() -> None:
         raise
 
 
+def _ensure_boundary_crossing_events() -> None:
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS boundary_crossing_events (
+                id          SERIAL PRIMARY KEY,
+                camera_id   INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+                track_id    VARCHAR(100) NOT NULL,
+                ship_id     VARCHAR(50),
+                direction   VARCHAR(10) NOT NULL,
+                crossed_at  TIMESTAMPTZ NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        index_stmts = [
+            text(
+                'CREATE INDEX IF NOT EXISTS ix_boundary_crossing_events_crossed_at '
+                'ON boundary_crossing_events(crossed_at)'
+            ),
+            text(
+                'CREATE INDEX IF NOT EXISTS ix_boundary_crossing_events_direction '
+                'ON boundary_crossing_events(direction)'
+            ),
+            text(
+                'CREATE INDEX IF NOT EXISTS ix_boundary_crossing_events_camera_id '
+                'ON boundary_crossing_events(camera_id)'
+            ),
+        ]
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS boundary_crossing_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                camera_id   INTEGER REFERENCES cameras(id) ON DELETE SET NULL,
+                track_id    VARCHAR(100) NOT NULL,
+                ship_id     VARCHAR(50),
+                direction   VARCHAR(10) NOT NULL,
+                crossed_at  TIMESTAMP NOT NULL,
+                created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        index_stmts = []
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — create boundary_crossing_events manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+            for index_stmt in index_stmts:
+                conn.execute(index_stmt)
+        _patch_applied.append('boundary_crossing_events')
+        if not _patch_quiet:
+            logger.info('schema_patches: ensured boundary_crossing_events table')
+    except Exception as err:
+        logger.error('schema_patches: failed to ensure boundary_crossing_events: %s', err)
+        raise
+
+
 def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     global _patch_quiet, _patch_applied
     _patch_quiet = quiet
@@ -1500,6 +1650,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_anchored_identities()
     _ensure_sepay_port_configs()
     _ensure_visual_stack_port_configs()
+    _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
     _ensure_yolo_imgsz_port_config()
     _migrate_port_config_frames_to_seconds()
@@ -1507,4 +1658,5 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_zalo_notifications()
     _ensure_zalo_notifications_message_ids()
     _ensure_media_short_links()
+    _ensure_boundary_crossing_events()
     return list(_patch_applied)

@@ -162,7 +162,7 @@ class EditorPreviewManager:
                     from app.services.ai.boundary_crossing import BoundaryConfig
                     from app.utils.ai.draw_boundary import draw_boundary_lines
 
-                    bcfg = BoundaryConfig.from_dict(boundary_lines)
+                    bcfg = BoundaryConfig.for_overlay(boundary_lines)
                     if bcfg is not None:
                         frame = draw_boundary_lines(frame.copy(), bcfg)
                 else:

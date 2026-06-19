@@ -226,6 +226,12 @@ export type DashboardSummary = {
   /** Trục thời gian lượt nhận diện theo kỳ (giờ / ngày / tháng); thiếu → FE fallback 24h */
   detection_volume_labels?: string[];
   detection_volume_counts?: number[];
+  /** Vượt boundary line — INPUT (vào) / OUTPUT (ra) trong kỳ */
+  boundary_in_total?: number;
+  boundary_out_total?: number;
+  boundary_volume_labels?: string[];
+  boundary_in_counts?: number[];
+  boundary_out_counts?: number[];
 };
 
 export type BoundaryPoint = { x: number; y: number };
@@ -236,6 +242,10 @@ export type BoundaryLines = {
   frame_h: number;
   line1: BoundaryPoint[];
   line2: BoundaryPoint[];
+  /** Closed polygon (≥3 points) defining the ship recognition zone */
+  berth_zone?: BoundaryPoint[];
+  /** Fraction of bbox area inside berth_zone for IN/OUT (0.05–0.95, default 0.30) */
+  bbox_cross_threshold?: number;
 };
 
 export type CameraRead = {

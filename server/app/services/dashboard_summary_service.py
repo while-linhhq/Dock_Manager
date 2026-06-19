@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 from zoneinfo import ZoneInfo
 
 from app.models.detection import Detection
+from app.models.boundary_crossing_event import BoundaryCrossingEvent
 from app.models.fee import FeeConfig
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.vessel import Vessel
 from app.repositories.order_repository import order_repo
+from app.services.boundary_crossing_event_service import count_boundary_crossings
 
 TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
@@ -168,6 +170,77 @@ def _detection_volume_series(
     return labels, data
 
 
+def _boundary_crossing_volume_series(
+    db: Session,
+    period: Period,
+    start_utc: datetime,
+    end_utc: datetime,
+    start_local: datetime,
+) -> Tuple[List[str], List[int], List[int]]:
+    """Chuỗi INPUT/OUTPUT theo kỳ (cùng bucket với lượt nhận diện)."""
+    rows = (
+        db.query(BoundaryCrossingEvent.crossed_at, BoundaryCrossingEvent.direction)
+        .filter(
+            BoundaryCrossingEvent.crossed_at >= start_utc,
+            BoundaryCrossingEvent.crossed_at < end_utc,
+        )
+        .all()
+    )
+
+    if period == 'day':
+        labels = [f'{h:02d}h' for h in range(24)]
+        in_data = [0] * 24
+        out_data = [0] * 24
+        for crossed_at, direction in rows:
+            if crossed_at is None:
+                continue
+            lt = crossed_at.astimezone(TZ)
+            bucket = lt.hour
+            if direction == 'in':
+                in_data[bucket] += 1
+            elif direction == 'out':
+                out_data[bucket] += 1
+        return labels, in_data, out_data
+
+    if period == 'month':
+        year, month = start_local.year, start_local.month
+        _, last_day = monthrange(year, month)
+        labels = [str(d) for d in range(1, last_day + 1)]
+        in_data = [0] * last_day
+        out_data = [0] * last_day
+        for crossed_at, direction in rows:
+            if crossed_at is None:
+                continue
+            lt = crossed_at.astimezone(TZ)
+            if lt.year != year or lt.month != month:
+                continue
+            idx = lt.day - 1
+            if not (0 <= idx < last_day):
+                continue
+            if direction == 'in':
+                in_data[idx] += 1
+            elif direction == 'out':
+                out_data[idx] += 1
+        return labels, in_data, out_data
+
+    y = start_local.year
+    labels = [f'Th.{m}' for m in range(1, 13)]
+    in_data = [0] * 12
+    out_data = [0] * 12
+    for crossed_at, direction in rows:
+        if crossed_at is None:
+            continue
+        lt = crossed_at.astimezone(TZ)
+        if lt.year != y:
+            continue
+        idx = lt.month - 1
+        if direction == 'in':
+            in_data[idx] += 1
+        elif direction == 'out':
+            out_data[idx] += 1
+    return labels, in_data, out_data
+
+
 def _top_ships(
     db: Session, start_utc: datetime, end_utc: datetime, limit: int = 8
 ) -> Tuple[List[str], List[int]]:
@@ -283,6 +356,10 @@ def build_dashboard_summary(db: Session, period: Period) -> dict[str, Any]:
     det_vol_labels, det_vol_counts = _detection_volume_series(
         db, period, start_utc, end_utc, start_local
     )
+    boundary_in_total, boundary_out_total = count_boundary_crossings(db, start_utc, end_utc)
+    bnd_labels, bnd_in, bnd_out = _boundary_crossing_volume_series(
+        db, period, start_utc, end_utc, start_local
+    )
 
     return {
         'period': period,
@@ -303,4 +380,9 @@ def build_dashboard_summary(db: Session, period: Period) -> dict[str, Any]:
         'detections_review_unassigned': det_unk,
         'detection_volume_labels': det_vol_labels,
         'detection_volume_counts': det_vol_counts,
+        'boundary_in_total': boundary_in_total,
+        'boundary_out_total': boundary_out_total,
+        'boundary_volume_labels': bnd_labels,
+        'boundary_in_counts': bnd_in,
+        'boundary_out_counts': bnd_out,
     }

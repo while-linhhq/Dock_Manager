@@ -19,7 +19,6 @@ from app.repositories.vessel_repository import vessel_repo
 from app.schemas.vessel import VesselCreate
 from app.services.ship_id_utils import is_unknown_ship_id, normalize_ship_id
 from app.utils.media_short_link import build_zalo_short_media_url
-from app.utils.media_token import build_zalo_media_preview_url, build_zalo_media_video_preview_url
 
 _log = logging.getLogger('app.services.zalo')
 
@@ -136,16 +135,25 @@ def _zalo_can_fetch_url(url: str) -> bool:
     return False
 
 
+def _minio_object_ready(minio_path: Optional[str]) -> bool:
+    from app.services.storage.minio_service import get_object_size
+
+    path = str(minio_path or '').strip()
+    if not path.startswith('minio://'):
+        return False
+    return get_object_size(path) is not None
+
+
 def _build_media_url(minio_path: Optional[str], *, video: bool = False) -> Optional[str]:
     path = str(minio_path or '').strip()
-    if not path:
+    if not path or not _minio_object_ready(path):
         return None
-    short_url = build_zalo_short_media_url(path, cache_bust=video)
-    if short_url:
-        return short_url
-    if video:
-        return build_zalo_media_video_preview_url(path)
-    return build_zalo_media_preview_url(path)
+    # Zalo rejects long JWT preview URLs (424). Always use short links on webhook/media/v/.
+    url = build_zalo_short_media_url(path, cache_bust=True)
+    if url:
+        return url
+    _log.error('Failed to build Zalo short media URL for %s', path)
+    return None
 
 
 def _build_unified_caption(
@@ -218,11 +226,17 @@ def _notification_exists(db: Session, detection_id: int) -> bool:
     )
 
 
-def _create_notification_row(db: Session, detection_id: int, chat_id: str) -> bool:
+def _create_notification_row(
+    db: Session,
+    detection_id: int,
+    chat_id: str,
+    *,
+    status: str = 'pending_media',
+) -> bool:
     row = ZaloNotification(
         detection_id=detection_id,
         chat_id=chat_id,
-        status='sent',
+        status=status,
     )
     db.add(row)
     try:
@@ -233,16 +247,102 @@ def _create_notification_row(db: Session, detection_id: int, chat_id: str) -> bo
         return False
 
 
-def notify_unknown_detection(
+def _resolve_media_paths(
+    db: Session,
+    detection_id: int,
+    *,
+    image_hint: Optional[str] = None,
+    video_hint: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    image_path, video_path = resolve_notification_media(db, detection_id)
+    if not image_path and image_hint:
+        image_path = str(image_hint).strip() or None
+    if not video_path and video_hint:
+        video_path = str(video_hint).strip() or None
+    return image_path, video_path
+
+
+def _media_bundle_is_ready(
+    db: Session,
+    detection_id: int,
+    *,
+    image_hint: Optional[str] = None,
+    video_hint: Optional[str] = None,
+    require_video: bool,
+) -> tuple[Optional[str], Optional[str], bool]:
+    image_path, video_path = _resolve_media_paths(
+        db,
+        detection_id,
+        image_hint=image_hint,
+        video_hint=video_hint,
+    )
+    image_ready = bool(image_path and _minio_object_ready(image_path))
+    if not image_ready:
+        return image_path, video_path, False
+    if require_video:
+        video_ready = bool(video_path and _minio_object_ready(video_path))
+        return image_path, video_path, video_ready
+    return image_path, video_path, True
+
+
+def _wait_for_media_bundle(
+    detection_id: int,
+    *,
+    image_hint: Optional[str] = None,
+    video_hint: Optional[str] = None,
+    require_video: bool,
+    max_wait_sec: int | None = None,
+    poll_sec: float | None = None,
+) -> tuple[Optional[str], Optional[str], bool]:
+    """Poll DB + MinIO until image (and video if required) are ready."""
+    import time
+
+    deadline = time.monotonic() + max(
+        5,
+        int(max_wait_sec if max_wait_sec is not None else settings.ZALO_NOTIFY_MEDIA_WAIT_SEC),
+    )
+    interval = max(1.0, float(poll_sec if poll_sec is not None else settings.ZALO_NOTIFY_MEDIA_POLL_SEC))
+
+    while time.monotonic() < deadline:
+        db = SessionLocal()
+        try:
+            image_path, video_path, ready = _media_bundle_is_ready(
+                db,
+                detection_id,
+                image_hint=image_hint,
+                video_hint=video_hint,
+                require_video=require_video,
+            )
+            if ready:
+                return image_path, video_path, True
+        finally:
+            db.close()
+        time.sleep(interval)
+
+    db = SessionLocal()
+    try:
+        image_path, video_path, ready = _media_bundle_is_ready(
+            db,
+            detection_id,
+            image_hint=image_hint,
+            video_hint=video_hint,
+            require_video=False,
+        )
+        return image_path, video_path, ready
+    finally:
+        db.close()
+
+
+def _deliver_unknown_detection(
     *,
     detection_id: int,
-    image_minio_path: Optional[str],
-    video_minio_path: Optional[str],
+    image_path: Optional[str],
+    video_path: Optional[str],
     camera_name: str = '',
     start_time: Optional[datetime] = None,
     force_resend: bool = False,
 ) -> None:
-    """Send Zalo confirmation bundle for an unknown-ship detection."""
+    """Build URLs and send Zalo photo/message after media is confirmed ready."""
     if not _zalo_enabled():
         return
 
@@ -269,12 +369,37 @@ def notify_unknown_detection(
             )
             return
 
-        if not _create_notification_row(db, detection_id, chat_id):
-            _log.info('Skip Zalo notify detection_id=%s: duplicate notification row', detection_id)
+        if not existing or force_resend:
+            if not _create_notification_row(db, detection_id, chat_id, status='pending_media'):
+                _log.info('Skip Zalo notify detection_id=%s: duplicate notification row', detection_id)
+                return
+
+        det = detection_repo.get(db, detection_id)
+        if not image_path or not video_path:
+            resolved_image, resolved_video = _resolve_media_paths(db, detection_id)
+            image_path = image_path or resolved_image
+            video_path = video_path or resolved_video
+        if det is not None and start_time is None:
+            start_time = getattr(det, 'start_time', None)
+
+        if not image_path or not _minio_object_ready(image_path):
+            notif = (
+                db.query(ZaloNotification)
+                .filter(ZaloNotification.detection_id == detection_id)
+                .first()
+            )
+            if notif is not None:
+                notif.status = 'failed'
+                db.commit()
+            _log.warning(
+                'Zalo notify detection_id=%s aborted: image not ready path=%s',
+                detection_id,
+                image_path,
+            )
             return
 
-        image_url = _build_media_url(image_minio_path)
-        video_url = _build_media_url(video_minio_path, video=True)
+        image_url = _build_media_url(image_path)
+        video_url = _build_media_url(video_path, video=True) if video_path else None
         caption = _build_unified_caption(
             detection_id=detection_id,
             camera_name=camera_name,
@@ -291,43 +416,54 @@ def notify_unknown_detection(
         try:
             sent = False
             if image_url:
-                try:
-                    data = _call_zalo_api(
-                        'sendPhoto',
-                        {
-                            'chat_id': chat_id,
-                            'photo': image_url,
-                            'caption': caption,
-                        },
-                    )
-                    result = data.get('result') or {}
-                    if notif is not None:
-                        message_id = _extract_message_id(result)
-                        notif.photo_message_id = message_id
-                        notif.header_message_id = message_id
-                        notif.video_message_id = message_id
-                    sent = True
-                except RuntimeError as exc:
-                    if '424' not in str(exc):
-                        raise
-                    _log.warning(
-                        'Zalo sendPhoto rejected url=%s detection_id=%s: %s',
-                        image_url,
-                        detection_id,
-                        exc,
-                    )
-                if not sent and not _zalo_can_fetch_url(image_url):
-                    _log.warning(
-                        'Zalo media URL probe failed detection_id=%s url=%s — '
-                        'redeploy deploy/cloudflare/zalo-platform-worker.js',
-                        detection_id,
-                        image_url,
-                    )
+                for attempt in range(3):
+                    if attempt > 0:
+                        import time
+
+                        time.sleep(1.5)
+                        image_url = _build_media_url(image_path)
+                        if not image_url:
+                            break
+                    if not image_url:
+                        continue
+                    try:
+                        data = _call_zalo_api(
+                            'sendPhoto',
+                            {
+                                'chat_id': chat_id,
+                                'photo': image_url,
+                                'caption': caption,
+                            },
+                        )
+                        result = data.get('result') or {}
+                        if notif is not None:
+                            message_id = _extract_message_id(result)
+                            notif.photo_message_id = message_id
+                            notif.header_message_id = message_id
+                            notif.video_message_id = message_id
+                        sent = True
+                        break
+                    except RuntimeError as exc:
+                        if '424' not in str(exc):
+                            raise
+                        _log.warning(
+                            'Zalo sendPhoto rejected url=%s detection_id=%s attempt=%s: %s',
+                            image_url,
+                            detection_id,
+                            attempt + 1,
+                            exc,
+                        )
 
             if not sent:
                 text = caption
                 if image_url:
                     text = f'{caption}\n\n📷 Ảnh: {image_url}'
+                elif image_path:
+                    _log.warning(
+                        'Zalo notify detection_id=%s: sendPhoto failed, falling back to text (minio=%s)',
+                        detection_id,
+                        image_path,
+                    )
                 data = _call_zalo_api(
                     'sendMessage',
                     {
@@ -344,7 +480,14 @@ def notify_unknown_detection(
                 notif.status = 'sent'
                 db.commit()
 
-            _log.info('Zalo notification sent detection_id=%s chat_id=%s', detection_id, chat_id)
+            _log.info(
+                'Zalo notification sent detection_id=%s chat_id=%s mode=%s image=%s video=%s',
+                detection_id,
+                chat_id,
+                'sendPhoto' if sent else 'sendMessage',
+                bool(image_path),
+                bool(video_path),
+            )
         except Exception:
             _log.exception('Zalo notify failed detection_id=%s', detection_id)
             if notif is not None:
@@ -354,13 +497,126 @@ def notify_unknown_detection(
         db.close()
 
 
-def notify_unknown_detection_async(**kwargs) -> None:
+def notify_unknown_detection(
+    *,
+    detection_id: int,
+    image_minio_path: Optional[str] = None,
+    video_minio_path: Optional[str] = None,
+    camera_name: str = '',
+    start_time: Optional[datetime] = None,
+    force_resend: bool = False,
+    expect_video: bool | None = None,
+    wait_for_media: bool = True,
+) -> None:
+    """Wait for media bundle then send Zalo confirmation (blocking)."""
+    if not _zalo_enabled():
+        return
+
+    require_video = (
+        bool(expect_video)
+        if expect_video is not None
+        else bool(str(video_minio_path or '').strip())
+    )
+
+    image_path: Optional[str] = None
+    video_path: Optional[str] = None
+    if wait_for_media:
+        _log.info(
+            'Zalo notify detection_id=%s: waiting for media (require_video=%s, max=%ss)',
+            detection_id,
+            require_video,
+            settings.ZALO_NOTIFY_MEDIA_WAIT_SEC,
+        )
+        image_path, video_path, ready = _wait_for_media_bundle(
+            detection_id,
+            image_hint=image_minio_path,
+            video_hint=video_minio_path,
+            require_video=require_video,
+        )
+        if not ready:
+            _log.warning(
+                'Zalo notify detection_id=%s: media wait timeout (image=%s video=%s require_video=%s)',
+                detection_id,
+                image_path,
+                video_path,
+                require_video,
+            )
+    else:
+        db = SessionLocal()
+        try:
+            image_path, video_path = _resolve_media_paths(
+                db,
+                detection_id,
+                image_hint=image_minio_path,
+                video_hint=video_minio_path,
+            )
+        finally:
+            db.close()
+
+    _deliver_unknown_detection(
+        detection_id=detection_id,
+        image_path=image_path,
+        video_path=video_path,
+        camera_name=camera_name,
+        start_time=start_time,
+        force_resend=force_resend,
+    )
+
+
+def _deferred_notify_worker(**kwargs) -> None:
+    detection_id = int(kwargs.get('detection_id') or 0)
+    try:
+        notify_unknown_detection(**kwargs)
+    except Exception:
+        _log.exception('Zalo deferred notify failed detection_id=%s', detection_id)
+
+
+def schedule_unknown_detection_notify(**kwargs) -> None:
+    """Queue Zalo notify — waits until image (+ video if expected) exist on MinIO."""
+    if not _zalo_enabled():
+        return
+
+    detection_id = int(kwargs.get('detection_id') or 0)
+    if detection_id <= 0:
+        return
+
+    db = SessionLocal()
+    try:
+        chat_id = _resolve_chat_id(db)
+        if not chat_id:
+            _log.warning('Skip Zalo schedule detection_id=%s: ZALO_CHAT_ID not configured', detection_id)
+            return
+
+        existing = (
+            db.query(ZaloNotification)
+            .filter(ZaloNotification.detection_id == detection_id)
+            .first()
+        )
+        if existing:
+            if existing.status in ('sent', 'awaiting_ship_id', 'pending_media'):
+                _log.info('Skip Zalo schedule detection_id=%s: already queued or sent', detection_id)
+                return
+            if existing.status == 'failed':
+                existing.status = 'pending_media'
+                db.commit()
+            else:
+                return
+        elif not _create_notification_row(db, detection_id, chat_id, status='pending_media'):
+            return
+    finally:
+        db.close()
+
     threading.Thread(
-        target=notify_unknown_detection,
+        target=_deferred_notify_worker,
         kwargs=kwargs,
         daemon=True,
-        name=f'zalo-notify-{kwargs.get("detection_id", "?")}',
+        name=f'zalo-notify-{detection_id}',
     ).start()
+
+
+def notify_unknown_detection_async(**kwargs) -> None:
+    """Backward-compatible alias — schedules deferred notify."""
+    schedule_unknown_detection_notify(**kwargs)
 
 
 def _reassign_vessel_identity(db: Session, detection_id: int, new_ship_id: str) -> str:
@@ -401,18 +657,6 @@ def _reassign_vessel_identity(db: Session, detection_id: int, new_ship_id: str) 
     return normalized
 
 
-def _mark_notification_skipped(db: Session, detection_id: int) -> None:
-    notif = (
-        db.query(ZaloNotification)
-        .filter(ZaloNotification.detection_id == detection_id)
-        .first()
-    )
-    if notif is not None:
-        notif.status = 'skipped'
-        notif.resolved_at = datetime.now(timezone.utc)
-        db.commit()
-
-
 def _recent_ship_suggestions(db: Session, *, limit: int = 5) -> list[str]:
     from app.models.vessel import Vessel
 
@@ -449,10 +693,14 @@ def _handle_action(chat_id: str, detection_id: int, action: str, ship_id: str = 
             return 'Bạn không có quyền xác nhận danh tính tàu.'
 
         if action == 's':
-            _mark_notification_skipped(db, detection_id)
+            from app.services.detection_cleanup_service import purge_detection_resources
+
+            result = purge_detection_resources(db, detection_id)
+            if not result.get('found'):
+                return f'Không tìm thấy phát hiện #{detection_id}.'
             if _get_pending_detection_id(db, chat_id) == detection_id:
                 _set_pending_detection_id(db, chat_id, None)
-            return f'Đã bỏ qua phát hiện #{detection_id}.'
+            return f'Đã bỏ qua và xóa phát hiện #{detection_id}.'
 
         if action == 'm':
             _set_pending_detection_id(db, chat_id, detection_id)
@@ -1001,21 +1249,30 @@ def get_webhook_info() -> dict[str, Any]:
 def resolve_single_camera_image_path(db: Session, detection_id: int) -> Optional[str]:
     from app.repositories.detection_media_repository import detection_media_repo
 
+    single: Optional[str] = None
+    fallback: Optional[str] = None
     for row in detection_media_repo.get_by_detection(db, detection_id):
         path = str(row.file_path or '')
-        if row.media_type == 'image' and 'single_best_detection_' in path:
-            return path
+        if row.media_type != 'image' or not path:
+            continue
+        if 'single_best_detection_' in path:
+            single = path
+            break
+        fallback = fallback or path
+    if single:
+        return single
     det = detection_repo.get(db, detection_id)
     audit = str(getattr(det, 'audit_image_path', '') or '') if det else ''
     if 'single_best_detection_' in audit:
         return audit
-    return None
+    return fallback or audit or None
 
 
 def resolve_detection_video_path(db: Session, detection_id: int) -> Optional[str]:
     from app.repositories.detection_media_repository import detection_media_repo
 
     single_video: Optional[str] = None
+    fused_video: Optional[str] = None
     fallback: Optional[str] = None
     for row in detection_media_repo.get_by_detection(db, detection_id):
         if row.media_type != 'video':
@@ -1023,14 +1280,46 @@ def resolve_detection_video_path(db: Session, detection_id: int) -> Optional[str
         path = str(row.file_path or '')
         if not path:
             continue
-        if '/videos/single_' in path or path.rsplit('/', 1)[-1].startswith('single_'):
+        name = path.rsplit('/', 1)[-1]
+        if name.startswith('single_') or '/videos/single_' in path:
             single_video = path
-            break
+        elif name.startswith('fused_') or '/videos/fused_' in path:
+            fused_video = fused_video or path
         fallback = fallback or path
-    if single_video:
-        return single_video
+    for candidate in (single_video, fused_video, fallback):
+        if candidate and _minio_object_ready(candidate):
+            return candidate
     det = detection_repo.get(db, detection_id)
-    return str(getattr(det, 'video_path', '') or '') or fallback
+    det_video = str(getattr(det, 'video_path', '') or '') if det else ''
+    if det_video and _minio_object_ready(det_video):
+        return det_video
+    return None
+
+
+def resolve_notification_media(
+    db: Session, detection_id: int
+) -> tuple[Optional[str], Optional[str]]:
+    """Pick first MinIO-ready single-camera image and best available video."""
+    image_candidates: list[str] = []
+    single_image = resolve_single_camera_image_path(db, detection_id)
+    if single_image:
+        image_candidates.append(single_image)
+    det = detection_repo.get(db, detection_id)
+    if det is not None:
+        audit = str(getattr(det, 'audit_image_path', '') or '')
+        if audit and audit not in image_candidates:
+            image_candidates.append(audit)
+
+    from app.repositories.detection_media_repository import detection_media_repo
+
+    for row in detection_media_repo.get_by_detection(db, detection_id):
+        path = str(row.file_path or '')
+        if row.media_type == 'image' and path and path not in image_candidates:
+            image_candidates.append(path)
+
+    image_path = next((p for p in image_candidates if _minio_object_ready(p)), None)
+    video_path = resolve_detection_video_path(db, detection_id)
+    return image_path, video_path
 
 
 def send_test_unknown_notification(detection_id: int, *, force: bool = True) -> dict[str, Any]:
@@ -1043,11 +1332,7 @@ def send_test_unknown_notification(detection_id: int, *, force: bool = True) -> 
         if not det:
             raise ValueError(f'Khong tim thay detection #{detection_id}')
 
-        image_path = resolve_single_camera_image_path(db, detection_id)
-        if not image_path:
-            image_path = str(getattr(det, 'audit_image_path', '') or '') or None
-
-        video_path = resolve_detection_video_path(db, detection_id)
+        image_path, video_path = resolve_notification_media(db, detection_id)
         start_time = getattr(det, 'start_time', None)
         camera_name = 'Camera test'
     finally:
@@ -1055,8 +1340,6 @@ def send_test_unknown_notification(detection_id: int, *, force: bool = True) -> 
 
     notify_unknown_detection(
         detection_id=detection_id,
-        image_minio_path=image_path,
-        video_minio_path=video_path,
         camera_name=camera_name,
         start_time=start_time,
         force_resend=force,

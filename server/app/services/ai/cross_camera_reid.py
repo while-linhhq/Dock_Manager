@@ -271,6 +271,8 @@ class CrossCameraReIdManager:
     def report_boundary_crossing(
         self, camera_id: int, track_id: str, direction: str, ts: float
     ) -> None:
+        ship_snapshot: str | None = None
+        should_record = False
         with self._lock:
             key = (int(camera_id), str(track_id))
             identity = self._identity_for_track(key)
@@ -278,11 +280,31 @@ class CrossCameraReIdManager:
                 identity = self._create_empty_identity(int(camera_id), str(track_id))
                 self._track_to_global[key] = identity.global_id
             if direction == 'in':
-                if identity.berth_in_ts is None or ts < identity.berth_in_ts:
+                if identity.berth_in_ts is None:
+                    identity.berth_in_ts = ts
+                    should_record = True
+                elif ts < identity.berth_in_ts:
                     identity.berth_in_ts = ts
             elif direction == 'out':
-                if identity.berth_out_ts is None or ts > identity.berth_out_ts:
+                if identity.berth_in_ts is not None and identity.berth_out_ts is None:
                     identity.berth_out_ts = ts
+                    should_record = True
+                elif identity.berth_in_ts is not None and identity.berth_out_ts is not None and ts > identity.berth_out_ts:
+                    identity.berth_out_ts = ts
+            ship_snapshot = identity.ship_id
+
+        if not should_record:
+            return
+
+        from app.services.boundary_crossing_event_service import record_boundary_crossing_event
+
+        record_boundary_crossing_event(
+            camera_id=int(camera_id),
+            track_id=str(track_id),
+            direction=str(direction),
+            crossed_at_ts=float(ts),
+            ship_id=ship_snapshot,
+        )
 
     def get_global_ship_id(self, camera_id: int, track_id: str) -> str | None:
         with self._lock:

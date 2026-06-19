@@ -184,8 +184,6 @@ class PipelineService:
         )
         self._identity_fusion = IdentityFusion(
             match_threshold=runtime_cfg['visual_match_threshold'],
-            margin_threshold=runtime_cfg['visual_margin_threshold'],
-            consensus_count=runtime_cfg['visual_consensus_count'],
         )
         self._visual_extractor = get_visual_embedding_extractor()
 
@@ -453,20 +451,9 @@ class PipelineService:
                 cfg_map.get('visual_match_threshold', ''),
                 float(settings.VISUAL_MATCH_THRESHOLD),
             ),
-            'visual_margin_threshold': self._to_float(
-                cfg_map.get('visual_margin_threshold', ''),
-                float(settings.VISUAL_MARGIN_THRESHOLD),
-            ),
             'visual_top_k': max(
                 1,
                 self._to_int(cfg_map.get('visual_top_k', ''), int(settings.VISUAL_TOP_K)),
-            ),
-            'visual_consensus_count': max(
-                1,
-                self._to_int(
-                    cfg_map.get('visual_consensus_count', ''),
-                    int(settings.VISUAL_CONSENSUS_COUNT),
-                ),
             ),
             'visual_model_path': _s('visual_model_path', settings.VISUAL_MODEL_PATH),
             'visual_backbone': _s('visual_backbone', settings.VISUAL_BACKBONE),
@@ -1080,6 +1067,14 @@ class PipelineService:
                 if getattr(tb, 'berth_out_ts', None)
                 else None
             )
+            cam_id = int(getattr(tb, 'camera_id', 0) or 0)
+            if self._camera_has_boundary(cam_id) and berth_in_dt is None:
+                _log.debug(
+                    'Skip persist track=%s camera=%s: no valid berth IN in zone',
+                    tb.track_id,
+                    cam_id,
+                )
+                return
             day_bucket = start_dt_utc.strftime('%d-%m-%Y')
             safe_t = _safe_key_segment(str(tb.track_id))
 
@@ -1293,11 +1288,11 @@ class PipelineService:
                     if cam is not None:
                         camera_name = str(cam.camera_name or f'Camera {cam.id}')
 
-                primary_video = video_uri or single_video_uri
-                zalo_service.notify_unknown_detection_async(
+                zalo_service.schedule_unknown_detection_notify(
                     detection_id=int(det_id_for_invoice),
                     image_minio_path=single_image_uri or audit_uri,
-                    video_minio_path=primary_video,
+                    video_minio_path=single_video_uri or video_uri,
+                    expect_video=bool(single_video_uri or video_uri),
                     camera_name=camera_name,
                     start_time=start_dt_utc,
                 )
@@ -2042,6 +2037,20 @@ class PipelineService:
         )
         tracker.flush_shutdown_logs()
         return results
+
+    def _camera_has_boundary(self, camera_id: int) -> bool:
+        """True when camera has active boundary config with a valid berth_zone polygon."""
+        if camera_id <= 0:
+            return False
+        from app.services.ai.boundary_crossing import BoundaryConfig
+
+        for pipeline in self._per_camera_pipelines:
+            if int(pipeline.config.camera_id) != int(camera_id):
+                continue
+            if pipeline._boundary_tracker is None:
+                return False
+            return BoundaryConfig.from_dict(pipeline.config.boundary_lines) is not None
+        return False
 
     def update_camera_boundary_lines(self, camera_id: int, payload: dict | None) -> None:
         camera_key = int(camera_id)

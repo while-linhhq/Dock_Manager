@@ -252,8 +252,6 @@ def visual_search_ranked(
     qdrant: QdrantVectorStore,
     top_k: int = 20,
     match_threshold: float = 0.55,
-    margin_threshold: float = 0.08,
-    consensus_count: int = 2,
 ) -> dict[str, Any]:
     from app.core.config import settings
     from app.services.ai.visual_ship_matching import resolve_visual_match
@@ -267,8 +265,6 @@ def visual_search_ranked(
     decision = resolve_visual_match(
         hits,
         match_threshold=match_threshold,
-        margin_threshold=margin_threshold,
-        consensus_count=consensus_count,
     )
 
     ranked_ships = []
@@ -344,7 +340,5 @@ def visual_search_top1(
         qdrant=qdrant,
         top_k=settings.VISUAL_TOP_K,
         match_threshold=settings.VISUAL_MATCH_THRESHOLD,
-        margin_threshold=settings.VISUAL_MARGIN_THRESHOLD,
-        consensus_count=settings.VISUAL_CONSENSUS_COUNT,
     )
     return result.get('match')
