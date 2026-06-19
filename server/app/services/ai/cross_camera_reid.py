@@ -38,6 +38,8 @@ class GlobalIdentity:
     last_track: TrackedBoat | None = None
     finalized: bool = False
     anchored: bool = False
+    berth_in_ts: float | None = None
+    berth_out_ts: float | None = None
 
 
 class CrossCameraReIdManager:
@@ -266,6 +268,22 @@ class CrossCameraReIdManager:
             self._flush_expired_locked(time.time())
             return identity.global_id
 
+    def report_boundary_crossing(
+        self, camera_id: int, track_id: str, direction: str, ts: float
+    ) -> None:
+        with self._lock:
+            key = (int(camera_id), str(track_id))
+            identity = self._identity_for_track(key)
+            if identity is None:
+                identity = self._create_empty_identity(int(camera_id), str(track_id))
+                self._track_to_global[key] = identity.global_id
+            if direction == 'in':
+                if identity.berth_in_ts is None or ts < identity.berth_in_ts:
+                    identity.berth_in_ts = ts
+            elif direction == 'out':
+                if identity.berth_out_ts is None or ts > identity.berth_out_ts:
+                    identity.berth_out_ts = ts
+
     def get_global_ship_id(self, camera_id: int, track_id: str) -> str | None:
         with self._lock:
             track_key = (int(camera_id), str(track_id))
@@ -426,6 +444,18 @@ class CrossCameraReIdManager:
         keep.active_tracks |= other.active_tracks
         keep.removed_tracks |= other.removed_tracks
         keep.last_track = other.last_track or keep.last_track
+        if other.berth_in_ts is not None:
+            keep.berth_in_ts = (
+                other.berth_in_ts
+                if keep.berth_in_ts is None
+                else min(keep.berth_in_ts, other.berth_in_ts)
+            )
+        if other.berth_out_ts is not None:
+            keep.berth_out_ts = (
+                other.berth_out_ts
+                if keep.berth_out_ts is None
+                else max(keep.berth_out_ts, other.berth_out_ts)
+            )
         if keep.primary_camera_id is None:
             keep.primary_camera_id = other.primary_camera_id
         for camera_id, track_id in other.camera_tracks.items():
@@ -543,5 +573,7 @@ class CrossCameraReIdManager:
         track.track_id = identity.global_id
         track.ship_id = identity.ship_id or track.ship_id or 'UNKNOWN'
         track.last_known_ship_id = track.ship_id
+        track.berth_in_ts = identity.berth_in_ts
+        track.berth_out_ts = identity.berth_out_ts
         history = list(identity.ocr_history)
         self._on_global_track_removed(track, history)

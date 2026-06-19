@@ -5,6 +5,7 @@ INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (253, 'model_path', 'app/yolo11n.pt', 'Path to YOLO model file', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (254, 'device', '0', 'Inference device (0 for GPU, cpu for CPU)', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (255, 'conf', '0.75', 'YOLO detection confidence threshold', NULL, '2026-04-10 16:02:06.80794+00');
+INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (273, 'yolo_imgsz', '640', 'YOLO inference input size (letterbox, e.g. 640 or 960)', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (256, 'resize_scale', '0.5', 'Frame resize scale for processing', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (257, 'track_min_hits', '30', 'Minimum hits to confirm a track', NULL, '2026-04-10 16:02:06.80794+00');
 INSERT INTO "port_configs" ("id", "key", "value", "description", "updated_by", "updated_at") VALUES (258, 'track_max_tentative_misses', '10', 'Max misses for tentative tracks', NULL, '2026-04-10 16:02:06.80794+00');

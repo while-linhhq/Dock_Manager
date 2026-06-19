@@ -43,7 +43,7 @@ interface Category {
 }
 
 const CATEGORIES: Category[] = [
-  { id: 'model', label: 'Mô hình & Nhận diện', description: 'Tham số YOLO: model, confidence, resize, CLAHE', color: 'text-violet-500 bg-violet-500/10 border-violet-500/20' },
+  { id: 'model', label: 'Mô hình & Nhận diện', description: 'Tham số YOLO: model, confidence, imgsz, resize, CLAHE', color: 'text-violet-500 bg-violet-500/10 border-violet-500/20' },
   { id: 'ocr', label: 'OCR', description: 'Nhận diện mã tàu, chu kỳ OCR, log audit', color: 'text-blue-500 bg-blue-500/10 border-blue-500/20' },
   { id: 'visual', label: 'Visual ID', description: 'Nhận diện tàu bằng đặc trưng sâu (ViT)', color: 'text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20' },
   { id: 'redis', label: 'Redis', description: 'Cache runtime cho visual worker', color: 'text-rose-500 bg-rose-500/10 border-rose-500/20' },
@@ -63,6 +63,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   model_path: 'model',
   device: 'model',
   conf: 'model',
+  yolo_imgsz: 'model',
   resize_scale: 'model',
   clahe_clip_limit: 'model',
   clahe_tile_size: 'model',
@@ -149,7 +150,9 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   model_path: 'Đường dẫn file model YOLO.',
   device: 'Thiết bị suy luận: `0` (GPU) hoặc `cpu` (CPU).',
   conf: 'Ngưỡng confidence của YOLO detection.',
-  resize_scale: 'Tỉ lệ resize frame trước khi xử lý.',
+  yolo_imgsz:
+    'Kích thước input YOLO (letterbox, ví dụ 640 hoặc 960). Nên khớp với imgsz lúc fine-tune; restart pipeline sau khi đổi.',
+  resize_scale: 'Tỉ lệ resize frame cho overlay/preview (không ảnh hưởng YOLO imgsz).',
   clahe_clip_limit: 'Thông số CLAHE (giới hạn độ tương phản).',
   clahe_tile_size: 'Thông số CLAHE (kích thước tile).',
 

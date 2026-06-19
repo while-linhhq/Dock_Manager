@@ -1,3 +1,14 @@
+import os
+import sys
+
+_server_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _server_root not in sys.path:
+    sys.path.insert(0, _server_root)
+
+from app.utils.ai.gpu_bootstrap import init_cuda_library_path
+
+init_cuda_library_path('pre')
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -70,7 +81,22 @@ async def lifespan(app: FastAPI):
 
         start_sepay_background_sync()
 
+    if app_settings.ZALO_ENABLED:
+        if app_settings.ZALO_POLLING_ENABLED:
+            from app.services.zalo_polling_service import start_zalo_polling
+
+            start_zalo_polling()
+        else:
+            from app.services.zalo_service import ensure_zalo_startup
+
+            ensure_zalo_startup()
+
     yield
+
+    if app_settings.ZALO_ENABLED and app_settings.ZALO_POLLING_ENABLED:
+        from app.services.zalo_polling_service import stop_zalo_polling
+
+        await stop_zalo_polling()
 
     if app_settings.SEPAY_SYNC_ENABLED:
         from app.services.sepay_background import stop_sepay_background_sync

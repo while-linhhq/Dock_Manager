@@ -1,34 +1,86 @@
 import logging
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import cv2
 
-from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
+from app.utils.ai.gpu_bootstrap import init_cuda_library_path
 
 logger = logging.getLogger(__name__)
 
+_PADDLE_GPU_PROBE_SCRIPT = """
+from app.utils.ai.gpu_bootstrap import init_cuda_library_path
+init_cuda_library_path("pre")
+import paddle
+if paddle.device.cuda.device_count() <= 0:
+    raise SystemExit(1)
+paddle.set_device("gpu:0")
+x = paddle.randn([1, 3, 8, 8])
+_ = paddle.nn.Conv2D(3, 4, 3)(x)
+"""
+
+
+def _torch_cudnn_blocks_paddle_gpu() -> bool:
+    """Torch đã load cuDNN 9.1 (bundled) → Paddle GPU conv sẽ SIGABRT trong cùng process."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        version = int(torch.backends.cudnn.version() or 0)
+        return version > 0 and version < 90500
+    except Exception:
+        return False
+
+
+def _paddle_gpu_probe_subprocess() -> bool:
+    """Probe trong subprocess — SIGABRT từ cuDNN mismatch không kill API process."""
+    server_root = Path(__file__).resolve().parents[3]
+    try:
+        proc = subprocess.run(
+            [sys.executable, '-c', _PADDLE_GPU_PROBE_SCRIPT],
+            cwd=str(server_root),
+            env=os.environ.copy(),
+            capture_output=True,
+            timeout=45,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning('Paddle GPU subprocess probe error (%s) — CPU OCR', exc)
+        return False
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or b'').decode(errors='replace').strip()
+        if stderr:
+            logger.warning(
+                'Paddle GPU subprocess probe failed (rc=%s): %s — CPU OCR',
+                proc.returncode,
+                stderr[-400:],
+            )
+        return False
+    return True
+
 
 def _gpu_actually_works() -> bool:
-    """Smoke-test cuDNN bằng 1 conv tiny — phát hiện sớm mismatch cuDNN/CUDA
-    (vd. paddle build cu120 + libcudnn.so.9) trước khi PaddleOCR rơi worker."""
-    try:
-        import paddle
-        if paddle.device.cuda.device_count() <= 0:
-            return False
-        paddle.set_device("gpu:0")
-        x = paddle.randn([1, 3, 8, 8])
-        conv = paddle.nn.Conv2D(3, 4, 3)
-        _ = conv(x)
-        return True
-    except Exception as exc:
-        logger.warning("Paddle GPU probe failed (%s) — falling back to CPU OCR", exc)
+    """Smoke-test Paddle GPU; fallback CPU khi cuDNN torch/paddle không tương thích."""
+    if _torch_cudnn_blocks_paddle_gpu():
+        logger.warning(
+            'Torch cuDNN already loaded (<%s) — Paddle GPU unsafe, using CPU OCR',
+            90500,
+        )
         return False
+    if not _paddle_gpu_probe_subprocess():
+        return False
+    return True
 
 
 class ShipIdRecognizer:
     def __init__(self, lang="en", use_gpu=None, show_log=False):
         """Khởi tạo PaddleOCR; auto fallback CPU nếu GPU/cuDNN không sẵn sàng."""
-        init_windows_cuda_path("pre")
+        init_cuda_library_path('pre')
         import paddle
 
         if use_gpu is None:
@@ -37,8 +89,8 @@ class ShipIdRecognizer:
             if not _gpu_actually_works():
                 use_gpu = False
 
-        paddle.set_device("gpu:0" if use_gpu else "cpu")
-        init_windows_cuda_path("post")
+        paddle.set_device('gpu:0' if use_gpu else 'cpu')
+        init_cuda_library_path('post')
 
         from paddleocr import PaddleOCR
         self.ocr = PaddleOCR(

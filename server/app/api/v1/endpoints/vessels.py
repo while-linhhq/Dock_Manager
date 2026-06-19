@@ -2,7 +2,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Any, List
 
 import cv2
@@ -16,17 +15,23 @@ from app.api.deps import get_current_user
 from app.core.config import settings
 from app.schemas.vessel import VesselCreate, VesselUpdate, VesselRead
 from app.repositories.vessel_repository import vessel_repo
-from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
+from app.services.ai.visual_embedding_factory import get_visual_embedding_extractor
+from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ship_invoice_backfill_service import run_vessel_backfill_task, vessel_ready_for_ai_invoice
-from app.services.vessel_read_service import vessel_to_read
+from app.services.vessel_read_service import vessel_to_read, vessels_to_read
+from app.services.vessel_visual_reference_service import (
+    count_visual_references_by_ship_ids,
+    delete_all_visual_references_for_ship,
+    delete_visual_preview,
+    local_preview_path,
+)
 from app.services.storage.minio_layout import visual_reference_preview_key
 from app.services.storage.minio_service import (
     get_object_bytes,
     parse_minio_uri,
     presign_get,
     put_bytes,
-    remove_object,
 )
 
 _log = logging.getLogger(__name__)
@@ -38,21 +43,9 @@ _LOCAL_PREVIEW_URI_PREFIX = 'local://'
 
 router = APIRouter()
 
-_visual_extractor: VisualEmbeddingExtractor | None = None
-_visual_extractor_lock = Lock()
-
 
 def _get_visual_extractor() -> VisualEmbeddingExtractor:
-    global _visual_extractor
-    with _visual_extractor_lock:
-        if _visual_extractor is None:
-            _visual_extractor = VisualEmbeddingExtractor(
-                model_path=settings.VISUAL_MODEL_PATH or None,
-                backbone=settings.VISUAL_BACKBONE,
-                device=settings.VISUAL_DEVICE or settings.DEVICE,
-                embedding_dim=settings.VISUAL_EMBEDDING_DIM,
-            )
-        return _visual_extractor
+    return get_visual_embedding_extractor()
 
 
 def _get_qdrant_store(*, vector_size: int) -> QdrantVectorStore:
@@ -97,7 +90,7 @@ def _local_preview_rel(ship_id: str, point_id: str) -> str:
 
 
 def _local_preview_path(ship_id: str, point_id: str) -> Path:
-    return _LOCAL_PREVIEW_ROOT / _local_preview_rel(ship_id, point_id)
+    return local_preview_path(ship_id, point_id)
 
 
 def _save_visual_preview_local(jpeg: bytes, *, ship_id: str, point_id: str) -> str:
@@ -195,30 +188,7 @@ def _enrich_visual_reference_item(
 
 
 def _delete_visual_preview(*, ship_id: str, point_id: str, preview_uri: str | None = None) -> None:
-    uri = str(preview_uri or '').strip()
-    if uri.startswith(_LOCAL_PREVIEW_URI_PREFIX):
-        rel = uri[len(_LOCAL_PREVIEW_URI_PREFIX) :]
-        try:
-            (_LOCAL_PREVIEW_ROOT / rel).unlink(missing_ok=True)
-        except Exception:
-            _log.warning('Could not remove local visual reference preview %s', rel)
-        return
-
-    ref = parse_minio_uri(uri)
-    if ref is not None:
-        try:
-            remove_object(bucket=ref.bucket, object_key=ref.object_key)
-        except Exception:
-            _log.warning(
-                'Could not remove MinIO visual reference preview bucket=%s key=%s',
-                ref.bucket,
-                ref.object_key,
-            )
-
-    try:
-        _local_preview_path(ship_id, point_id).unlink(missing_ok=True)
-    except Exception:
-        pass
+    delete_visual_preview(ship_id=ship_id, point_id=point_id, preview_uri=preview_uri)
 
 
 def _decode_upload_image(content: bytes) -> np.ndarray:
@@ -316,7 +286,19 @@ def _schedule_vessel_invoice_backfill(background_tasks: BackgroundTasks, vessel_
 @router.get('/', response_model=List[VesselRead])
 def list_vessels(skip: int = 0, limit: int = 100, active_only: bool = False, db: Session = Depends(get_db)):
     vessels = vessel_repo.get_all(db, skip=skip, limit=limit, active_only=active_only)
-    return [vessel_to_read(db, v) for v in vessels]
+    return vessels_to_read(db, vessels)
+
+
+@router.get('/visual-reference-counts')
+def get_visual_reference_counts(
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Batch count of enrolled visual references keyed by ship_id."""
+    vessels = vessel_repo.get_all(db, skip=0, limit=10_000, active_only=False)
+    ship_ids = [str(v.ship_id) for v in vessels]
+    counts = count_visual_references_by_ship_ids(ship_ids)
+    return {'counts': counts}
 
 
 @router.get('/{vessel_id}', response_model=VesselRead)
@@ -324,7 +306,8 @@ def get_vessel(vessel_id: int, db: Session = Depends(get_db)):
     vessel = vessel_repo.get(db, vessel_id)
     if not vessel:
         raise HTTPException(status_code=404, detail='Vessel not found')
-    return vessel_to_read(db, vessel)
+    counts = count_visual_references_by_ship_ids([str(vessel.ship_id)])
+    return vessel_to_read(db, vessel, visual_reference_counts=counts)
 
 
 @router.post('/', response_model=VesselRead, status_code=201)
@@ -375,6 +358,13 @@ def update_vessel(
 
 @router.delete('/{vessel_id}', status_code=204)
 def delete_vessel(vessel_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    vessel = vessel_repo.get(db, vessel_id)
+    if not vessel:
+        raise HTTPException(status_code=404, detail='Vessel not found')
+
+    cleanup = delete_all_visual_references_for_ship(ship_id=str(vessel.ship_id))
+    _log.info('Vessel visual cleanup before delete vessel_id=%s %s', vessel_id, cleanup)
+
     if not vessel_repo.delete(db, vessel_id):
         raise HTTPException(status_code=404, detail='Vessel not found')
 

@@ -14,6 +14,7 @@ from app.services.ai.runtime_cache_redis import RuntimeCacheRedis
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
 from app.utils.ai.pipeline_utils import clamp_box
+from app.utils.ai.visual_crop import crop_frame_box
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,8 @@ class VisualIdWorkerThread(threading.Thread):
                     height = max(0, y2 - y1)
                     if width * height < self._min_crop_area:
                         continue
-                    crop = frame[y1:y2, x1:x2]
-                    if crop.size == 0:
+                    crop = crop_frame_box(frame, (x1, y1, x2, y2))
+                    if crop is None or crop.size == 0:
                         continue
                     crops.append(crop)
                     refs.append((str(track_id), width, height))

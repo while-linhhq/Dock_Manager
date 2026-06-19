@@ -265,6 +265,57 @@ def map_detection_box_to_fused_layout(
     )
 
 
+def map_camera_point_to_fused_layout(
+    x: float,
+    y: float,
+    member: FusionMember,
+    source_h: int,
+    source_w: int,
+) -> tuple[int, int] | None:
+    """Map one native camera pixel to fused canvas coords (resize → crop → rotate → paste)."""
+    if source_h <= 0 or source_w <= 0:
+        return None
+
+    rw = int(member.layout_w or source_w)
+    rh = int(member.layout_h or source_h)
+    sx = rw / float(source_w)
+    sy = rh / float(source_h)
+    xr, yr = x * sx, y * sy
+
+    left, top, right, bottom = _crop_margins_rw_rh(member, rw, rh)
+    crop_w = rw - left - right
+    crop_h = rh - top - bottom
+    if crop_w <= 0 or crop_h <= 0:
+        return None
+
+    if xr < left or xr > rw - right or yr < top or yr > rh - bottom:
+        return None
+
+    xc = xr - left
+    yc = yr - top
+    layout_x = int(member.layout_x or 0)
+    layout_y = int(member.layout_y or 0)
+    angle = float(member.layout_rotation or 0.0)
+
+    if abs(angle) < 0.01:
+        return layout_x + int(round(xc)), layout_y + int(round(yc))
+
+    h_c, w_c = crop_h, crop_w
+    center = (w_c / 2.0, h_c / 2.0)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    cos = abs(matrix[0, 0])
+    sin = abs(matrix[0, 1])
+    new_width = int((h_c * sin) + (w_c * cos))
+    new_height = int((h_c * cos) + (w_c * sin))
+    matrix[0, 2] += (new_width / 2.0) - center[0]
+    matrix[1, 2] += (new_height / 2.0) - center[1]
+
+    pt = np.array([[[xc, yc]]], dtype=np.float32)
+    rotated = cv2.transform(pt, matrix)
+    rx, ry = float(rotated[0, 0, 0]), float(rotated[0, 0, 1])
+    return layout_x + int(round(rx)), layout_y + int(round(ry))
+
+
 def scaled_fusion_config(
     config: FusionConfig,
     max_width: int = DEFAULT_FUSED_MAX_WIDTH,

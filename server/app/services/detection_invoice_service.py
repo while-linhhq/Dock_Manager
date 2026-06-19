@@ -40,6 +40,17 @@ def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decim
     return max(raw.quantize(Decimal('0.01'), rounding=ROUND_UP), Decimal('0.01'))
 
 
+def resolve_berth_window(
+    start: Optional[datetime],
+    end: Optional[datetime],
+    berth_in: Optional[datetime],
+    berth_out: Optional[datetime],
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    if berth_in is not None and berth_out is not None:
+        return berth_in, berth_out
+    return start, end
+
+
 def ensure_ai_invoice_for_detection(detection_id: int) -> None:
     """
     Tạo tối đa một hóa đơn AI cho detection_id.
@@ -77,7 +88,14 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             )
             return
 
-        hours = _berthing_hours(det.start_time, det.end_time)
+        hours = _berthing_hours(
+            *resolve_berth_window(
+                det.start_time,
+                det.end_time,
+                det.berth_in_time,
+                det.berth_out_time,
+            )
+        )
         items: list[InvoiceItemCreate] = []
         has_period = False
 

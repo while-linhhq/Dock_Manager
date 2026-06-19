@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from app.models.camera import Camera
 from typing import List, Optional
 
@@ -12,6 +13,18 @@ class CameraRepository:
 
     def get_all(self, db: Session) -> List[Camera]:
         return db.query(Camera).all()
+
+    def set_boundary_lines(
+        self, db: Session, camera_id: int, payload: Optional[dict]
+    ) -> Optional[Camera]:
+        obj = self.get(db, camera_id)
+        if not obj:
+            return None
+        obj.boundary_lines = payload
+        flag_modified(obj, 'boundary_lines')
+        db.commit()
+        db.refresh(obj)
+        return obj
 
 
 camera_repo = CameraRepository()

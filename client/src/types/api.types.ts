@@ -228,12 +228,23 @@ export type DashboardSummary = {
   detection_volume_counts?: number[];
 };
 
+export type BoundaryPoint = { x: number; y: number };
+
+export type BoundaryLines = {
+  enabled: boolean;
+  frame_w: number;
+  frame_h: number;
+  line1: BoundaryPoint[];
+  line2: BoundaryPoint[];
+};
+
 export type CameraRead = {
   id: string;
   camera_name: string;
   name?: string;
   rtsp_url: string;
   is_active: boolean;
+  boundary_lines?: BoundaryLines | null;
 }
 
 export type PortLogRead = {

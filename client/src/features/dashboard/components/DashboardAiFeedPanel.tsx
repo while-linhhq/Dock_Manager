@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Camera, Ship, Video, BarChart3 } from 'lucide-react';
+import { BarChart3, Camera, Maximize2, Minimize2, Ship, Video } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { buildPipelinePreviewWsUrl } from '../../../services/pipeline-preview-ws';
 import type { PipelineStatus } from '../services/dashboardApi';
@@ -32,10 +32,13 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
   onRefreshAnalytics,
 }) => {
   const [tab, setTab] = useState<AiPanelTab>('live');
+  const [previewExpanded, setPreviewExpanded] = useState(false);
   const [hasPreviewFrame, setHasPreviewFrame] = useState(false);
   const [previewReceivedFps, setPreviewReceivedFps] = useState(0);
   const [previewRenderFps, setPreviewRenderFps] = useState(0);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const previewContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastBitmapRef = useRef<ImageBitmap | null>(null);
 
   const wsActive = tab === 'live' && Boolean(pipelineStatus?.is_running);
 
@@ -138,10 +141,14 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, viewW, viewH);
       ctx.drawImage(bitmap, offsetX, offsetY, drawW, drawH);
-      if (activeBitmap) {
+      if (activeBitmap && activeBitmap !== bitmap) {
         activeBitmap.close();
       }
       activeBitmap = bitmap;
+      if (lastBitmapRef.current && lastBitmapRef.current !== bitmap) {
+        lastBitmapRef.current.close();
+      }
+      lastBitmapRef.current = bitmap;
       setHasPreviewFrame(true);
       renderedCount += 1;
     };
@@ -233,14 +240,119 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
 
     connect();
 
+    const container = previewContainerRef.current;
+    const resizeObserver =
+      container &&
+      new ResizeObserver(() => {
+        const bitmap = lastBitmapRef.current;
+        if (bitmap) {
+          paintBitmap(bitmap);
+        }
+      });
+    if (resizeObserver && container) {
+      resizeObserver.observe(container);
+    }
+
     return () => {
       cancelled = true;
+      resizeObserver?.disconnect();
       clearReconnect();
       clearWatchdog();
       ws?.close();
       clearPreview();
+      if (lastBitmapRef.current) {
+        lastBitmapRef.current.close();
+        lastBitmapRef.current = null;
+      }
     };
   }, [wsActive]);
+
+  useEffect(() => {
+    if (tab !== 'live' && previewExpanded) {
+      setPreviewExpanded(false);
+    }
+  }, [tab, previewExpanded]);
+
+  useEffect(() => {
+    if (!previewExpanded) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPreviewExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewExpanded]);
+
+  const livePreview = (
+    <div
+      ref={previewContainerRef}
+      className={cn(
+        'bg-black relative flex items-center justify-center group cursor-crosshair overflow-hidden',
+        previewExpanded
+          ? 'fixed inset-3 z-[120] h-[calc(100dvh-1.5rem)] w-[calc(100dvw-1.5rem)] rounded-2xl shadow-2xl ring-1 ring-white/15'
+          : 'w-full h-[clamp(440px,64vh,900px)]',
+      )}
+    >
+      <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent pointer-events-none" />
+      <canvas
+        ref={previewCanvasRef}
+        className={cn(
+          'absolute inset-0 h-full w-full object-contain',
+          hasPreviewFrame ? 'opacity-100' : 'opacity-0',
+        )}
+      />
+      {!hasPreviewFrame ? (
+        <Ship className="relative z-[1] w-20 h-20 text-white/5 group-hover:text-blue-500/10 transition-colors duration-500" />
+      ) : null}
+
+      {pipelineStatus?.is_running && !hasPreviewFrame && (
+        <div className="absolute top-1/4 left-1/4 w-1/2 h-1/2 border-2 border-blue-500/50 rounded-sm z-[1]">
+          <div className="absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 uppercase tracking-tighter rounded-t-sm">
+            Đang quét...
+          </div>
+        </div>
+      )}
+
+      <div className="absolute top-3 left-3 z-[2] rounded bg-black/65 px-2 py-1 font-mono text-[9px] uppercase tracking-widest text-blue-200 backdrop-blur-md border border-white/10">
+        Debug preview · bbox / track overlay
+      </div>
+
+      <div className="absolute top-3 right-3 z-[2] flex gap-2">
+        <button
+          type="button"
+          onClick={() => setPreviewExpanded((value) => !value)}
+          className="inline-flex items-center gap-1 rounded bg-black/65 px-2 py-1 text-[9px] font-mono uppercase tracking-widest text-white backdrop-blur-md border border-white/10 hover:bg-black/80"
+          aria-label={previewExpanded ? 'Thu nhỏ preview' : 'Phóng to preview'}
+        >
+          {previewExpanded ? (
+            <>
+              <Minimize2 className="h-3 w-3" />
+              Thu nhỏ
+            </>
+          ) : (
+            <>
+              <Maximize2 className="h-3 w-3" />
+              Phóng to
+            </>
+          )}
+        </button>
+      </div>
+
+      <div className="absolute bottom-4 right-4 flex flex-wrap justify-end gap-2 z-[2]">
+        <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
+          Hệ thống: {pipelineStatus?.is_running ? 'ONLINE' : 'OFFLINE'}
+        </div>
+        {pipelineStatus?.is_running ? (
+          <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
+            Nhận {previewReceivedFps} · Hiển thị {previewRenderFps} FPS
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <div className="bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl overflow-hidden shadow-2xl">
@@ -307,38 +419,16 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       </div>
 
       {tab === 'live' ? (
-        <div className="aspect-video bg-black relative flex items-center justify-center group cursor-crosshair overflow-hidden">
-          <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent pointer-events-none" />
-          <canvas
-            ref={previewCanvasRef}
-            className={cn(
-              'absolute inset-0 h-full w-full object-contain',
-              hasPreviewFrame ? 'opacity-100' : 'opacity-0',
-            )}
-          />
-          {!hasPreviewFrame ? (
-            <Ship className="relative z-[1] w-20 h-20 text-white/5 group-hover:text-blue-500/10 transition-colors duration-500" />
+        <>
+          {previewExpanded ? (
+            <div
+              className="fixed inset-0 z-[110] bg-black/70 backdrop-blur-[2px]"
+              aria-hidden
+              onClick={() => setPreviewExpanded(false)}
+            />
           ) : null}
-
-          {pipelineStatus?.is_running && !hasPreviewFrame && (
-            <div className="absolute top-1/4 left-1/4 w-1/2 h-1/2 border-2 border-blue-500/50 rounded-sm z-[1]">
-              <div className="absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 uppercase tracking-tighter rounded-t-sm">
-                Đang quét...
-              </div>
-            </div>
-          )}
-
-          <div className="absolute bottom-4 right-4 flex space-x-2 z-[2]">
-            <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
-              Hệ thống: {pipelineStatus?.is_running ? 'ONLINE' : 'OFFLINE'}
-            </div>
-            {pipelineStatus?.is_running ? (
-              <div className="px-2 py-1 bg-black/60 backdrop-blur-md border border-white/10 rounded text-[9px] font-mono text-white uppercase tracking-tighter">
-                Nhận {previewReceivedFps} · Hiển thị {previewRenderFps} FPS
-              </div>
-            ) : null}
-          </div>
-        </div>
+          {livePreview}
+        </>
       ) : (
         <DashboardAiAnalyticsCharts
           detections={detections}

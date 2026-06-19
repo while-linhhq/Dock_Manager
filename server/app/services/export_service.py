@@ -47,9 +47,13 @@ class ExportService:
     @staticmethod
     def _berth_duration_text(invoice) -> str:
         det = getattr(invoice, 'detection', None)
-        if det is None or det.start_time is None or det.end_time is None:
+        if det is None:
             return ''
-        total_seconds = int((det.end_time - det.start_time).total_seconds())
+        start = det.berth_in_time or det.start_time
+        end = det.berth_out_time or det.end_time
+        if start is None or end is None:
+            return ''
+        total_seconds = int((end - start).total_seconds())
         if total_seconds <= 0:
             return ''
         hours = total_seconds // 3600
@@ -227,8 +231,12 @@ class ExportService:
     @staticmethod
     def _berth_minutes(invoice) -> Optional[float]:
         det = getattr(invoice, 'detection', None)
-        if det is not None and det.start_time is not None and det.end_time is not None:
-            secs = (det.end_time - det.start_time).total_seconds()
+        if det is None:
+            return None
+        start = det.berth_in_time or det.start_time
+        end = det.berth_out_time or det.end_time
+        if start is not None and end is not None:
+            secs = (end - start).total_seconds()
             if secs > 0:
                 return round(secs / 60, 2)
         return None
@@ -288,8 +296,10 @@ class ExportService:
                 else None
             )
             det = inv.detection
-            berth_arrival_count = 1 if det is not None and det.start_time is not None else 0
-            berth_departure_count = 1 if det is not None and det.end_time is not None else 0
+            arrival_time = (det.berth_in_time or det.start_time) if det is not None else None
+            departure_time = (det.berth_out_time or det.end_time) if det is not None else None
+            berth_arrival_count = 1 if arrival_time is not None else 0
+            berth_departure_count = 1 if departure_time is not None else 0
 
             ws.cell(row=row_idx, column=1, value=row_idx - 1)
             ws.cell(row=row_idx, column=2, value=ship_id or '')
@@ -307,7 +317,7 @@ class ExportService:
             ws.cell(
                 row=row_idx,
                 column=8,
-                value=self._display_datetime(det.start_time) if det is not None else '',
+                value=self._display_datetime(arrival_time) if det is not None else '',
             )
             ws.cell(row=row_idx, column=9, value=self._berth_duration_text(inv))
             amount_cell = ws.cell(row=row_idx, column=10, value=float(inv.total_amount or 0))

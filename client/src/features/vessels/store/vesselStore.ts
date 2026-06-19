@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { VesselRead, VesselTypeRead } from '../../../types/api.types';
 import { vesselsApi } from '../services/vesselsApi';
+import { enrichVesselReferenceCounts } from '../services/enrichVesselReferenceCounts';
 import type { VesselCreate, VesselTypeCreate } from '../services/vesselsApi';
 
 interface VesselState {
@@ -25,7 +26,8 @@ export const useVesselStore = create<VesselState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const vessels = await vesselsApi.getVessels(skip, limit, activeOnly);
-      set({ vessels, isLoading: false });
+      const withCounts = await enrichVesselReferenceCounts(vessels);
+      set({ vessels: withCounts, isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to fetch vessels', isLoading: false });
     }

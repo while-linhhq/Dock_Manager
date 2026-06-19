@@ -266,7 +266,7 @@ async def editor_camera_preview_stream(websocket: WebSocket, camera_id: int) -> 
         db.close()
 
     editor_preview_manager.set_target_fps(record_fps)
-    editor_preview_manager.acquire(camera_id, source)
+    editor_preview_manager.acquire(camera_id, source, boundary_lines=camera.boundary_lines)
     ws = SafeWebSocket(websocket)
     await ws.accept()
     loop = asyncio.get_running_loop()
@@ -304,7 +304,11 @@ def _sync_editor_preview_readers(
         for camera_id in next_camera_ids - acquired_camera_ids:
             camera = camera_repo.get(db, camera_id)
             if camera is not None:
-                editor_preview_manager.acquire(camera_id, camera.rtsp_url)
+                editor_preview_manager.acquire(
+                    camera_id,
+                    camera.rtsp_url,
+                    boundary_lines=camera.boundary_lines,
+                )
     finally:
         db.close()
 

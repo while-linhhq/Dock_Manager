@@ -37,6 +37,7 @@ def has_menu_access(user, menu_key: str) -> bool:
     aliases = {
         'discount_approval': ['discount_approval', 'discount-approval', 'discount'],
         'revenue': ['revenue', 'billing', 'invoices'],
+        'ai_lab': ['ai_lab', 'ai-lab', 'ailab'],
     }.get(menu_key, [menu_key])
     allowed = _normalized_menu_set(perms)
     if allowed:

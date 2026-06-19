@@ -14,6 +14,7 @@ import { PortPage } from '../pages/PortPage';
 import { CameraFusionPage } from '../pages/CameraFusionPage';
 import { CameraFusionEditorPage } from '../pages/CameraFusionEditorPage';
 import { StatisticsPage } from '../pages/StatisticsPage';
+import { AiLabPage } from '../pages/AiLabPage';
 import { BackupPage } from '../pages/BackupPage';
 import { UsersPage } from '../pages/UsersPage';
 import { ProfilePage } from '../pages/ProfilePage';
@@ -92,6 +93,7 @@ const router = createBrowserRouter([
       { path: PATHS.CAMERA_FUSION, element: <RequireMenuAccess menu="port"><CameraFusionPage /></RequireMenuAccess> },
       { path: `${PATHS.CAMERA_FUSION}/:id`, element: <RequireMenuAccess menu="port"><CameraFusionEditorPage /></RequireMenuAccess> },
       { path: PATHS.STATS, element: <RequireMenuAccess menu="stats"><StatisticsPage /></RequireMenuAccess> },
+      { path: PATHS.AI_LAB, element: <RequireMenuAccess menu="ai_lab"><AiLabPage /></RequireMenuAccess> },
       { path: PATHS.BACKUP, element: <RequireMenuAccess menu="backup"><BackupPage /></RequireMenuAccess> },
       { path: PATHS.USERS, element: <RequireMenuAccess menu="users"><UsersPage /></RequireMenuAccess> },
       { path: PATHS.PROFILE, element: <RequireMenuAccess menu="profile"><ProfilePage /></RequireMenuAccess> },

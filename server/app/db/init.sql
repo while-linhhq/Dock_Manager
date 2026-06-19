@@ -314,6 +314,7 @@ INSERT INTO port_configs (key, value, description) VALUES
     ('model_path',          'app/yolo11n.pt', 'Path to YOLO model file'),
     ('device',              '0',            'Inference device (0 for GPU, cpu for CPU)'),
     ('conf',                '0.75',         'YOLO detection confidence threshold'),
+    ('yolo_imgsz',          '640',          'YOLO inference input size (letterbox, e.g. 640 or 960)'),
     ('resize_scale',        '0.5',          'Frame resize scale for processing'),
     ('track_min_confirm_sec', '1.5',        'Seconds before TENTATIVE becomes CONFIRMED'),
     ('track_max_tentative_sec', '0.5',      'Seconds without match before tentative track is removed'),

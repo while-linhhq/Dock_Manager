@@ -31,6 +31,7 @@ from app.services.ai.multi_frame_reader import (
 )
 from app.services.ai.seam_anchor_verifier import SeamAnchorVerifier
 from app.utils.ai.fused_track_overlay import draw_fused_track_overlay
+from app.utils.ai.draw_boundary import draw_boundary_lines_on_fused
 from app.utils.ai.pipeline_utils import put_queue_drop_oldest
 
 _log = logging.getLogger(__name__)
@@ -100,6 +101,12 @@ class GroupFrameHub:
             int(preview_fusion_config.canvas_width),
             int(preview_fusion_config.canvas_height),
         )
+        self._boundary_by_camera: dict[int, dict | None] = {
+            int(member.camera_id): (
+                member.camera.boundary_lines if getattr(member, 'camera', None) else None
+            )
+            for member in enabled_members
+        }
         camera_ids = [int(member.camera_id) for member in enabled_members]
         self._synchronizer = FrameSynchronizer(
             self._frame_buffer,
@@ -226,6 +233,9 @@ class GroupFrameHub:
     def set_track_providers(self, providers: list[TrackProvider]) -> None:
         self._track_providers = list(providers)
 
+    def update_boundary_lines(self, camera_id: int, payload: dict | None) -> None:
+        self._boundary_by_camera[int(camera_id)] = payload
+
     def is_alive(self) -> bool:
         return self._coordinator.is_alive()
 
@@ -308,6 +318,16 @@ class GroupFrameHub:
                     continue
                 fused = self._draw_batch_sync_label(fused, batch)
                 fused = self._overlay_fused(fused, batch, self._overlay_members_record)
+                frame_shapes = {
+                    camera_id: (timed.frame.shape[0], timed.frame.shape[1])
+                    for camera_id, timed in batch.items()
+                }
+                fused = draw_boundary_lines_on_fused(
+                    fused,
+                    members=list(self._overlay_members_record.values()),
+                    boundary_by_camera=self._boundary_by_camera,
+                    frame_shapes=frame_shapes,
+                )
 
                 self._push_dashboard_preview(fused)
 

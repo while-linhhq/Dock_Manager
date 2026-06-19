@@ -13,6 +13,8 @@ class Detection(Base):
     track_id = Column(String(100), unique=True, index=True)
     start_time = Column(DateTime(timezone=True), nullable=True)
     end_time = Column(DateTime(timezone=True), nullable=True)
+    berth_in_time = Column(DateTime(timezone=True), nullable=True)
+    berth_out_time = Column(DateTime(timezone=True), nullable=True)
     video_path = Column(Text, nullable=True)
     audit_image_path = Column(Text, nullable=True)
     ocr_results = Column(JSONB, nullable=True)

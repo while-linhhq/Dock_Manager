@@ -1,5 +1,5 @@
 import { httpClient } from '../../../services/httpClient';
-import type { DetectionRead, CameraRead, DetectionMediaRead } from '../../../types/api.types';
+import type { DetectionRead, CameraRead, DetectionMediaRead, BoundaryLines } from '../../../types/api.types';
 
 export type DetectionVerify = {
   is_accepted: boolean;
@@ -62,6 +62,18 @@ export const portApi = {
   },
   getCameras: async (activeOnly: boolean = false): Promise<CameraRead[]> => {
     return httpClient.get<CameraRead[]>(`/cameras/?active_only=${activeOnly}`);
+  },
+  getCamera: async (cameraId: string | number): Promise<CameraRead> => {
+    return httpClient.get<CameraRead>(`/cameras/${cameraId}`);
+  },
+  setBoundaryLines: async (
+    cameraId: string | number,
+    payload: BoundaryLines,
+  ): Promise<CameraRead> => {
+    return httpClient.put<CameraRead>(`/cameras/${cameraId}/boundary-lines`, payload);
+  },
+  clearBoundaryLines: async (cameraId: string | number): Promise<CameraRead> => {
+    return httpClient.delete<CameraRead>(`/cameras/${cameraId}/boundary-lines`);
   },
   createCamera: async (data: CameraCreate): Promise<CameraRead> => {
     return httpClient.post<CameraRead>('/cameras/', toCameraApiPayload(data));

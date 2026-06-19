@@ -30,6 +30,9 @@ server/app/runtime-media/
 # Training snapshot crops (collected at runtime)
 server/snapshot/
 
+# Fine-tune datasets, prepared splits, and training runs
+fine-tune/
+
 # Local DB export blobs (images/videos under sql dumps — do not version)
 server/app/db/sqlCommand/detections/
 

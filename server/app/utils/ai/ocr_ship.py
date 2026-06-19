@@ -4,8 +4,8 @@ import argparse
 import cv2
 
 # Bootstrap DLLs trước khi import bất kỳ thư viện CUDA nào
-from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
-init_windows_cuda_path("pre")
+from app.utils.ai.gpu_bootstrap import init_cuda_library_path
+init_cuda_library_path('pre')
 
 # Import torch trước paddle để tránh xung đột DLL (nếu torch load được)
 try:

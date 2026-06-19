@@ -8,6 +8,7 @@ export type MenuKey =
   | 'vessels'
   | 'port'
   | 'stats'
+  | 'ai_lab'
   | 'backup'
   | 'users'
   | 'profile';
@@ -20,6 +21,7 @@ export const ALL_MENU_KEYS: MenuKey[] = [
   'vessels',
   'port',
   'stats',
+  'ai_lab',
   'backup',
   'users',
   'profile',
@@ -33,6 +35,7 @@ const MENU_ALIAS: Record<MenuKey, string[]> = {
   vessels: ['vessels', 'ships'],
   port: ['port'],
   stats: ['stats', 'statistics'],
+  ai_lab: ['ai_lab', 'ai-lab', 'ailab'],
   backup: ['backup', 'history'],
   users: ['users', 'rbac', 'roles'],
   profile: ['profile'],

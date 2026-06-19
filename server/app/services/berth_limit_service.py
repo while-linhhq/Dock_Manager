@@ -25,7 +25,12 @@ VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
 def _reference_dt(detection: Optional[Detection], fallback: Optional[datetime] = None) -> datetime:
     if detection is not None:
-        return detection.start_time or detection.created_at or datetime.now(VN_TZ)
+        return (
+            detection.berth_in_time
+            or detection.start_time
+            or detection.created_at
+            or datetime.now(VN_TZ)
+        )
     if fallback is not None:
         if fallback.tzinfo is None:
             return fallback.replace(tzinfo=VN_TZ)
@@ -98,7 +103,7 @@ def count_ship_berths_in_window(
     if q is None:
         return 0
 
-    time_col = func.coalesce(Detection.start_time, Detection.created_at)
+    time_col = func.coalesce(Detection.berth_in_time, Detection.start_time, Detection.created_at)
     return int(
         q.filter(
             time_col >= window_start,
@@ -122,7 +127,7 @@ def count_ship_berths_at_event(
     if q is None:
         return 0
 
-    time_col = func.coalesce(Detection.start_time, Detection.created_at)
+    time_col = func.coalesce(Detection.berth_in_time, Detection.start_time, Detection.created_at)
     if event_time.tzinfo is None:
         event_time = event_time.replace(tzinfo=ZoneInfo('UTC'))
     else:
@@ -256,7 +261,7 @@ def _invoice_berth_context(db: Session, invoice) -> Optional[_ShipBerthContext]:
 
     if detection is not None:
         reference = _reference_dt(detection)
-        event_time = detection.start_time or detection.created_at
+        event_time = detection.berth_in_time or detection.start_time or detection.created_at
         event_detection_id = detection.id
     elif invoice.created_at is not None:
         reference = _reference_dt(None, invoice.created_at)
@@ -343,7 +348,7 @@ def compute_detection_over_berth_limit(db: Session, detection: Detection) -> boo
         return False
 
     reference = _reference_dt(detection)
-    event_time = detection.start_time or detection.created_at
+    event_time = detection.berth_in_time or detection.start_time or detection.created_at
     fees = _fees_with_berth_limits(
         fee_config_repo.get_by_vessel_type(db, vessel_type_id),
     )

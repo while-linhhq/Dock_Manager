@@ -45,6 +45,9 @@ export const vesselsApi = {
   getVessels: async (skip: number = 0, limit: number = 100, activeOnly: boolean = false): Promise<VesselRead[]> => {
     return httpClient.get<VesselRead[]>(`/vessels/?skip=${skip}&limit=${limit}&active_only=${activeOnly}`);
   },
+  getVisualReferenceCounts: async (): Promise<{ counts: Record<string, number> }> => {
+    return httpClient.get<{ counts: Record<string, number> }>('/vessels/visual-reference-counts');
+  },
   getVessel: async (id: string): Promise<VesselRead> => {
     return httpClient.get<VesselRead>(`/vessels/${id}`);
   },

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Loader2, Upload } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useVesselStore } from '../store/vesselStore';
 import type { VesselCreate, VesselTypeCreate } from '../services/vesselsApi';
 import type { VesselRead, VesselTypeRead } from '../../../types/api.types';
@@ -16,6 +16,7 @@ import { vesselsApi } from '../services/vesselsApi';
 import { ApiError } from '../../../services/httpClient';
 import { Modal } from '../../../components/Modal/Modal';
 import { Button } from '../../../components/Button/Button';
+import { ImageMultiDropzone } from '../../../components/ImageMultiDropzone/ImageMultiDropzone';
 import type { VesselVisualReference } from '../services/vesselsApi';
 
 export const VesselsView: React.FC = () => {
@@ -179,6 +180,12 @@ export const VesselsView: React.FC = () => {
     setUploadPreviewUrls([]);
   };
 
+  const handleUploadFilesChange = (selected: File[]) => {
+    clearUploadPreviews();
+    setUploadFiles(selected);
+    setUploadPreviewUrls(selected.map((file) => URL.createObjectURL(file)));
+  };
+
   const handleUploadVesselImages = async (vesselId: string, files: File[]) => {
     try {
       setIsUploadingImage(true);
@@ -317,32 +324,12 @@ export const VesselsView: React.FC = () => {
           <p className="text-xs text-gray-600 dark:text-gray-300">
             Ảnh này sẽ dùng để trích đặc trưng visual cho tàu <strong>{uploadTarget?.ship_id}</strong>.
           </p>
-          <label
-            className="block border-2 border-dashed border-gray-300 dark:border-white/15 rounded-xl p-6 cursor-pointer
-            hover:border-blue-500 transition-colors bg-gray-50/50 dark:bg-white/[0.02]"
-          >
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                const selected = Array.from(e.target.files ?? []);
-                clearUploadPreviews();
-                setUploadFiles(selected);
-                setUploadPreviewUrls(selected.map((file) => URL.createObjectURL(file)));
-                e.target.value = '';
-              }}
-            />
-            <div className="flex items-center gap-3 text-sm text-gray-700 dark:text-gray-200">
-              <Upload className="w-5 h-5 text-blue-500" />
-              <span>
-                {uploadFiles.length > 0
-                  ? `Đã chọn ${uploadFiles.length} ảnh`
-                  : 'Chọn một hoặc nhiều ảnh tàu (jpg/png/webp) để trích đặc trưng'}
-              </span>
-            </div>
-          </label>
+          <ImageMultiDropzone
+            files={uploadFiles}
+            onFilesChange={handleUploadFilesChange}
+            disabled={isUploadingImage}
+            emptyHint="jpg, png, webp — có thể chọn hoặc kéo thả nhiều lần"
+          />
 
           {uploadPreviewUrls.length > 0 ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[320px] overflow-auto">

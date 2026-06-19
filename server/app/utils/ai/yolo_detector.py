@@ -3,8 +3,13 @@ Load YOLO: ưu tiên PyTorch + ultralytics; fallback ONNX (onnxruntime) khi torc
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
+
+COCO_BOAT_CLASS_ID = 8
 
 
 def _resolve_onnx_path(model_path: str) -> str | None:
@@ -32,17 +37,27 @@ def _torch_loads() -> bool:
 
 
 class TorchYoloWrapper:
-    def __init__(self, model, device: str, conf: float, target_classes: list[int]):
+    def __init__(
+        self,
+        model,
+        device: str,
+        conf: float,
+        target_classes: list[int],
+        *,
+        imgsz: int = 640,
+    ):
         self.model = model
         self.device = device
         self.conf = conf
         self.target_classes = target_classes
+        self.imgsz = max(32, int(imgsz))
 
     def predict_boxes(self, frame):
         results = self.model.predict(
             source=frame,
             conf=self.conf,
             classes=self.target_classes,
+            imgsz=self.imgsz,
             verbose=False,
             device=self.device,
         )
@@ -56,11 +71,33 @@ class TorchYoloWrapper:
         return boxes_list, det_confs
 
 
+def resolve_target_classes(model, *, model_path: str = '') -> list[int]:
+    """
+  Resolve YOLO `classes=` filter from model metadata.
+  Fine-tuned single-class boat models use id 0; COCO pretrained uses id 8.
+    """
+    names = getattr(model, 'names', None) or {}
+    if isinstance(names, dict) and names:
+        if len(names) == 1:
+            return [int(next(iter(names.keys())))]
+        boat_ids = [int(k) for k, v in names.items() if str(v).lower() == 'boat']
+        if boat_ids:
+            return boat_ids
+
+    path_hint = os.path.basename(model_path).lower()
+    if 'finetuned' in path_hint or 'fine-tune' in path_hint:
+        return [0]
+
+    return [COCO_BOAT_CLASS_ID]
+
+
 def load_yolo_detector(
     model_path: str,
     device: str,
     conf: float,
-    target_classes: list[int],
+    target_classes: list[int] | None = None,
+    *,
+    imgsz: int = 640,
 ):
     """
     Trả (detector, backend_name) với detector có .predict_boxes(frame) -> (boxes_list, det_confs).
@@ -69,7 +106,15 @@ def load_yolo_detector(
         from ultralytics import YOLO
 
         model = YOLO(model_path)
-        return TorchYoloWrapper(model, device, conf, target_classes), "torch"
+        classes = (
+            target_classes
+            if target_classes is not None
+            else resolve_target_classes(model, model_path=model_path)
+        )
+        return (
+            TorchYoloWrapper(model, device, conf, classes, imgsz=imgsz),
+            'torch',
+        )
 
     onnx_path = _resolve_onnx_path(model_path)
     if not onnx_path:
@@ -83,5 +128,9 @@ def load_yolo_detector(
 
     from app.utils.ai.yolo_onnx import OnnxYoloDetector
 
-    print(f"YOLO ONNX fallback (no PyTorch): {onnx_path}")
-    return OnnxYoloDetector(onnx_path, conf, target_classes), "onnx"
+    classes = target_classes if target_classes is not None else resolve_target_classes(
+        None,
+        model_path=model_path,
+    )
+    print(f'YOLO ONNX fallback (no PyTorch): {onnx_path}')
+    return OnnxYoloDetector(onnx_path, conf, classes), 'onnx'

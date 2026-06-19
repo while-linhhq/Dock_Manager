@@ -13,6 +13,10 @@ def main() -> None:
     if sr not in sys.path:
         sys.path.insert(0, sr)
 
+    from app.utils.ai.gpu_bootstrap import reexec_with_cuda_bootstrap_if_needed
+
+    reexec_with_cuda_bootstrap_if_needed()
+
     import uvicorn
 
     host = os.environ.get('HOST', '0.0.0.0')

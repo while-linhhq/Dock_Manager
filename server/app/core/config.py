@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     MODEL_PATH: str = "app/yolo11n.pt"
     DEVICE: str = "0"
     CONF: float = 0.75
+    YOLO_IMGSZ: int = 640
     RESIZE_SCALE: float = 0.5
     
     # Boat tracker (IoU + state machine) — timing in seconds (see port_timing_config)
@@ -41,7 +42,7 @@ class Settings(BaseSettings):
     CLAHE_TILE_SIZE: int = 8
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
-    PREVIEW_MAX_WIDTH: int = 960
+    PREVIEW_MAX_WIDTH: int = 1280
     PREVIEW_MAX_HEIGHT: int = 540
 
     # OCR / Paddle configuration
@@ -86,12 +87,14 @@ class Settings(BaseSettings):
     ENABLE_VISUAL_ID: bool = True
     VISUAL_ID_INTERVAL_SEC: float = 1.0
     VISUAL_MIN_CROP_AREA: int = 4096
-    VISUAL_MATCH_THRESHOLD: float = 0.72
-    VISUAL_MARGIN_THRESHOLD: float = 0.04
-    VISUAL_TOP_K: int = 5
+    VISUAL_MATCH_THRESHOLD: float = 0.55
+    VISUAL_MARGIN_THRESHOLD: float = 0.08
+    VISUAL_TOP_K: int = 20
+    VISUAL_CONSENSUS_COUNT: int = 2
     VISUAL_MODEL_PATH: str = ""
-    VISUAL_BACKBONE: str = "vit_base_patch16_224"
+    VISUAL_BACKBONE: str = "vit_base_patch14_dinov2"
     VISUAL_EMBEDDING_DIM: int = 768
+    VISUAL_IMAGE_SIZE: int = 224
     VISUAL_BATCH_SIZE: int = 8
     VISUAL_DEVICE: str = "0"
 
@@ -104,7 +107,7 @@ class Settings(BaseSettings):
     QDRANT_HOST: str = "127.0.0.1"
     QDRANT_PORT: int = 6333
     QDRANT_API_KEY: str = ""
-    QDRANT_COLLECTION: str = "vessel_visual_embeddings"
+    QDRANT_COLLECTION: str = "vessel_visual_embeddings_dinov2"
     QDRANT_VECTOR_SIZE: int = 768
     QDRANT_DISTANCE: str = "COSINE"
 
@@ -122,6 +125,19 @@ class Settings(BaseSettings):
     SEPAY_BANK_ACCOUNT: str = ''
     SEPAY_BANK_NAME: str = ''
     SEPAY_ACCOUNT_NAME: str = ''
+
+    # Zalo Bot (unknown ship identity notifications)
+    ZALO_BOT_TOKEN: str = ''
+    ZALO_CHAT_ID: str = ''
+    ZALO_WEBHOOK_SECRET: str = ''
+    ZALO_ENABLED: bool = False
+    ZALO_PUBLIC_BASE_URL: str = ''
+    # Webhook registration URL base (defaults to ZALO_PUBLIC_BASE_URL). Use when webhook is on a
+    # Cloudflare Worker route while media/preview stays on ZALO_PUBLIC_BASE_URL.
+    ZALO_WEBHOOK_BASE_URL: str = ''
+    # Use long-polling when Cloudflare blocks Zalo webhook (User-Agent Java/1.8.0_192, error 1010)
+    ZALO_POLLING_ENABLED: bool = False
+    ZALO_MEDIA_TTL_HOURS: int = 168
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'

@@ -67,6 +67,20 @@ class DetectionRepository:
         db.commit()
         return self.get(db, detection_id)
 
+    def update_vessel_id(
+        self,
+        db: Session,
+        detection_id: int,
+        vessel_id: int,
+    ) -> Optional[Detection]:
+        db_obj = self.get(db, detection_id)
+        if not db_obj:
+            return None
+        db_obj.vessel_id = vessel_id
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
     def delete(self, db: Session, detection_id: int) -> bool:
         db_obj = self.get(db, detection_id)
         if not db_obj:

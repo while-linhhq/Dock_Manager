@@ -8,6 +8,7 @@ export const PATHS = {
   PORT: '/port',
   CAMERA_FUSION: '/cameras/fusion',
   STATS: '/stats',
+  AI_LAB: '/ai-lab',
   BACKUP: '/backup',
   USERS: '/users',
   PROFILE: '/profile',

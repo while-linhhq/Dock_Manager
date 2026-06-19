@@ -7,6 +7,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from app.services.ai.visual_embedding_factory import get_visual_embedding_extractor
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
 
 logger = logging.getLogger(__name__)
@@ -41,13 +42,7 @@ class EmbeddingExtractor:
         self._backend = 'histogram'
         self._visual_extractor: VisualEmbeddingExtractor | None = None
         if use_visual_model:
-            self._visual_extractor = VisualEmbeddingExtractor(
-                model_path=visual_model_path,
-                backbone=visual_backbone,
-                device=visual_device or device,
-                image_size=visual_image_size,
-                embedding_dim=visual_embedding_dim,
-            )
+            self._visual_extractor = get_visual_embedding_extractor()
             if self._visual_extractor.backend != 'unavailable':
                 self._backend = self._visual_extractor.backend
         self._load_torch_model(model_path)

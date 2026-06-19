@@ -75,6 +75,8 @@ class TrackedBoat:
     dominant_color_hsv: tuple[int, int, int] | None = None
     last_known_ship_id: str | None = None
     ever_confirmed: bool = False
+    berth_in_ts: float | None = None
+    berth_out_ts: float | None = None
 
     def copy_public(self) -> TrackedBoat:
         """Shallow copy with copied box array (safe for queue consumers)."""
@@ -96,6 +98,8 @@ class TrackedBoat:
             dominant_color_hsv=self.dominant_color_hsv,
             last_known_ship_id=self.last_known_ship_id,
             ever_confirmed=self.ever_confirmed,
+            berth_in_ts=self.berth_in_ts,
+            berth_out_ts=self.berth_out_ts,
         )
 
 

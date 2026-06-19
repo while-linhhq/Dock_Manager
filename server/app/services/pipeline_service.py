@@ -27,8 +27,9 @@ from app.services.storage.minio_service import (
     put_file,
     remove_object,
 )
+from app.services.ship_id_utils import is_unknown_ship_id
 
-from app.utils.ai.gpu_bootstrap import init_windows_cuda_path
+from app.utils.ai.gpu_bootstrap import init_cuda_library_path
 from app.services.ai.background_model import BackgroundModelConfig, BackgroundModelRegistry
 from app.services.ai.boat_tracker import BoatTracker, TrackState
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
@@ -45,6 +46,7 @@ from app.services.ai.identity_fusion import IdentityFusion
 from app.services.ai.runtime_cache_redis import RuntimeCacheRedis
 from app.services.ai.seam_anchor_verifier import SeamAnchorConfig, SeamAnchorVerifier
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
+from app.services.ai.visual_embedding_factory import get_visual_embedding_extractor
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
 from app.services.ai.visual_id_worker import VisualIdWorkerThread
 from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
@@ -58,7 +60,7 @@ from app.services import pipeline_preview
 from app.utils.ai.pipeline_utils import put_queue_drop_oldest
 from app.utils.port_timing_config import resolve_positive_seconds
 
-init_windows_cuda_path("pre")
+init_cuda_library_path('pre')
 
 
 @dataclass(frozen=True)
@@ -183,13 +185,9 @@ class PipelineService:
         self._identity_fusion = IdentityFusion(
             match_threshold=runtime_cfg['visual_match_threshold'],
             margin_threshold=runtime_cfg['visual_margin_threshold'],
+            consensus_count=runtime_cfg['visual_consensus_count'],
         )
-        self._visual_extractor = VisualEmbeddingExtractor(
-            model_path=runtime_cfg['visual_model_path'] or None,
-            backbone=runtime_cfg['visual_backbone'],
-            device=runtime_cfg['visual_device'] or runtime_cfg['device'],
-            embedding_dim=runtime_cfg['visual_embedding_dim'],
-        )
+        self._visual_extractor = get_visual_embedding_extractor()
 
     def _reset_runtime_queues(self) -> None:
         self._frame_queue = queue.Queue(maxsize=5)
@@ -275,6 +273,10 @@ class PipelineService:
             'model_path': _s('model_path', settings.MODEL_PATH),
             'device': _s('device', settings.DEVICE),
             'conf': self._to_float(cfg_map.get('conf', ''), float(settings.CONF)),
+            'yolo_imgsz': max(
+                32,
+                self._to_int(cfg_map.get('yolo_imgsz', ''), int(settings.YOLO_IMGSZ)),
+            ),
             'enable_ocr': self._to_bool(cfg_map.get('enable_ocr', ''), bool(settings.ENABLE_OCR)),
             'ocr_label_ttl_sec': self._to_float(
                 cfg_map.get('ocr_label_ttl_sec', ''),
@@ -458,6 +460,13 @@ class PipelineService:
             'visual_top_k': max(
                 1,
                 self._to_int(cfg_map.get('visual_top_k', ''), int(settings.VISUAL_TOP_K)),
+            ),
+            'visual_consensus_count': max(
+                1,
+                self._to_int(
+                    cfg_map.get('visual_consensus_count', ''),
+                    int(settings.VISUAL_CONSENSUS_COUNT),
+                ),
             ),
             'visual_model_path': _s('visual_model_path', settings.VISUAL_MODEL_PATH),
             'visual_backbone': _s('visual_backbone', settings.VISUAL_BACKBONE),
@@ -1061,6 +1070,16 @@ class PipelineService:
             ship_id = (tb.ship_id or "UNKNOWN").strip().upper()
             start_dt_utc = datetime.datetime.fromtimestamp(tb.first_seen_ts, tz=datetime.timezone.utc)
             end_dt_utc = datetime.datetime.fromtimestamp(tb.last_seen_ts, tz=datetime.timezone.utc)
+            berth_in_dt = (
+                datetime.datetime.fromtimestamp(tb.berth_in_ts, tz=datetime.timezone.utc)
+                if getattr(tb, 'berth_in_ts', None)
+                else None
+            )
+            berth_out_dt = (
+                datetime.datetime.fromtimestamp(tb.berth_out_ts, tz=datetime.timezone.utc)
+                if getattr(tb, 'berth_out_ts', None)
+                else None
+            )
             day_bucket = start_dt_utc.strftime('%d-%m-%Y')
             safe_t = _safe_key_segment(str(tb.track_id))
 
@@ -1093,6 +1112,8 @@ class PipelineService:
                         track_id=tb.track_id,
                         start_time=start_dt_utc,
                         end_time=end_dt_utc,
+                        berth_in_time=berth_in_dt,
+                        berth_out_time=berth_out_dt,
                         video_path=None,
                         audit_image_path=None,
                         ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
@@ -1141,6 +1162,7 @@ class PipelineService:
                 )
 
             audit_uri: str | None = None
+            single_image_uri: str | None = None
             if snap is not None:
                 cam_det = snap.single_best_camera_id if snap.single_best_camera_id is not None else 0
                 cam_ocr = snap.single_best_ocr_camera_id if snap.single_best_ocr_camera_id is not None else 0
@@ -1167,6 +1189,8 @@ class PipelineService:
                     )
                     if audit_uri is None:
                         audit_uri = uri
+                    if fname.startswith('single_best_detection_'):
+                        single_image_uri = uri
                     detection_media_repo.create(
                         db,
                         {
@@ -1257,6 +1281,26 @@ class PipelineService:
                 ocr_attempts=len(hist),
                 vote_summary=vote_summary
             ))
+
+            if is_unknown_ship_id(ship_id) and settings.ZALO_ENABLED and det_id_for_invoice is not None:
+                from app.repositories.camera_repository import camera_repo
+                from app.services import zalo_service
+
+                camera_name = ''
+                cam_id = getattr(tb, 'camera_id', None)
+                if cam_id is not None:
+                    cam = camera_repo.get(db, int(cam_id))
+                    if cam is not None:
+                        camera_name = str(cam.camera_name or f'Camera {cam.id}')
+
+                primary_video = video_uri or single_video_uri
+                zalo_service.notify_unknown_detection_async(
+                    detection_id=int(det_id_for_invoice),
+                    image_minio_path=single_image_uri or audit_uri,
+                    video_minio_path=primary_video,
+                    camera_name=camera_name,
+                    start_time=start_dt_utc,
+                )
         except Exception:
             db.rollback()
             raise
@@ -1296,14 +1340,14 @@ class PipelineService:
             runtime_cfg['model_path'],
             runtime_cfg['device'],
             float(runtime_cfg['conf']),
+            int(runtime_cfg['yolo_imgsz']),
         )
         if self._detector is None or self._detector_signature != detector_sig:
-            # COCO class id 8 = boat
             self._detector, _ = load_yolo_detector(
                 runtime_cfg['model_path'],
                 runtime_cfg['device'],
                 runtime_cfg['conf'],
-                [8],
+                imgsz=int(runtime_cfg['yolo_imgsz']),
             )
             self._detector_signature = detector_sig
 
@@ -1648,6 +1692,7 @@ class PipelineService:
                 enable_training_snapshot=snapshot_enabled,
                 training_snapshot_interval_sec=runtime_cfg['training_snapshot_interval_sec'],
                 enable_preview_stream=False,
+                boundary_lines=member.camera.boundary_lines if member.camera else None,
             )
             self._per_camera_pipelines.append(
                 PerCameraPipeline(
@@ -1719,13 +1764,14 @@ class PipelineService:
             runtime_cfg['model_path'],
             runtime_cfg['device'],
             float(runtime_cfg['conf']),
+            int(runtime_cfg['yolo_imgsz']),
         )
         if self._detector is None or self._detector_signature != detector_sig:
             self._detector, _ = load_yolo_detector(
                 runtime_cfg['model_path'],
                 runtime_cfg['device'],
                 runtime_cfg['conf'],
-                [8],
+                imgsz=int(runtime_cfg['yolo_imgsz']),
             )
             self._detector_signature = detector_sig
 
@@ -1996,5 +2042,15 @@ class PipelineService:
         )
         tracker.flush_shutdown_logs()
         return results
+
+    def update_camera_boundary_lines(self, camera_id: int, payload: dict | None) -> None:
+        camera_key = int(camera_id)
+        if self._group_frame_hub is not None:
+            self._group_frame_hub.update_boundary_lines(camera_key, payload)
+        for pipeline in self._per_camera_pipelines:
+            if int(pipeline.config.camera_id) == camera_key:
+                pipeline.update_boundary_lines(payload)
+                break
+
 
 pipeline_service = PipelineService()

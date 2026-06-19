@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from app.db.session import Base
 
@@ -12,5 +13,6 @@ class Camera(Base):
     is_active = Column(Boolean, default=True)
     location = Column(String(200), nullable=True)
     description = Column(Text, nullable=True)
+    boundary_lines = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

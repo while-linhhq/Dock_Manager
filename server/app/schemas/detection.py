@@ -9,6 +9,8 @@ class DetectionBase(BaseModel):
     track_id: Optional[str] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    berth_in_time: Optional[datetime] = None
+    berth_out_time: Optional[datetime] = None
     video_path: Optional[str] = None
     audit_image_path: Optional[str] = None
     ocr_results: Optional[List[Dict[str, Any]]] = None

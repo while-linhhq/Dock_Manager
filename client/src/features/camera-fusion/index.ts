@@ -1,6 +1,7 @@
 export { FusionGroupEditorView } from './views/FusionGroupEditorView';
 export { FusionGroupListView } from './views/FusionGroupListView';
 export { CameraFusionTabsView } from './views/CameraFusionTabsView';
+export { BoundaryLineEditor } from './components/BoundaryLineEditor';
 export { cameraGroupsApi } from './services/camera-groups-api';
 export type {
   CameraGroup,

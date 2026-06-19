@@ -24,6 +24,7 @@ class _PreviewStream:
     last_jpeg: bytes | None = None
     last_sequence: int = 0
     last_encoded_at: float = 0.0
+    boundary_lines: dict | None = None
 
 
 class EditorPreviewManager:
@@ -43,7 +44,12 @@ class EditorPreviewManager:
             self._target_fps = fps
             self._min_encode_interval = 1.0 / fps
 
-    def acquire(self, camera_id: int, source: str | int) -> None:
+    def acquire(
+        self,
+        camera_id: int,
+        source: str | int,
+        boundary_lines: dict | None = None,
+    ) -> None:
         camera_key = int(camera_id)
         with self._lock:
             stream = self._streams.get(camera_key)
@@ -66,11 +72,22 @@ class EditorPreviewManager:
                     stop_event=stop_event,
                     reader=reader,
                     encoder=encoder,
+                    boundary_lines=boundary_lines,
                 )
                 self._streams[camera_key] = stream
                 reader.start()
                 encoder.start()
+            else:
+                if boundary_lines is not None:
+                    stream.boundary_lines = boundary_lines
             stream.ref_count += 1
+
+    def set_boundary_lines(self, camera_id: int, boundary_lines: dict | None) -> None:
+        camera_key = int(camera_id)
+        with self._lock:
+            stream = self._streams.get(camera_key)
+            if stream is not None:
+                stream.boundary_lines = boundary_lines
 
     def release(self, camera_id: int) -> None:
         camera_key = int(camera_id)
@@ -137,9 +154,22 @@ class EditorPreviewManager:
             snapshot = buffer.snapshot()
             timed_frame = snapshot.get(camera_id)
             if timed_frame is not None:
+                frame = timed_frame.frame
+                with self._lock:
+                    stream = self._streams.get(camera_id)
+                    boundary_lines = stream.boundary_lines if stream else None
+                if boundary_lines:
+                    from app.services.ai.boundary_crossing import BoundaryConfig
+                    from app.utils.ai.draw_boundary import draw_boundary_lines
+
+                    bcfg = BoundaryConfig.from_dict(boundary_lines)
+                    if bcfg is not None:
+                        frame = draw_boundary_lines(frame.copy(), bcfg)
+                else:
+                    frame = timed_frame.frame
                 ok, encoded = cv2.imencode(
                     '.jpg',
-                    timed_frame.frame,
+                    frame,
                     [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality],
                 )
                 if ok:

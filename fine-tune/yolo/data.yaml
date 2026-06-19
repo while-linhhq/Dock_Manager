@@ -1,7 +1,6 @@
-path: data
+path: /home/ubuntu-linh/Documents/dock-manager/fine-tune/yolo/data/recall_boost_r10
 train: images/train
 val: images/val
-test: images/test
 
 names:
   0: boat

@@ -11,6 +11,7 @@ import type { CameraGroupMember, PipelineMode } from '../types/fusion.types';
 import { FusionCanvas } from '../components/FusionCanvas';
 import { MemberList } from '../components/MemberList';
 import { BeFusedPreview } from '../components/BeFusedPreview';
+import { BoundaryLineEditor } from '../components/BoundaryLineEditor';
 import { LockBackgroundButton } from '../../seam-anchor';
 import {
   moveMemberInCameraOrder,
@@ -172,6 +173,13 @@ export const FusionGroupEditorView: React.FC = () => {
               onMembersChange={setMembers}
             />
             <CameraOrderPanel members={orderedMembers} onMove={moveMember} />
+            {selectedMemberCameraId ? (
+              <BoundaryLineEditor cameraId={Number(selectedMemberCameraId)} />
+            ) : (
+              <div className="rounded-2xl border border-dashed border-gray-200 p-4 text-xs text-gray-500 dark:border-white/10">
+                Chọn một camera trong danh sách bên trái để vẽ đường biên.
+              </div>
+            )}
             <SeamAnchorPanel groupId={groupIdNumber} members={orderedMembers} />
             <BeFusedPreview
               canvasWidth={canvasWidth}

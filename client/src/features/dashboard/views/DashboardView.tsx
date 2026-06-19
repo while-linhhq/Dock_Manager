@@ -149,26 +149,22 @@ export const DashboardView: React.FC = () => {
 
       <DashboardSystemOverviewWidgets data={systemOverview} isLoading={isLoading} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-6">
-          <DashboardAiFeedPanel
-            pipelineStatus={pipelineStatus}
-            detections={recentDetections}
-            stats={stats}
-            summary={summary}
-            summaryPeriod={summaryPeriod}
-            isLoading={isLoading}
-            onRefreshAnalytics={() => void fetchDashboardData()}
-          />
-        </div>
+      <DashboardAiFeedPanel
+        pipelineStatus={pipelineStatus}
+        detections={recentDetections}
+        stats={stats}
+        summary={summary}
+        summaryPeriod={summaryPeriod}
+        isLoading={isLoading}
+        onRefreshAnalytics={() => void fetchDashboardData()}
+      />
 
-        <div className="space-y-6">
-          <DashboardRevenueSidebarCharts summary={summary} isLoading={summaryLoading} />
-          <DashboardRecentDetectionsSidebar
-            detections={recentDetections}
-            isLoading={isLoading}
-          />
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <DashboardRevenueSidebarCharts summary={summary} isLoading={summaryLoading} />
+        <DashboardRecentDetectionsSidebar
+          detections={recentDetections}
+          isLoading={isLoading}
+        />
       </div>
     </div>
   );

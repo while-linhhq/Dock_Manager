@@ -9,6 +9,9 @@ import cv2
 from app.schemas.camera_group import FusedPreviewRequest
 from app.services.ai.frame_fusion import FrameFuser, FusionConfig, FusionMember, scaled_fusion_config
 from app.services.editor_preview import editor_preview_manager
+from app.utils.ai.draw_boundary import draw_boundary_lines_on_fused
+from app.repositories.camera_repository import camera_repo
+from app.db.session import SessionLocal
 
 PREVIEW_MAX_WIDTH = 1280
 PREVIEW_MAX_HEIGHT = 720
@@ -18,6 +21,7 @@ PREVIEW_MAX_HEIGHT = 720
 class _PreviewFuser:
     fuser: FrameFuser
     scale: float
+    members: list[FusionMember]
 
 
 class FusedPreviewWorker(threading.Thread):
@@ -92,6 +96,30 @@ class FusedPreviewWorker(threading.Thread):
             self._last_frame_signature = frame_signature
 
             fused = preview_fuser.fuser.fuse(frames)
+            if fused is None or fused.size == 0:
+                continue
+            boundary_by_camera: dict[int, dict | None] = {}
+            db = SessionLocal()
+            try:
+                for member in config.members:
+                    if not member.enabled:
+                        continue
+                    camera = camera_repo.get(db, int(member.camera_id))
+                    boundary_by_camera[int(member.camera_id)] = (
+                        camera.boundary_lines if camera else None
+                    )
+            finally:
+                db.close()
+            frame_shapes = {
+                camera_id: (timed.frame.shape[0], timed.frame.shape[1])
+                for camera_id, timed in frames.items()
+            }
+            fused = draw_boundary_lines_on_fused(
+                fused,
+                members=preview_fuser.members,
+                boundary_by_camera=boundary_by_camera,
+                frame_shapes=frame_shapes,
+            )
             ok, encoded = cv2.imencode(
                 '.jpg',
                 fused,
@@ -139,4 +167,5 @@ def _build_preview_fuser(data: FusedPreviewRequest) -> _PreviewFuser:
     return _PreviewFuser(
         fuser=FrameFuser(scaled_config),
         scale=scale,
+        members=list(scaled_config.members),
     )

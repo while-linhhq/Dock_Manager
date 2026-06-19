@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.detection import DetectionCreate, DetectionRead, DetectionVerify
 from app.schemas.detection_media import DetectionMediaRead
+from app.services.detection_cleanup_service import purge_detection_resources
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.services.storage.minio_service import presign_get, parse_minio_uri
@@ -119,7 +120,8 @@ def verify_detection(
 
 @router.delete('/{detection_id}', status_code=204)
 def delete_detection(detection_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
-    if not detection_repo.delete(db, detection_id):
+    result = purge_detection_resources(db, detection_id)
+    if not result.get('found'):
         raise HTTPException(status_code=404, detail='Detection not found')
 
 

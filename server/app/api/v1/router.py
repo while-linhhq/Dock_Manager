@@ -18,6 +18,9 @@ from app.api.v1.endpoints import (
     pipeline,
     camera_groups,
     sepay,
+    ai_lab,
+    zalo,
+    media,
 )
 
 
@@ -40,4 +43,7 @@ api_router.include_router(dashboard.router,    prefix='/dashboard',     tags=['d
 api_router.include_router(exports.router,      prefix='/exports',       tags=['exports'])
 api_router.include_router(audit_logs.router,   prefix='/audit-logs',    tags=['audit-logs'])
 api_router.include_router(pipeline.router,     prefix='/pipeline',      tags=['pipeline'])
+api_router.include_router(ai_lab.router,       prefix='/ai-lab',        tags=['ai-lab'])
 api_router.include_router(sepay.router, prefix='/sepay', tags=['sepay'])
+api_router.include_router(zalo.router, prefix='/zalo', tags=['zalo'])
+api_router.include_router(media.router, prefix='/media', tags=['media'])

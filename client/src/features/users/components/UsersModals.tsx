@@ -45,6 +45,7 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
     { key: 'vessels', label: 'Mã tàu' },
     { key: 'port', label: 'Quản lý cảng' },
     { key: 'stats', label: 'Thống kê' },
+    { key: 'ai_lab', label: 'AI Lab' },
     { key: 'backup', label: 'Sao lưu' },
     { key: 'users', label: 'Người dùng / RBAC' },
     { key: 'profile', label: 'Hồ sơ cá nhân' },

@@ -9,26 +9,32 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_DINOV2_FALLBACK_BACKBONES = (
+    'vit_base_patch14_dinov2',
+    'vit_base_patch14_dinov2.lvd142m',
+)
+_DINOV2_IMAGE_SIZE = 224
+
 
 class VisualEmbeddingExtractor:
-    """ViT-oriented embedding extractor for vessel visual identification."""
+    """DINOv2-oriented embedding extractor for vessel visual identification."""
 
     def __init__(
         self,
         *,
         model_path: str | None = None,
-        backbone: str = 'vit_base_patch16_224',
+        backbone: str = 'vit_base_patch14_dinov2',
         device: str = 'cpu',
         image_size: int = 224,
-        embedding_dim: int = 1024,
+        embedding_dim: int = 768,
     ) -> None:
         self._device = _normalize_torch_device(device)
         self._image_size = max(96, int(image_size))
-        self._embedding_dim = max(64, int(embedding_dim))
+        self._requested_embedding_dim = max(64, int(embedding_dim))
+        self._embedding_dim = self._requested_embedding_dim
         self._model_output_dim = self._embedding_dim
         self._model: Any | None = None
         self._preprocess: Any | None = None
-        self._proj: Any | None = None
         self._backend = 'unavailable'
         self._load_model(model_path=model_path, backbone=backbone)
 
@@ -46,13 +52,12 @@ class VisualEmbeddingExtractor:
 
     @property
     def vector_dim(self) -> int:
-        """Dimension stored in Qdrant after optional projection."""
         return int(self._embedding_dim)
 
     def extract(self, crop_bgr: np.ndarray) -> np.ndarray | None:
         if crop_bgr is None or crop_bgr.size == 0:
             return None
-        if self._model is None or self._preprocess is None:
+        if self._model is None:
             return None
         try:
             return self._extract_torch(crop_bgr)
@@ -63,7 +68,7 @@ class VisualEmbeddingExtractor:
     def extract_batch(self, crops_bgr: list[np.ndarray]) -> list[np.ndarray | None]:
         if not crops_bgr:
             return []
-        if self._model is None or self._preprocess is None:
+        if self._model is None:
             return [None for _ in crops_bgr]
         try:
             return self._extract_torch_batch(crops_bgr)
@@ -84,45 +89,35 @@ class VisualEmbeddingExtractor:
                 model = torch.jit.load(model_path, map_location=self._device)
                 self._backend = 'torchscript-vit'
             else:
-                try:
-                    import timm
-                except Exception:
-                    logger.warning('timm not available, visual extractor disabled')
-                    return
-                model = timm.create_model(
+                model, resolved_backbone = _load_timm_backbone(
                     backbone,
-                    pretrained=True,
-                    num_classes=0,
-                    global_pool='avg',
+                    image_size=self._image_size,
                 )
-                self._backend = f'timm:{backbone}'
+                if model is None:
+                    logger.warning('Could not load visual backbone=%s', backbone)
+                    return
+                self._backend = f'timm:{resolved_backbone}'
 
             model.eval()
             model.to(self._device)
             self._model = model
             raw_dim = int(getattr(model, 'num_features', 0) or 0)
             if raw_dim <= 0:
-                import torch
-
                 probe = torch.zeros(1, 3, self._image_size, self._image_size, device=self._device)
                 with torch.no_grad():
                     out = model(probe)
                 raw_dim = int(out.reshape(-1).shape[0])
             self._model_output_dim = max(1, raw_dim)
-            if self._embedding_dim != self._model_output_dim:
-                proj = torch.nn.Linear(
-                    self._model_output_dim,
+            self._embedding_dim = self._model_output_dim
+            if self._requested_embedding_dim != self._embedding_dim:
+                logger.warning(
+                    'VISUAL_EMBEDDING_DIM=%s ignored; using native backbone dim=%s',
+                    self._requested_embedding_dim,
                     self._embedding_dim,
-                    bias=False,
                 )
-                torch.nn.init.orthogonal_(proj.weight)
-                proj.eval()
-                proj.to(self._device)
-                self._proj = proj
+
             self._preprocess = transforms.Compose(
                 [
-                    transforms.ToPILImage(),
-                    transforms.Resize((self._image_size, self._image_size)),
                     transforms.ToTensor(),
                     transforms.Normalize(
                         mean=[0.485, 0.456, 0.406],
@@ -141,12 +136,10 @@ class VisualEmbeddingExtractor:
 
         if self._model is None or self._preprocess is None:
             return None
-        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-        tensor = self._preprocess(crop_rgb).unsqueeze(0).to(self._device)
+        tensor = _letterbox_tensor(crop_bgr, self._image_size, self._preprocess).unsqueeze(0)
+        tensor = tensor.to(self._device)
         with torch.no_grad():
             embedding = self._model(tensor)
-            if self._proj is not None:
-                embedding = self._proj(embedding)
         vector = embedding.detach().cpu().numpy().reshape(-1).astype(np.float32)
         return _normalize_embedding(vector)
 
@@ -161,8 +154,7 @@ class VisualEmbeddingExtractor:
         for index, crop_bgr in enumerate(crops_bgr):
             if crop_bgr is None or crop_bgr.size == 0:
                 continue
-            crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-            tensors.append(self._preprocess(crop_rgb))
+            tensors.append(_letterbox_tensor(crop_bgr, self._image_size, self._preprocess))
             valid_indices.append(index)
 
         outputs: list[np.ndarray | None] = [None for _ in crops_bgr]
@@ -172,8 +164,6 @@ class VisualEmbeddingExtractor:
         batch = torch.stack(tensors, dim=0).to(self._device)
         with torch.no_grad():
             embeddings = self._model(batch)
-            if self._proj is not None:
-                embeddings = self._proj(embeddings)
 
         vectors = embeddings.detach().cpu().numpy()
         for output_index, source_index in enumerate(valid_indices):
@@ -181,6 +171,81 @@ class VisualEmbeddingExtractor:
                 vectors[output_index].reshape(-1).astype(np.float32)
             )
         return outputs
+
+
+def _load_timm_backbone(backbone: str, *, image_size: int) -> tuple[Any | None, str]:
+    try:
+        import timm
+    except Exception:
+        return _load_torch_hub_dinov2(image_size=image_size)
+
+    candidates = [backbone, *(_DINOV2_FALLBACK_BACKBONES if 'dinov2' in backbone.lower() else ())]
+    seen: set[str] = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            kwargs: dict[str, Any] = {
+                'pretrained': True,
+                'num_classes': 0,
+            }
+            if 'dinov2' in name.lower():
+                kwargs['img_size'] = image_size
+                kwargs['dynamic_img_size'] = True
+            else:
+                kwargs['global_pool'] = 'avg'
+
+            model = timm.create_model(name, **kwargs)
+            return model, name
+        except Exception:
+            logger.exception('timm backbone load failed for %s', name)
+            continue
+
+    if 'dinov2' in backbone.lower():
+        return _load_torch_hub_dinov2(image_size=image_size)
+    return None, backbone
+
+
+def _load_torch_hub_dinov2(*, image_size: int) -> tuple[Any | None, str]:
+    try:
+        import torch
+    except Exception:
+        return None, 'dinov2_vitb14'
+
+    hub_models = ('dinov2_vitb14', 'dinov2_vits14')
+    for hub_name in hub_models:
+        try:
+            model = torch.hub.load('facebookresearch/dinov2', hub_name)
+            model.eval()
+            return model, f'torchhub:{hub_name}'
+        except Exception:
+            logger.exception('torch.hub DINOv2 load failed for %s', hub_name)
+            continue
+    return None, 'dinov2_vitb14'
+
+
+def _letterbox_tensor(crop_bgr: np.ndarray, target_size: int, preprocess: Any) -> Any:
+    import torch
+
+    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+    letterboxed = _letterbox_rgb(crop_rgb, target_size)
+    return preprocess(letterboxed)
+
+
+def _letterbox_rgb(image_rgb: np.ndarray, target_size: int) -> np.ndarray:
+    height, width = image_rgb.shape[:2]
+    if height <= 0 or width <= 0:
+        return np.zeros((target_size, target_size, 3), dtype=np.uint8)
+    scale = target_size / max(height, width)
+    new_w = max(1, int(round(width * scale)))
+    new_h = max(1, int(round(height * scale)))
+    resized = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+    y0 = (target_size - new_h) // 2
+    x0 = (target_size - new_w) // 2
+    canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
+    return canvas
 
 
 def _normalize_torch_device(device: str | int | None) -> str:

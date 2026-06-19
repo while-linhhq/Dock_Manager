@@ -517,27 +517,31 @@ def _ensure_visual_stack_port_configs() -> None:
             'Minimum crop area (pixels) to run visual embedding extraction.',
         ),
         'visual_match_threshold': (
-            '0.72',
-            'Minimum similarity score to accept visual-id match.',
+            '0.55',
+            'Minimum aggregated similarity score to accept visual-id match.',
         ),
         'visual_margin_threshold': (
-            '0.04',
-            'Minimum top1-top2 score margin to avoid ambiguous visual matches.',
+            '0.08',
+            'Minimum margin between best ship and second distinct ship.',
         ),
         'visual_top_k': (
-            '5',
+            '20',
             'Number of nearest visual candidates returned from vector search.',
+        ),
+        'visual_consensus_count': (
+            '2',
+            'Minimum enrolled points for the best ship in top-K hits.',
         ),
         'visual_model_path': (
             '',
             'Path to ViT/TorchScript model for visual embedding extraction.',
         ),
         'visual_backbone': (
-            'vit_base_patch16_224',
-            'Backbone model name for visual embedding extractor.',
+            'vit_base_patch14_dinov2',
+            'Backbone model name for visual embedding extractor (DINOv2 recommended).',
         ),
         'visual_embedding_dim': (
-            '1024',
+            '768',
             'Embedding dimension expected by visual model output.',
         ),
         'visual_batch_size': (
@@ -573,11 +577,11 @@ def _ensure_visual_stack_port_configs() -> None:
             'Qdrant API key (optional for secured deployments).',
         ),
         'qdrant_collection': (
-            'vessel_visual_embeddings',
+            'vessel_visual_embeddings_dinov2',
             'Qdrant collection used to store vessel visual embeddings.',
         ),
         'qdrant_vector_size': (
-            '1024',
+            '768',
             'Vector dimension used by Qdrant collection.',
         ),
         'qdrant_distance': (
@@ -1118,6 +1122,57 @@ def _ensure_bulk_payment_sessions() -> None:
         raise
 
 
+def _ensure_yolo_imgsz_port_config() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'yolo_imgsz': (
+            '640',
+            'YOLO inference input size (letterbox, e.g. 640 or 960). Match fine-tune imgsz.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed yolo_imgsz port_config manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured yolo_imgsz port_config key')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed yolo_imgsz port_config: %s', err)
+
+
 def _migrate_port_config_frames_to_seconds() -> None:
     """Convert legacy frame-based port_configs to second-based keys."""
     try:
@@ -1223,6 +1278,205 @@ def _migrate_port_config_frames_to_seconds() -> None:
         raise
 
 
+def _ensure_zalo_notifications() -> None:
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS zalo_notifications (
+                id               SERIAL PRIMARY KEY,
+                detection_id     INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
+                chat_id          VARCHAR(100),
+                status           VARCHAR(20) DEFAULT 'sent',
+                resolved_ship_id VARCHAR(100),
+                created_at       TIMESTAMP DEFAULT NOW(),
+                resolved_at      TIMESTAMP,
+                CONSTRAINT uq_zalo_notifications_detection_id UNIQUE (detection_id)
+            )
+            """
+        )
+        index_stmt = text(
+            'CREATE INDEX IF NOT EXISTS ix_zalo_notifications_status ON zalo_notifications(status)'
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS zalo_notifications (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                detection_id     INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
+                chat_id          VARCHAR(100),
+                status           VARCHAR(20) DEFAULT 'sent',
+                resolved_ship_id VARCHAR(100),
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at      TIMESTAMP,
+                UNIQUE (detection_id)
+            )
+            """
+        )
+        index_stmt = None
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — create zalo_notifications manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+            if index_stmt is not None:
+                conn.execute(index_stmt)
+        _patch_done('ensured zalo_notifications table')
+    except Exception as err:
+        logger.error('schema_patches: failed to create zalo_notifications: %s', err)
+        raise
+
+
+def _ensure_zalo_notifications_message_ids() -> None:
+    dialect = engine.dialect.name
+    columns = ('header_message_id', 'photo_message_id', 'video_message_id')
+    for col in columns:
+        try:
+            with engine.begin() as conn:
+                if dialect == 'postgresql':
+                    conn.execute(
+                        text(
+                            f'ALTER TABLE zalo_notifications '
+                            f'ADD COLUMN IF NOT EXISTS {col} VARCHAR(64)'
+                        )
+                    )
+                elif dialect == 'sqlite':
+                    existing = {
+                        row[1]
+                        for row in conn.execute(text('PRAGMA table_info(zalo_notifications)')).fetchall()
+                    }
+                    if col not in existing:
+                        conn.execute(
+                            text(f'ALTER TABLE zalo_notifications ADD COLUMN {col} VARCHAR(64)')
+                        )
+                else:
+                    logger.warning(
+                        'schema_patches: unknown dialect %s — add zalo_notifications.%s manually',
+                        dialect,
+                        col,
+                    )
+                    return
+            _patch_done(f'ensured zalo_notifications.{col}')
+        except Exception as err:
+            logger.error('schema_patches: failed to add zalo_notifications.%s: %s', col, err)
+            raise
+
+
+def _ensure_media_short_links() -> None:
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS media_short_links (
+                code         VARCHAR(16) PRIMARY KEY,
+                minio_path   TEXT NOT NULL,
+                expires_at   TIMESTAMPTZ NOT NULL,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        index_stmt = text(
+            'CREATE INDEX IF NOT EXISTS ix_media_short_links_expires_at ON media_short_links(expires_at)'
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            CREATE TABLE IF NOT EXISTS media_short_links (
+                code         VARCHAR(16) PRIMARY KEY,
+                minio_path   TEXT NOT NULL,
+                expires_at   TIMESTAMP NOT NULL,
+                created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        index_stmt = None
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — create media_short_links manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+            if index_stmt is not None:
+                conn.execute(index_stmt)
+        _patch_done('ensured media_short_links table')
+    except Exception as err:
+        logger.error('schema_patches: failed to create media_short_links: %s', err)
+        raise
+
+
+def _ensure_detections_berth_times() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('detections'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('detections')}
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect detections: %s', err)
+        return
+    dialect = engine.dialect.name
+    for col in ('berth_in_time', 'berth_out_time'):
+        if col in cols:
+            continue
+        if dialect == 'postgresql':
+            stmt = text(f'ALTER TABLE detections ADD COLUMN IF NOT EXISTS {col} TIMESTAMPTZ')
+        elif dialect == 'sqlite':
+            stmt = text(f'ALTER TABLE detections ADD COLUMN {col} TIMESTAMP')
+        else:
+            logger.warning(
+                'schema_patches: unknown dialect %s — add detections.%s manually',
+                dialect,
+                col,
+            )
+            return
+        try:
+            with engine.begin() as conn:
+                conn.execute(stmt)
+            _patch_done(f'added detections.{col}')
+        except Exception as err:
+            logger.error('schema_patches: failed to add detections.%s: %s', col, err)
+            raise
+
+
+def _ensure_cameras_boundary_lines() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('cameras'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('cameras')}
+        if 'boundary_lines' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect cameras: %s', err)
+        return
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE cameras ADD COLUMN IF NOT EXISTS boundary_lines JSONB')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE cameras ADD COLUMN boundary_lines TEXT')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add cameras.boundary_lines manually',
+            dialect,
+        )
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added cameras.boundary_lines')
+    except Exception as err:
+        logger.error('schema_patches: failed to add cameras.boundary_lines: %s', err)
+        raise
+
+
 def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     global _patch_quiet, _patch_applied
     _patch_quiet = quiet
@@ -1232,6 +1486,8 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_orders_total_amount()
     _ensure_invoices_creation_source()
     _ensure_detections_audit_image_path()
+    _ensure_detections_berth_times()
+    _ensure_cameras_boundary_lines()
     _ensure_fee_configs_berth_limit()
     _ensure_fee_configs_penalty_fields()
     _ensure_invoices_is_over_berth_limit()
@@ -1245,6 +1501,10 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_sepay_port_configs()
     _ensure_visual_stack_port_configs()
     _ensure_training_snapshot_port_configs()
+    _ensure_yolo_imgsz_port_config()
     _migrate_port_config_frames_to_seconds()
     _ensure_bulk_payment_sessions()
+    _ensure_zalo_notifications()
+    _ensure_zalo_notifications_message_ids()
+    _ensure_media_short_links()
     return list(_patch_applied)

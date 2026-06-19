@@ -12,6 +12,7 @@ import numpy as np
 
 from app.services import pipeline_preview
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
+from app.services.ai.boundary_crossing import BoundaryConfig, BoundaryCrossingTracker
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
@@ -65,6 +66,7 @@ class PerCameraPipelineConfig:
     enable_training_snapshot: bool = False
     training_snapshot_interval_sec: float = 5.0
     enable_preview_stream: bool = False
+    boundary_lines: dict | None = None
 
 
 class PerCameraPipeline(threading.Thread):
@@ -125,6 +127,8 @@ class PerCameraPipeline(threading.Thread):
             max_tentative_sec=config.track_max_tentative_sec,
             max_lost_sec=config.track_max_lost_sec,
         )
+        bcfg = BoundaryConfig.from_dict(config.boundary_lines)
+        self._boundary_tracker = BoundaryCrossingTracker(bcfg) if bcfg else None
         self._motion_classifier = MotionClassifier()
         self._clahe_config = ClahePreprocessConfig(
             clip_limit=config.clahe_clip_limit,
@@ -171,6 +175,10 @@ class PerCameraPipeline(threading.Thread):
     @property
     def tracker(self) -> BoatTracker:
         return self._tracker
+
+    def update_boundary_lines(self, payload: dict | None) -> None:
+        bcfg = BoundaryConfig.from_dict(payload)
+        self._boundary_tracker = BoundaryCrossingTracker(bcfg) if bcfg else None
 
     def start(self) -> None:
         if self._reader is not None:
@@ -249,6 +257,26 @@ class PerCameraPipeline(threading.Thread):
 
         active_ids = {str(track.track_id) for track in tracked_boats}
         self._motion_classifier.forget_missing(active_ids)
+        if self._boundary_tracker is not None:
+            h, w = raw_frame.shape[:2]
+            now_ts = time.time()
+            for track in tracked_boats:
+                if track.state != TrackState.CONFIRMED:
+                    continue
+                box = track.box
+                cx = (float(box[0]) + float(box[2])) * 0.5
+                cy = (float(box[1]) + float(box[3])) * 0.5
+                direction = self._boundary_tracker.update(
+                    str(track.track_id), (cx, cy), now_ts, w, h
+                )
+                if direction:
+                    self._reid_manager.report_boundary_crossing(
+                        int(self.config.camera_id),
+                        str(track.track_id),
+                        direction,
+                        now_ts,
+                    )
+            self._boundary_tracker.forget(active_ids)
         overlay_scale = (
             self.config.resize_scale
             if self.config.resize_scale != 1.0
@@ -265,6 +293,10 @@ class PerCameraPipeline(threading.Thread):
             frame_captured_mono=captured_mono,
             camera_id=int(self.config.camera_id),
         )
+        if self._boundary_tracker is not None:
+            from app.utils.ai.draw_boundary import draw_boundary_lines
+
+            overlay_frame = draw_boundary_lines(overlay_frame, self._boundary_tracker.config)
         if self._on_overlay_media_sample is not None:
             try:
                 self._on_overlay_media_sample(

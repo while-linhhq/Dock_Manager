@@ -57,5 +57,6 @@ class VesselRead(VesselBase):
     updated_at: datetime
     vessel_type: Optional[VesselTypeNested] = None
     applicable_fee: Optional[ApplicableFeeRead] = None
+    visual_reference_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)

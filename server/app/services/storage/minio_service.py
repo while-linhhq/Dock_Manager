@@ -88,6 +88,49 @@ def get_object_bytes(minio_uri: str) -> Optional[bytes]:
         response.release_conn()
 
 
+def guess_content_type(object_key: str, default: str = 'application/octet-stream') -> str:
+    import mimetypes
+
+    guessed, _ = mimetypes.guess_type(object_key)
+    return guessed or default
+
+
+def open_object_stream(minio_uri: str):
+    """
+    Return (response, content_type) for streaming.
+    Caller must close response when done.
+    """
+    ref = parse_minio_uri(minio_uri)
+    if ref is None:
+        return None, None
+    client = get_minio_client()
+    response = client.get_object(ref.bucket, ref.object_key)
+    content_type = guess_content_type(ref.object_key)
+    return response, content_type
+
+
+def get_object_size(minio_uri: str) -> int | None:
+    ref = parse_minio_uri(minio_uri)
+    if ref is None:
+        return None
+    client = get_minio_client()
+    try:
+        stat = client.stat_object(ref.bucket, ref.object_key)
+        return int(stat.size)
+    except Exception:
+        return None
+
+
+def open_object_stream_range(minio_uri: str, *, offset: int, length: int):
+    ref = parse_minio_uri(minio_uri)
+    if ref is None:
+        return None, None
+    client = get_minio_client()
+    response = client.get_object(ref.bucket, ref.object_key, offset=offset, length=length)
+    content_type = guess_content_type(ref.object_key)
+    return response, content_type
+
+
 def put_file(
     *,
     local_path: str,

@@ -3,16 +3,25 @@ project:
   device: "0"
 
 yolo:
-  # Empty means: use --model, then web/database port_configs.model_path,
-  # then MODEL_PATH env/settings fallback.
-  base_model: ""
+  base_model: server/app/yolo26n.pt
   data_yaml: fine-tune/yolo/data.yaml
   epochs: 100
   imgsz: 960
-  batch: 8
-  workers: 4
+  batch: 12
+  workers: 2
+  cache: false
+  patience: 15
   project: fine-tune/runs/yolo
-  name: boat-detector
+  name: t4_highres_long
+  # Best auto-tune trial (mAP50=0.971, mAP50-95=0.787)
+  min_box_area: 0.0005
+  val_ratio: 0.15
+  lr0: 0.006
+  deployed_weights: server/app/yolo26n_finetuned.pt
+  # recall_boost: adaptive hard-case oversample (see train_recall_boost.py)
+  recall_boost_max_rounds: 6
+  recall_boost_continuous: true
+  recall_boost_cam02_factor: 5
 
 reid:
   architecture: resnet18

@@ -86,6 +86,7 @@ def _run_seed_data() -> None:
         ('model_path',                     'app/yolo11n.pt', 'Path to YOLO model file'),
         ('device',                         '0',          'Inference device (0 for GPU, cpu for CPU)'),
         ('conf',                           '0.75',       'YOLO detection confidence threshold'),
+        ('yolo_imgsz',                     '640',        'YOLO inference input size (letterbox, e.g. 640 or 960)'),
         ('resize_scale',                   '0.5',        'Frame resize scale for processing'),
         ('track_iou_threshold',            '0.3',        'IoU threshold for tracking'),
         ('track_reid_window_sec',          '120',        'Re-ID time window in seconds'),
