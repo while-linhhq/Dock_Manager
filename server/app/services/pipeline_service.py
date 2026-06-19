@@ -1712,7 +1712,10 @@ class PipelineService:
             )
 
         self._group_frame_hub.set_track_providers(
-            [pipeline.tracker.all_active for pipeline in self._per_camera_pipelines]
+            [
+                pipeline.latest_tracks_for_overlay
+                for pipeline in self._per_camera_pipelines
+            ]
         )
         self._group_frame_hub.start()
         for pipeline in self._per_camera_pipelines:

@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 import cv2
 
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
-from app.utils.ai.overlay import draw_ship_detection_overlay
+from app.utils.ai.overlay import draw_berth_state_bbox_overlays, draw_ship_detection_overlay
 from app.utils.ai.pipeline_utils import drain_queue_latest, put_queue_drop_oldest
 from app.services import pipeline_preview
 
@@ -88,6 +88,7 @@ class YoloWorkerThread(threading.Thread):
                 tracked_boats = self._tracker.update(boxes_list, det_confs)
 
                 annotated_frame = frame.copy()
+                draw_berth_state_bbox_overlays(annotated_frame, tracked_boats)
                 for tb in tracked_boats:
                     b = tb.box
                     col = _color_for_track(tb)

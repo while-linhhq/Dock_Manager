@@ -173,9 +173,17 @@ class PerCameraPipeline(threading.Thread):
                 )
             )
 
+        self._overlay_tracks_lock = threading.Lock()
+        self._overlay_tracks: list[TrackedBoat] = []
+
     @property
     def tracker(self) -> BoatTracker:
         return self._tracker
+
+    def latest_tracks_for_overlay(self) -> list[TrackedBoat]:
+        """Tracks + berth state from the last processed frame (for fused hub overlay)."""
+        with self._overlay_tracks_lock:
+            return [track.copy_public() for track in self._overlay_tracks]
 
     def update_boundary_lines(self, payload: dict | None) -> None:
         self._boundary_lines_payload = payload
@@ -343,6 +351,13 @@ class PerCameraPipeline(threading.Thread):
         self._queue_ocr(raw_frame, tracked_boats)
         self._queue_visual(raw_frame, tracked_boats)
         self._maybe_save_training_snapshots(raw_frame, tracked_boats)
+        with self._overlay_tracks_lock:
+            self._overlay_tracks = [
+                track.copy_public()
+                for track in tracked_boats
+                if track.state
+                in (TrackState.TENTATIVE, TrackState.CONFIRMED, TrackState.LOST)
+            ]
 
     def _maybe_save_training_snapshots(
         self,

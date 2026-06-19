@@ -11,8 +11,7 @@ from app.services.ai.frame_fusion import FusionMember, map_detection_box_to_fuse
 from app.services.ai.multi_frame_reader import TimedFrame
 from app.utils.ai.overlay import (
     BERTH_FILL_ALPHA,
-    BERTH_IN_FILL_BGR,
-    BERTH_OUT_FILL_BGR,
+    berth_fill_color_for_state,
     resolve_berth_visual_state,
     tint_bbox_overlay,
 )
@@ -75,16 +74,13 @@ def draw_fused_track_overlay(
                 continue
             berth_state = resolve_berth_visual_state(track)
             if berth_state is not None:
-                fill_color = (
-                    BERTH_IN_FILL_BGR if berth_state == 'in' else BERTH_OUT_FILL_BGR
-                )
                 tint_bbox_overlay(
                     fused,
                     x1,
                     y1,
                     x2,
                     y2,
-                    fill_color,
+                    berth_fill_color_for_state(berth_state),
                     BERTH_FILL_ALPHA,
                 )
             color = _color_for_track(track)

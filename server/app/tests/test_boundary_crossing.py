@@ -127,3 +127,38 @@ def test_for_overlay_allows_missing_berth_zone():
     })
     assert cfg is not None
     assert cfg.berth_zone == []
+
+
+def test_berth_visual_state_pending_in_out():
+    from app.services.ai.boat_tracker import TrackedBoat, TrackState
+    from app.utils.ai.overlay import (
+        berth_fill_color_for_state,
+        draw_berth_state_bbox_overlays,
+        resolve_berth_visual_state,
+        BERTH_PENDING_FILL_BGR,
+    )
+    import numpy as np
+
+    box = np.array([10.0, 10.0, 40.0, 40.0], dtype=np.float32)
+    track = TrackedBoat(
+        track_id='t1',
+        state=TrackState.CONFIRMED,
+        box=box,
+        conf=0.9,
+        hits=3,
+        misses=0,
+        first_seen_ts=0.0,
+        last_seen_ts=1.0,
+    )
+    assert resolve_berth_visual_state(track) == 'pending'
+    track.berth_in_ts = 1.0
+    assert resolve_berth_visual_state(track) == 'in'
+    track.berth_out_ts = 2.0
+    assert resolve_berth_visual_state(track) == 'out'
+    assert berth_fill_color_for_state('pending') == BERTH_PENDING_FILL_BGR
+
+    frame = np.zeros((80, 80, 3), dtype=np.uint8)
+    track.berth_in_ts = None
+    track.berth_out_ts = None
+    draw_berth_state_bbox_overlays(frame, [track])
+    assert frame[20, 20].any()

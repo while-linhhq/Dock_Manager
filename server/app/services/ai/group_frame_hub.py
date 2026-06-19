@@ -215,7 +215,7 @@ class GroupFrameHub:
         batch: dict[int, TimedFrame],
         members_by_camera: dict[int, FusionMember],
     ) -> Any:
-        if not self._distribute_per_camera or fused is None or fused.size == 0:
+        if fused is None or fused.size == 0 or not self._track_providers:
             return fused
         return draw_fused_track_overlay(
             fused,

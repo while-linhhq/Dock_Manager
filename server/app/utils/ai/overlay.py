@@ -12,19 +12,31 @@ from app.utils.ai.time_sync import format_capture_wall_clock
 
 _BERTH_IN_FILL_BGR = (90, 230, 110)
 _BERTH_OUT_FILL_BGR = (110, 190, 255)
-_BERTH_FILL_ALPHA = 0.26
+_BERTH_PENDING_FILL_BGR = (240, 195, 110)
+_BERTH_FILL_ALPHA = 0.32
 BERTH_IN_FILL_BGR = _BERTH_IN_FILL_BGR
 BERTH_OUT_FILL_BGR = _BERTH_OUT_FILL_BGR
+BERTH_PENDING_FILL_BGR = _BERTH_PENDING_FILL_BGR
 BERTH_FILL_ALPHA = _BERTH_FILL_ALPHA
 
 
 def resolve_berth_visual_state(track: TrackedBoat) -> str | None:
-    """Return 'in' / 'out' for berth occupancy overlay, else None."""
+    """Return 'in' / 'out' / 'pending' for berth overlay, else None (skip tentative)."""
+    if track.state not in (TrackState.CONFIRMED, TrackState.LOST):
+        return None
     if track.berth_out_ts is not None:
         return 'out'
     if track.berth_in_ts is not None:
         return 'in'
-    return None
+    return 'pending'
+
+
+def berth_fill_color_for_state(state: str) -> tuple[int, int, int]:
+    if state == 'in':
+        return BERTH_IN_FILL_BGR
+    if state == 'out':
+        return BERTH_OUT_FILL_BGR
+    return BERTH_PENDING_FILL_BGR
 
 
 def tint_bbox_overlay(
@@ -69,16 +81,14 @@ def draw_berth_state_bbox_overlays(
     frame: np.ndarray,
     tracked_boats: list[TrackedBoat],
 ) -> np.ndarray:
-    """Light fill on ship bbox: green when IN berth, soft orange when OUT."""
+    """Light bbox fill: blue=pending, green=IN, orange=OUT."""
     if frame is None or frame.size == 0:
         return frame
     for track in tracked_boats:
-        if track.state != TrackState.CONFIRMED:
-            continue
         state = resolve_berth_visual_state(track)
         if state is None:
             continue
-        color = _BERTH_IN_FILL_BGR if state == 'in' else _BERTH_OUT_FILL_BGR
+        color = berth_fill_color_for_state(state)
         _tint_bbox_region(frame, track.box, color, _BERTH_FILL_ALPHA)
     return frame
 
