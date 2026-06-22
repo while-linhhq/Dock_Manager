@@ -1631,6 +1631,139 @@ def _ensure_boundary_crossing_events() -> None:
         raise
 
 
+def _ensure_ship_id_rules_tables() -> None:
+    try:
+        inspector = inspect(engine)
+        existing = set(inspector.get_table_names())
+        tables_needed = {'ship_id_patterns', 'ship_id_blacklist', 'ship_id_convert_map'}
+        has_all_tables = tables_needed.issubset(existing)
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect ship_id_rules tables: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmts = [
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_patterns (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL,
+                    pattern VARCHAR(500) NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    description TEXT,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(name, pattern)
+                )
+                """
+            ),
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_blacklist (
+                    id SERIAL PRIMARY KEY,
+                    value VARCHAR(100) NOT NULL UNIQUE,
+                    reason TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            ),
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_convert_map (
+                    id SERIAL PRIMARY KEY,
+                    wrong_value VARCHAR(100) NOT NULL UNIQUE,
+                    correct_value VARCHAR(100) NOT NULL,
+                    reason TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            ),
+        ]
+        seed_stmt = text(
+            """
+            INSERT INTO ship_id_patterns (name, pattern, priority, description, is_active)
+            VALUES (
+                'Standard (2 chữ + 4 số)',
+                '([A-Z]{2})[-\\s]?(\\d{4})',
+                100,
+                'Pattern mặc định — prefix 2 ký tự, hậu tố 4 chữ số',
+                TRUE
+            )
+            ON CONFLICT (name, pattern) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmts = [
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_patterns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    pattern TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    description TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(name, pattern)
+                )
+                """
+            ),
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_blacklist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    value TEXT NOT NULL UNIQUE,
+                    reason TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+                """
+            ),
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_convert_map (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    wrong_value TEXT NOT NULL UNIQUE,
+                    correct_value TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+                """
+            ),
+        ]
+        seed_stmt = text(
+            """
+            INSERT OR IGNORE INTO ship_id_patterns (name, pattern, priority, description, is_active)
+            VALUES (
+                'Standard (2 chữ + 4 số)',
+                '([A-Z]{2})[-\\s]?(\\d{4})',
+                100,
+                'Pattern mặc định — prefix 2 ký tự, hậu tố 4 chữ số',
+                1
+            )
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — create ship_id_rules tables manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+            seed_result = conn.execute(seed_stmt)
+        if not has_all_tables or seed_result.rowcount:
+            _patch_done('created ship_id_patterns, ship_id_blacklist, ship_id_convert_map tables')
+    except Exception as err:
+        logger.error('schema_patches: failed to create ship_id_rules tables: %s', err)
+        raise
+
+
 def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     global _patch_quiet, _patch_applied
     _patch_quiet = quiet
@@ -1663,4 +1796,5 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_zalo_notifications_message_ids()
     _ensure_media_short_links()
     _ensure_boundary_crossing_events()
+    _ensure_ship_id_rules_tables()
     return list(_patch_applied)
