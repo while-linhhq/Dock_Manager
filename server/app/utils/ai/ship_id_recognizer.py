@@ -4,6 +4,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.ai.ship_id_rule_engine import ShipIdRuleEngine
 
 import cv2
 
@@ -78,7 +82,7 @@ def _gpu_actually_works() -> bool:
 
 
 class ShipIdRecognizer:
-    def __init__(self, lang="en", use_gpu=None, show_log=False):
+    def __init__(self, lang="en", use_gpu=None, show_log=False, rule_engine=None):
         """Khởi tạo PaddleOCR; auto fallback CPU nếu GPU/cuDNN không sẵn sàng."""
         init_cuda_library_path('pre')
         import paddle
@@ -101,6 +105,7 @@ class ShipIdRecognizer:
         )
         logger.info("ShipIdRecognizer initialized (device=%s)", "gpu" if use_gpu else "cpu")
         self.pattern = r"([A-Z50]{2})[-\s]?(\d{4})"
+        self._rule_engine = rule_engine  # ShipIdRuleEngine | None
 
     @staticmethod
     def _ensure_min_side_bgr(img_bgr, min_side: int = 480):
@@ -130,7 +135,8 @@ class ShipIdRecognizer:
 
     def extract_ship_id(self, ocr_results):
         """
-        Lọc mã tàu bằng RegEx từ kết quả OCR.
+        Filter ship IDs from OCR results.
+        Delegates to rule engine when available; falls back to hardcoded pattern.
         """
         found_ids = []
         for line in ocr_results:
@@ -138,18 +144,27 @@ class ShipIdRecognizer:
             if not line or len(line) < 2:
                 continue
             text, prob = line[1]
-            
-            clean_text = text.upper().strip().replace(" ", "")
-            match = re.search(self.pattern, clean_text)
-            if match:
-                prefix = match.group(1).replace("5", "S").replace("0", "O")
-                number = match.group(2)
-                final_id = f"{prefix}-{number}"
-                found_ids.append({
-                    "id": final_id, 
-                    "confidence": float(prob), 
-                    "raw_text": text
-                })
+            clean_text = text.upper().strip().replace(' ', '')
+
+            if self._rule_engine is not None:
+                candidates = self._rule_engine.extract_ship_ids(clean_text)
+                for c in candidates:
+                    found_ids.append({
+                        'id': c['id'],
+                        'confidence': float(prob),
+                        'raw_text': text,
+                    })
+            else:
+                match = re.search(self.pattern, clean_text)
+                if match:
+                    prefix = match.group(1).replace('5', 'S').replace('0', 'O')
+                    number = match.group(2)
+                    final_id = f'{prefix}-{number}'
+                    found_ids.append({
+                        'id': final_id,
+                        'confidence': float(prob),
+                        'raw_text': text,
+                    })
         return found_ids
 
     def recognize_bgr(self, img_bgr):
