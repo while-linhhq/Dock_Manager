@@ -85,10 +85,18 @@ def draw_fused_track_overlay(
                 )
             color = _color_for_track(track)
             cv2.rectangle(fused, (x1, y1), (x2, y2), color, 2)
-            label = track.ship_id or f'T{track.track_id}'
             cv2.putText(
                 fused,
-                label,
+                f"gid: {track.global_id or track.track_id}",
+                (x1, max(12, y1 - 22)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (200, 160, 255),
+                2,
+            )
+            cv2.putText(
+                fused,
+                track.ship_id or f'T{track.track_id}',
                 (x1, max(12, y1 - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
