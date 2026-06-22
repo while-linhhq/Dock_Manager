@@ -162,3 +162,16 @@ def test_berth_visual_state_pending_in_out():
     track.berth_out_ts = None
     draw_berth_state_bbox_overlays(frame, [track])
     assert frame[20, 20].any()
+
+
+def test_zone_overlap_ratio_public_api_matches_internal_geometry():
+    trk = BoundaryCrossingTracker(_cfg(threshold=0.30))
+    # bbox fully inside zone -> ~100%
+    ratio = trk.zone_overlap_ratio((35, 40, 55, 60), frame_w=100, frame_h=100)
+    assert ratio >= 0.99
+
+    # bbox fully outside -> 0%
+    ratio_out = trk.zone_overlap_ratio((5, 40, 20, 60), frame_w=100, frame_h=100)
+    assert ratio_out == 0.0
+
+    assert trk.config.bbox_cross_threshold == 0.30

@@ -259,6 +259,16 @@ class BoundaryCrossingTracker:
         scaled_zone = self._scaled_polyline(self._cfg.berth_zone, frame_w, frame_h)
         return bbox_fraction_inside_polygon(box, scaled_zone)
 
+    def zone_overlap_ratio(
+        self,
+        box: Bbox,
+        frame_w: int,
+        frame_h: int,
+    ) -> float:
+        """Fraction of bbox area inside berth_zone (0.0–1.0), scaled to current frame."""
+        scaled_box = self._scaled_box(box, frame_w, frame_h)
+        return self._zone_overlap_ratio(scaled_box, frame_w, frame_h)
+
     def _line_touches_with_history(
         self,
         prev_box: Optional[Bbox],
