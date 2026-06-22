@@ -14,8 +14,14 @@ class IdentityFusionResult:
 
 
 class IdentityFusion:
-    def __init__(self, *, match_threshold: float) -> None:
+    def __init__(
+        self,
+        *,
+        match_threshold: float,
+        conflict_threshold: float = 0.96,
+    ) -> None:
         self._match_threshold = float(match_threshold)
+        self._conflict_threshold = float(conflict_threshold)
 
     def fuse(
         self,
@@ -26,14 +32,10 @@ class IdentityFusion:
         decision = resolve_visual_match(
             visual_top_k,
             match_threshold=self._match_threshold,
+            conflict_threshold=self._conflict_threshold,
             ocr_hint=ocr_hint,
         )
-        if decision.accepted:
-            ship_id = decision.ship_id
-        elif decision.source == 'ocr-hint':
-            ship_id = decision.ship_id
-        else:
-            ship_id = None
+        ship_id = decision.ship_id if decision.ship_id else None
         return IdentityFusionResult(
             ship_id=ship_id,
             confidence=decision.confidence,
