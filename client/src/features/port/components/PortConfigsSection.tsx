@@ -81,6 +81,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   visual_id_interval_sec: 'visual',
   visual_min_crop_area: 'visual',
   visual_match_threshold: 'visual',
+  visual_conflict_threshold: 'visual',
   visual_top_k: 'visual',
   visual_model_path: 'visual',
   visual_backbone: 'visual',
