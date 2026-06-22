@@ -106,70 +106,107 @@ def draw_ship_detection_overlay(
     camera_id: int | None = None,
 ):
     """
-    Vẽ det confidence, global id + state, OCR ship_id, vector best ship + similarity, FPS.
-    Nếu ocr_cache và ocr_lock là None: bỏ qua phần OCR (bbox đã vẽ ở worker).
+    Vẽ 3 dòng trên bbox: gid / trk+state / det conf.
+    Vẽ 3 dòng dưới bbox: OCR / EMB / Final (từ ocr_cache).
     """
     now = time.time()
 
     for tb in tracked_boats:
         b = tb.box
-        dc = tb.conf
+        x1 = int(b[0])
+        y1 = int(b[1])
+
+        gid_label = f"gid: {tb.global_id or tb.track_id}"
         cv2.putText(
             display_frame,
-            f"det {dc:.2f}",
-            (int(b[0]), int(b[1]) - 38),
+            gid_label,
+            (x1, y1 - 86),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (180, 220, 255),
+            0.55,
+            (200, 160, 255),
             2,
         )
-        global_id = str(tb.ship_id or 'N/A')
-        label = f"GID {global_id} [{tb.state.value}]"
+
+        trk_label = f"trk: {tb.track_id} [{tb.state.value}]"
         cv2.putText(
             display_frame,
-            label,
-            (int(b[0]), int(b[1]) - 62),
+            trk_label,
+            (x1, y1 - 62),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (220, 220, 100),
+            0.55,
+            (180, 180, 180),
+            2,
+        )
+
+        cv2.putText(
+            display_frame,
+            f"det: {tb.conf:.2f}",
+            (x1, y1 - 38),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (180, 220, 255),
             2,
         )
 
     if ocr_cache is not None and ocr_lock is not None:
         with ocr_lock:
             for k in list(ocr_cache.keys()):
-                if now - ocr_cache[k]["time"] >= ocr_label_ttl:
+                if now - ocr_cache[k]['time'] >= ocr_label_ttl:
                     del ocr_cache[k]
             for tb in tracked_boats:
                 ck = ocr_cache_key_track(tb.track_id, tb.camera_id)
                 ent = ocr_cache.get(ck)
-                if not ent:
-                    continue
                 b = tb.box
-                y = min(int(b[3]) + 24, display_frame.shape[0] - 6)
-                ocr_ship_id = str(ent.get('text') or '').strip()
-                if ocr_ship_id:
+                y_base = min(int(b[3]) + 24, display_frame.shape[0] - 6)
+
+                if ent:
+                    ocr_text = str(ent.get('text') or '').strip()
+                    if ocr_text:
+                        cv2.putText(
+                            display_frame,
+                            f"OCR: {ocr_text}",
+                            (int(b[0]), y_base),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55,
+                            (0, 220, 255),
+                            2,
+                        )
+                    y_base = min(y_base + 20, display_frame.shape[0] - 6)
+
+                    visual_ship_id = str(ent.get('visual_ship_id') or '').strip()
+                    visual_conf = float(ent.get('visual_confidence') or 0.0)
+                    if visual_ship_id:
+                        conf_pct = max(0.0, min(1.0, visual_conf)) * 100.0
+                        cv2.putText(
+                            display_frame,
+                            f"EMB: {visual_ship_id} ({conf_pct:.1f}%)",
+                            (int(b[0]), y_base),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.52,
+                            (120, 255, 120),
+                            2,
+                        )
+                    y_base = min(y_base + 20, display_frame.shape[0] - 6)
+
+                    source = str(ent.get('visual_source') or 'ocr').strip()
+                    final_id = str(tb.ship_id or 'N/A')
                     cv2.putText(
                         display_frame,
-                        f"OCR: {ocr_ship_id}",
-                        (int(b[0]), y),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (0, 220, 255),
-                        2,
-                    )
-                    y = min(y + 20, display_frame.shape[0] - 6)
-                visual_ship_id = str(ent.get('visual_ship_id') or '').strip()
-                visual_conf = float(ent.get('visual_confidence') or 0.0)
-                if visual_ship_id:
-                    conf_pct = max(0.0, min(1.0, visual_conf)) * 100.0
-                    cv2.putText(
-                        display_frame,
-                        f"VEC: {visual_ship_id} ({conf_pct:.1f}%)",
-                        (int(b[0]), y),
+                        f"Final: {final_id} [{source}]",
+                        (int(b[0]), y_base),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.52,
-                        (120, 255, 120),
+                        (255, 220, 80),
+                        2,
+                    )
+                elif tb.ship_id:
+                    cv2.putText(
+                        display_frame,
+                        f"Final: {tb.ship_id} [ocr]",
+                        (int(b[0]), y_base),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.52,
+                        (255, 220, 80),
                         2,
                     )
 
