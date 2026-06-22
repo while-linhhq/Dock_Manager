@@ -78,6 +78,8 @@ class TrackedBoat:
     ever_confirmed: bool = False
     berth_in_ts: float | None = None
     berth_out_ts: float | None = None
+    berth_zone_overlap: float | None = None
+    berth_zone_threshold: float | None = None
 
     def copy_public(self) -> TrackedBoat:
         """Shallow copy with copied box array (safe for queue consumers)."""
@@ -102,6 +104,8 @@ class TrackedBoat:
             ever_confirmed=self.ever_confirmed,
             berth_in_ts=self.berth_in_ts,
             berth_out_ts=self.berth_out_ts,
+            berth_zone_overlap=self.berth_zone_overlap,
+            berth_zone_threshold=self.berth_zone_threshold,
         )
 
 
