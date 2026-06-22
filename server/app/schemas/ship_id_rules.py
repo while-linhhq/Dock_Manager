@@ -7,15 +7,19 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
-def _validate_and_normalize_upper_trim(*, value: object, field_name: str) -> str:
+def _validate_non_empty_trim(*, value: object, field_name: str) -> str:
     if value is None:
         raise ValueError(f'{field_name} is required')
 
-    normalized = str(value).strip().upper()
+    normalized = str(value).strip()
     if not normalized:
         raise ValueError(f'{field_name} must not be empty')
 
     return normalized
+
+
+def _validate_and_normalize_upper_trim(*, value: object, field_name: str) -> str:
+    return _validate_non_empty_trim(value=value, field_name=field_name).upper()
 
 
 class PatternCreate(BaseModel):
@@ -24,6 +28,11 @@ class PatternCreate(BaseModel):
     priority: int = 0
     description: Optional[str] = None
     is_active: bool = True
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def validate_name(cls, v: object) -> str:
+        return _validate_non_empty_trim(value=v, field_name='name')
 
     @field_validator('pattern', mode='before')
     @classmethod
@@ -49,6 +58,13 @@ class PatternUpdate(BaseModel):
     priority: Optional[int] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+
+    @field_validator('name', mode='before')
+    @classmethod
+    def validate_name(cls, v: Optional[object]) -> Optional[str]:
+        if v is None:
+            return None
+        return _validate_non_empty_trim(value=v, field_name='name')
 
     @field_validator('pattern', mode='before')
     @classmethod
