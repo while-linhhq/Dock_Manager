@@ -316,6 +316,11 @@ class CrossCameraReIdManager:
                 return None
             return identity.ship_id
 
+    def get_global_id(self, camera_id: int, track_id: str) -> str | None:
+        """Return the gid_* identifier for this (camera_id, track_id) pair, or None."""
+        with self._lock:
+            return self._track_to_global.get((int(camera_id), str(track_id)))
+
     def resolve_lookup_track_ids(self, track_id: str) -> list[str]:
         """
         IDs usable for TrackMediaCollector / video registry lookup.

@@ -414,6 +414,9 @@ class PerCameraPipeline(threading.Thread):
             track.ship_id = global_ship_id
             track.last_known_ship_id = global_ship_id
             self._tracker.update_track_metadata(str(track.track_id), ship_id=global_ship_id)
+        track.global_id = self._reid_manager.get_global_id(
+            int(self.config.camera_id), str(track.track_id)
+        )
 
     def _queue_ocr(self, frame: np.ndarray, tracked_boats: list[TrackedBoat]) -> None:
         if not self.config.enable_ocr or self._ocr_queue is None:

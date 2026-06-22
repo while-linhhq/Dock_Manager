@@ -91,3 +91,13 @@ def test_same_plate_merge_skipped_when_both_cameras_active() -> None:
     gid_x = mgr._track_to_global[(1, 'trk_x')]
     gid_y = mgr._track_to_global[(2, 'trk_y')]
     assert gid_x != gid_y
+
+
+def test_get_global_id_returns_gid_after_track_report() -> None:
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    boat = _track('trk_gid', camera_id=1)
+    mgr.report_track_update(1, boat, embedding=_unit_embedding(42))
+
+    global_id = mgr.get_global_id(1, 'trk_gid')
+    assert global_id is not None
+    assert global_id.startswith('gid_')
