@@ -74,6 +74,7 @@ class TrackedBoat:
     static_since_ts: float | None = None
     dominant_color_hsv: tuple[int, int, int] | None = None
     last_known_ship_id: str | None = None
+    global_id: str | None = None
     ever_confirmed: bool = False
     berth_in_ts: float | None = None
     berth_out_ts: float | None = None
@@ -97,6 +98,7 @@ class TrackedBoat:
             static_since_ts=self.static_since_ts,
             dominant_color_hsv=self.dominant_color_hsv,
             last_known_ship_id=self.last_known_ship_id,
+            global_id=self.global_id,
             ever_confirmed=self.ever_confirmed,
             berth_in_ts=self.berth_in_ts,
             berth_out_ts=self.berth_out_ts,
