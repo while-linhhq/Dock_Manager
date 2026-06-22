@@ -261,10 +261,19 @@ class PerCameraPipeline(threading.Thread):
         if self._boundary_tracker is not None:
             h, w = raw_frame.shape[:2]
             now_ts = time.time()
+            threshold = float(self._boundary_tracker.config.bbox_cross_threshold)
             for track in tracked_boats:
                 if track.state != TrackState.CONFIRMED:
+                    track.berth_zone_overlap = None
+                    track.berth_zone_threshold = None
                     continue
                 box = track.box
+                track.berth_zone_overlap = self._boundary_tracker.zone_overlap_ratio(
+                    (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                    w,
+                    h,
+                )
+                track.berth_zone_threshold = threshold
                 direction = self._boundary_tracker.update(
                     str(track.track_id),
                     (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
@@ -289,6 +298,10 @@ class PerCameraPipeline(threading.Thread):
                 elif phase == 'completed' and track.berth_out_ts is None:
                     track.berth_out_ts = now_ts
             self._boundary_tracker.forget(active_ids)
+        else:
+            for track in tracked_boats:
+                track.berth_zone_overlap = None
+                track.berth_zone_threshold = None
 
         annotated = raw_frame.copy()
         draw_berth_state_bbox_overlays(annotated, tracked_boats)
