@@ -58,6 +58,9 @@ class GroupFrameHub:
         bg_registry: BackgroundModelRegistry | None = None,
         seam_anchor_verifier: SeamAnchorVerifier | None = None,
         on_fused_media_sample: Optional[Callable[[Any, list[Any]], None]] = None,
+        ocr_cache: dict | None = None,
+        ocr_lock=None,
+        ocr_label_ttl_sec: float = 0.0,
     ) -> None:
         self._stop_event = stop_event
         self._video_queue = video_queue
@@ -66,6 +69,9 @@ class GroupFrameHub:
         self._bg_registry = bg_registry
         self._seam_anchor_verifier = seam_anchor_verifier
         self._on_fused_media_sample = on_fused_media_sample
+        self._ocr_cache = ocr_cache
+        self._ocr_lock = ocr_lock
+        self._ocr_label_ttl_sec = float(ocr_label_ttl_sec)
         self._track_providers: list[TrackProvider] = []
         self._frame_buffer = LatestFrameBuffer()
         self._per_camera_queues: dict[int, queue.Queue] = {}
@@ -222,6 +228,9 @@ class GroupFrameHub:
             members_by_camera=members_by_camera,
             batch=batch,
             track_providers=self._track_providers,
+            ocr_cache=self._ocr_cache,
+            ocr_lock=self._ocr_lock,
+            ocr_label_ttl=self._ocr_label_ttl_sec,
         )
 
     def queue_for_camera(self, camera_id: int) -> queue.Queue:

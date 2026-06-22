@@ -55,7 +55,7 @@ def _normalize_box(box: Bbox) -> Bbox:
     return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
 
 
-def _polygon_area(vertices: list[Point]) -> float:
+def _signed_polygon_area(vertices: Polyline) -> float:
     if len(vertices) < 3:
         return 0.0
     area = 0.0
@@ -63,7 +63,20 @@ def _polygon_area(vertices: list[Point]) -> float:
         x1, y1 = vertices[i]
         x2, y2 = vertices[(i + 1) % len(vertices)]
         area += x1 * y2 - x2 * y1
-    return abs(area) * 0.5
+    return area * 0.5
+
+
+def _polygon_area(vertices: list[Point]) -> float:
+    return abs(_signed_polygon_area(vertices))
+
+
+def _ensure_ccw_polygon(polygon: Polyline) -> Polyline:
+    """Clipper expects interior on the left of each edge (CCW in image coords)."""
+    if len(polygon) < 3:
+        return polygon
+    if _signed_polygon_area(polygon) < 0:
+        return list(reversed(polygon))
+    return polygon
 
 
 def _bbox_corners(box: Bbox) -> list[Point]:
@@ -125,6 +138,7 @@ def bbox_fraction_inside_polygon(box: Bbox, polygon: Polyline) -> float:
     if len(polygon) < 3:
         return 0.0
 
+    polygon = _ensure_ccw_polygon(polygon)
     x1, y1, x2, y2 = _normalize_box(box)
     bbox_area = max(0.0, (x2 - x1) * (y2 - y1))
     if bbox_area < 1e-9:
@@ -244,11 +258,9 @@ class BoundaryCrossingTracker:
         sy = frame_h / max(1, self._cfg.frame_h)
         return [(p[0] * sx, p[1] * sy) for p in points]
 
-    def _scaled_box(self, box: Bbox, frame_w: int, frame_h: int) -> Bbox:
-        sx = frame_w / max(1, self._cfg.frame_w)
-        sy = frame_h / max(1, self._cfg.frame_h)
-        x1, y1, x2, y2 = _normalize_box(box)
-        return x1 * sx, y1 * sy, x2 * sx, y2 * sy
+    def _frame_box(self, box: Bbox) -> Bbox:
+        """Detector boxes are already in live frame pixel space; only normalize."""
+        return _normalize_box(box)
 
     def _zone_overlap_ratio(
         self,
@@ -266,8 +278,7 @@ class BoundaryCrossingTracker:
         frame_h: int,
     ) -> float:
         """Fraction of bbox area inside berth_zone (0.0–1.0), scaled to current frame."""
-        scaled_box = self._scaled_box(box, frame_w, frame_h)
-        return self._zone_overlap_ratio(scaled_box, frame_w, frame_h)
+        return self._zone_overlap_ratio(self._frame_box(box), frame_w, frame_h)
 
     def _line_touches_with_history(
         self,
@@ -298,13 +309,13 @@ class BoundaryCrossingTracker:
             self._states[track_id] = st
 
         prev_box = st.last_box
-        scaled_box = self._scaled_box(box, frame_w, frame_h)
-        st.last_box = scaled_box
+        frame_box = self._frame_box(box)
+        st.last_box = frame_box
 
         if st.phase == 'completed':
             return None
 
-        overlap = self._zone_overlap_ratio(scaled_box, frame_w, frame_h)
+        overlap = self._zone_overlap_ratio(frame_box, frame_w, frame_h)
         threshold = self._cfg.bbox_cross_threshold
 
         if st.phase == 'inside':
@@ -318,10 +329,10 @@ class BoundaryCrossingTracker:
             st.pending_line = None
 
         l1_hit = self._line_touches_with_history(
-            prev_box, scaled_box, self._cfg.line1, frame_w, frame_h
+            prev_box, frame_box, self._cfg.line1, frame_w, frame_h
         )
         l2_hit = self._line_touches_with_history(
-            prev_box, scaled_box, self._cfg.line2, frame_w, frame_h
+            prev_box, frame_box, self._cfg.line2, frame_w, frame_h
         )
 
         if st.phase == 'outside':

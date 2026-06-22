@@ -175,3 +175,22 @@ def test_zone_overlap_ratio_public_api_matches_internal_geometry():
     assert ratio_out == 0.0
 
     assert trk.config.bbox_cross_threshold == 0.30
+
+
+def test_inside_ratio_cw_polygon_matches_ccw():
+    inside_box = (35, 40, 55, 60)
+    ccw_ratio = bbox_fraction_inside_polygon(inside_box, _zone())
+    cw_ratio = bbox_fraction_inside_polygon(inside_box, list(reversed(_zone())))
+    assert ccw_ratio >= 0.99
+    assert cw_ratio >= 0.99
+
+
+def test_zone_overlap_when_live_frame_differs_from_config():
+    """BBox is in live RTSP pixels; only berth_zone is scaled from config frame."""
+    trk = BoundaryCrossingTracker(_cfg(threshold=0.30))
+    # Config zone x=30..80, y=20..80 on 100x100 -> on 200x200: x=60..160, y=40..160
+    ratio = trk.zone_overlap_ratio((70, 80, 110, 120), frame_w=200, frame_h=200)
+    assert ratio >= 0.99
+
+    ratio_out = trk.zone_overlap_ratio((10, 80, 40, 120), frame_w=200, frame_h=200)
+    assert ratio_out == 0.0

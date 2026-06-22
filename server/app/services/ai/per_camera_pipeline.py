@@ -263,7 +263,7 @@ class PerCameraPipeline(threading.Thread):
             now_ts = time.time()
             threshold = float(self._boundary_tracker.config.bbox_cross_threshold)
             for track in tracked_boats:
-                if track.state != TrackState.CONFIRMED:
+                if track.state not in (TrackState.CONFIRMED, TrackState.LOST):
                     track.berth_zone_overlap = None
                     track.berth_zone_threshold = None
                     continue

@@ -239,11 +239,13 @@ class CrossCameraReIdManager:
             identity.removed_tracks.add(track_key)
             identity.last_seen_ts = max(identity.last_seen_ts, float(track.last_seen_ts))
             identity.last_track = track.copy_public()
+            should_finalize_now = identity.berth_out_ts is not None
 
             if (
                 not identity.active_tracks
                 and not identity.anchored
                 and self._seam_anchor_verifier is not None
+                and not should_finalize_now
             ):
                 last_embedding = (
                     identity.embeddings[-1] if identity.embeddings else track.embedding
@@ -264,6 +266,10 @@ class CrossCameraReIdManager:
                 )
                 if anchored_ok:
                     identity.anchored = True
+
+            if not identity.active_tracks and not identity.anchored and should_finalize_now:
+                self._finalize_identity_locked(identity)
+                return identity.global_id
 
             self._flush_expired_locked(time.time())
             return identity.global_id

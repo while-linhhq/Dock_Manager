@@ -170,7 +170,7 @@ class ShipIdRuleRepository:
             else '0'
         )
 
-        return '|'.join(
+        return '|'.join([
             str(stats['pattern_count']),
             str(stats['pattern_ts']),
             str(stats['blacklist_count']),
@@ -178,7 +178,7 @@ class ShipIdRuleRepository:
             str(stats['convert_count']),
             str(stats['convert_ts']),
             convert_content,
-        )
+        ])
 
 
 ship_id_rule_repo = ShipIdRuleRepository()
