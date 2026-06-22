@@ -12,6 +12,8 @@ import { VesselsMainTabs, type VesselsMainTab } from '../components/VesselsMainT
 import { VesselsListSection } from '../components/VesselsListSection';
 import { VesselTypesSection } from '../components/VesselTypesSection';
 import { VesselsModals } from '../components/VesselsModals';
+import { RecognitionConfigSection } from '../components/RecognitionConfigSection';
+import { useShipIdRulesStore } from '../store/shipIdRulesStore';
 import { vesselsApi } from '../services/vesselsApi';
 import { ApiError } from '../../../services/httpClient';
 import { Modal } from '../../../components/Modal/Modal';
@@ -50,6 +52,9 @@ export const VesselsView: React.FC = () => {
     deleteVesselType,
   } = useVesselStore();
 
+  const { patterns, fetchAll: fetchShipIdRules } = useShipIdRulesStore();
+  const activePatternCount = patterns.filter((p) => p.is_active).length;
+
   const vesselForm = useForm<VesselCreate>({
     resolver: zodResolver(vesselSchema),
     defaultValues: { is_active: true },
@@ -58,6 +63,10 @@ export const VesselsView: React.FC = () => {
   const typeForm = useForm<VesselTypeCreate>({
     resolver: zodResolver(vesselTypeSchema),
   });
+
+  useEffect(() => {
+    void fetchShipIdRules();
+  }, [fetchShipIdRules]);
 
   useEffect(() => {
     if (activeTab === 'vessels') {
@@ -252,7 +261,11 @@ export const VesselsView: React.FC = () => {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <VesselsMainTabs activeTab={activeTab} onTabChange={setActiveTab} />
+      <VesselsMainTabs
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        activePatternCount={activePatternCount}
+      />
 
       {activeTab === 'vessels' ? (
         <VesselsListSection
@@ -281,7 +294,7 @@ export const VesselsView: React.FC = () => {
           onDeleteVessel={handleDeleteVessel}
           onOpenUploadModal={handleOpenUploadModal}
         />
-      ) : (
+      ) : activeTab === 'types' ? (
         <VesselTypesSection
           typeQ={typeQ}
           setTypeQ={setTypeQ}
@@ -298,6 +311,8 @@ export const VesselsView: React.FC = () => {
           onEditType={handleEditType}
           onDeleteType={(id) => void handleDeleteType(id)}
         />
+      ) : (
+        <RecognitionConfigSection />
       )}
 
       <VesselsModals
