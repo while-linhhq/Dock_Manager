@@ -623,6 +623,10 @@ _DINOV2_PORT_CONFIG_VALUES: dict[str, tuple[str, str]] = {
         '0.55',
         'Minimum aggregated similarity to accept ship ID when OCR has no result.',
     ),
+    'visual_conflict_threshold': (
+        '0.96',
+        'Minimum visual embedding score to override OCR when both methods disagree.',
+    ),
     'visual_top_k': (
         '20',
         'Number of nearest visual candidates returned from vector search.',

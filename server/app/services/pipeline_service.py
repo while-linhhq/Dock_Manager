@@ -184,6 +184,7 @@ class PipelineService:
         )
         self._identity_fusion = IdentityFusion(
             match_threshold=runtime_cfg['visual_match_threshold'],
+            conflict_threshold=runtime_cfg['visual_conflict_threshold'],
         )
         self._visual_extractor = get_visual_embedding_extractor()
 
@@ -450,6 +451,10 @@ class PipelineService:
             'visual_match_threshold': self._to_float(
                 cfg_map.get('visual_match_threshold', ''),
                 float(settings.VISUAL_MATCH_THRESHOLD),
+            ),
+            'visual_conflict_threshold': self._to_float(
+                cfg_map.get('visual_conflict_threshold', ''),
+                0.96,
             ),
             'visual_top_k': max(
                 1,
