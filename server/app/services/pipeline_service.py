@@ -38,6 +38,7 @@ from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.group_frame_hub import GroupFrameHub
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
+from app.services.ai.ship_id_rule_engine import get_rule_engine
 from app.services.ai.training_snapshot_collector import (
     TrainingSnapshotCollector,
     TrainingSnapshotConfig,
@@ -1395,7 +1396,7 @@ class PipelineService:
         )
 
         if ocr_active:
-            recognizer = ShipIdRecognizer()
+            recognizer = ShipIdRecognizer(rule_engine=get_rule_engine())
             self._ocr_worker = OcrWorkerThread(
                 recognizer, self._ocr_queue, self.ocr_cache, self.ocr_lock, self._stop,
                 ocr_label_ttl, runtime_cfg['save_min_interval_sec'],
@@ -1600,7 +1601,7 @@ class PipelineService:
             self._single_video_worker.start()
 
         if ocr_active:
-            recognizer = ShipIdRecognizer()
+            recognizer = ShipIdRecognizer(rule_engine=get_rule_engine())
             self._ocr_queue = queue.Queue(maxsize=max(20, len(camera_order) * 8))
             self._ocr_worker = OcrWorkerThread(
                 recognizer,
@@ -1627,6 +1628,9 @@ class PipelineService:
             bg_registry=self._bg_registry,
             seam_anchor_verifier=self._seam_anchor_verifier,
             on_fused_media_sample=self._recording_fused_media_sample,
+            ocr_cache=self.ocr_cache,
+            ocr_lock=self.ocr_lock,
+            ocr_label_ttl_sec=runtime_cfg['ocr_label_ttl_sec'],
         )
 
         self._per_camera_pipelines = []
@@ -1713,6 +1717,7 @@ class PipelineService:
                     shared_visual_queue=self._visual_queue if visual_enabled else None,
                     single_camera_video_queue=single_cam_q,
                     training_snapshot_collector=training_snapshot_collector,
+                    rule_engine=get_rule_engine(),
                 )
             )
 
@@ -1814,6 +1819,9 @@ class PipelineService:
             yolo_frame_queue=self._frame_queue,
             distribute_per_camera=False,
             on_fused_media_sample=self._recording_fused_media_sample,
+            ocr_cache=self.ocr_cache,
+            ocr_lock=self.ocr_lock,
+            ocr_label_ttl_sec=runtime_cfg['ocr_label_ttl_sec'],
         )
         self._group_frame_hub.set_track_providers([self._boat_tracker.confirmed_boats])
         try:
@@ -1839,7 +1847,7 @@ class PipelineService:
         )
 
         if ocr_active:
-            recognizer = ShipIdRecognizer()
+            recognizer = ShipIdRecognizer(rule_engine=get_rule_engine())
             self._ocr_worker = OcrWorkerThread(
                 recognizer,
                 self._ocr_queue,
@@ -1999,7 +2007,7 @@ class PipelineService:
         ocr_interval_sec = float(settings.OCR_INTERVAL_SEC)
         last_ocr_ts = 0.0
 
-        recognizer = ShipIdRecognizer() if enable_ocr else None
+        recognizer = ShipIdRecognizer(rule_engine=get_rule_engine()) if enable_ocr else None
         
         cap = cv2.VideoCapture(source)
         if not cap.isOpened():

@@ -90,6 +90,7 @@ class PerCameraPipeline(threading.Thread):
         shared_visual_queue: queue.Queue | None = None,
         single_camera_video_queue: queue.Queue | None = None,
         training_snapshot_collector: TrainingSnapshotCollector | None = None,
+        rule_engine=None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -145,7 +146,7 @@ class PerCameraPipeline(threading.Thread):
             else:
                 self._ocr_queue = queue.Queue(maxsize=5)
                 self._ocr_worker = OcrWorkerThread(
-                    ShipIdRecognizer(),
+                    ShipIdRecognizer(rule_engine=rule_engine),
                     self._ocr_queue,
                     self._ocr_cache,
                     self._ocr_lock,

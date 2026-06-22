@@ -91,6 +91,10 @@ async def lifespan(app: FastAPI):
 
             ensure_zalo_startup()
 
+    from app.services.ai.ship_id_rule_engine import start_rule_engine_daemon
+
+    start_rule_engine_daemon(interval_s=30)
+
     yield
 
     if app_settings.ZALO_ENABLED and app_settings.ZALO_POLLING_ENABLED:
