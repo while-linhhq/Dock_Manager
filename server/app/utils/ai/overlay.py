@@ -93,6 +93,25 @@ def draw_berth_state_bbox_overlays(
     return frame
 
 
+def berth_zone_overlay_line(
+    overlap: float | None,
+    threshold: float | None,
+) -> tuple[str, tuple[int, int, int]] | None:
+    """Return (label, bgr_color) e.g. ('ZONE: 42% / 30%', green)."""
+    if overlap is None or threshold is None:
+        return None
+    pct = int(round(max(0.0, min(1.0, overlap)) * 100))
+    thr = int(round(max(0.0, min(1.0, threshold)) * 100))
+    label = f'ZONE: {pct}% / {thr}%'
+    if overlap >= threshold:
+        color = (80, 220, 80)
+    elif overlap >= threshold * 0.85:
+        color = (0, 210, 255)
+    else:
+        color = (80, 80, 255)
+    return label, color
+
+
 def draw_ship_detection_overlay(
     display_frame,
     tracked_boats: list[TrackedBoat],
@@ -147,6 +166,19 @@ def draw_ship_detection_overlay(
             (180, 220, 255),
             2,
         )
+
+        zone_line = berth_zone_overlay_line(tb.berth_zone_overlap, tb.berth_zone_threshold)
+        if zone_line is not None:
+            zone_text, zone_color = zone_line
+            cv2.putText(
+                display_frame,
+                zone_text,
+                (x1, y1 - 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.50,
+                zone_color,
+                2,
+            )
 
     if ocr_cache is not None and ocr_lock is not None:
         with ocr_lock:
