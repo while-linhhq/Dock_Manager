@@ -75,10 +75,17 @@ def resolve_visual_match(
     match_threshold: float,
     top_m_for_mean: int = 3,
     ocr_hint: str | None = None,
+    conflict_threshold: float = 0.96,
 ) -> VisualMatchDecision:
-    """Accept visual match when best aggregated score >= match_threshold (OCR-style).
+    """Fuse OCR hint and visual Qdrant results using consensus logic.
 
-    OCR hint, when present, takes priority. Visual only assigns ship_id when OCR is empty.
+    Decision matrix:
+    - Both present, same ID              → source='consensus'         (conf boosted)
+    - Both present, different, vis>=thr  → source='conflict-visual-wins'
+    - Both present, different, vis<thr   → source='conflict-ocr-wins'
+    - OCR only (no visual hits)          → source='ocr-hint'
+    - Visual only (no OCR hint)          → source='visual' if score>=match_threshold
+    - Neither                            → source='unknown'
     """
     ranked = aggregate_visual_hits(hits, top_m_for_mean=top_m_for_mean)
     normalized_ocr = ocr_hint.strip().upper() if ocr_hint else None
@@ -99,22 +106,32 @@ def resolve_visual_match(
     margin = best.aggregated_score - second_score
 
     if normalized_ocr:
-        if best.ship_id == normalized_ocr and best.aggregated_score >= float(match_threshold):
+        if best.ship_id == normalized_ocr:
             boosted = min(1.0, best.aggregated_score + 0.05)
             return VisualMatchDecision(
                 accepted=True,
                 ship_id=best.ship_id,
                 confidence=boosted,
-                source='fused-ocr-visual',
+                source='consensus',
+                best=best,
+                ranked_ships=ranked,
+                margin=margin,
+            )
+        if best.aggregated_score >= float(conflict_threshold):
+            return VisualMatchDecision(
+                accepted=True,
+                ship_id=best.ship_id,
+                confidence=best.aggregated_score,
+                source='conflict-visual-wins',
                 best=best,
                 ranked_ships=ranked,
                 margin=margin,
             )
         return VisualMatchDecision(
-            accepted=bool(normalized_ocr),
+            accepted=True,
             ship_id=normalized_ocr,
             confidence=best.aggregated_score,
-            source='ocr-hint',
+            source='conflict-ocr-wins',
             best=best,
             ranked_ships=ranked,
             margin=margin,
