@@ -160,8 +160,15 @@ def _runtime_cuda_link_dir() -> Path | None:
         if not target.is_file():
             continue
         link = runtime_dir / link_name
-        if not link.exists():
-            link.symlink_to(target)
+        if link.exists() or link.is_symlink():
+            try:
+                if link.is_symlink() and link.resolve() == target.resolve():
+                    linked = True
+                    continue
+            except OSError:
+                pass
+            link.unlink(missing_ok=True)
+        link.symlink_to(target)
         linked = True
 
     if not linked:

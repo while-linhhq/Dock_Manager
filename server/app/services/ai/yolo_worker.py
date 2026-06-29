@@ -10,6 +10,10 @@ from typing import Any, Callable, Optional
 import cv2
 
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
+from app.services.ai.ship_id_lock import (
+    tracks_open_for_recognition,
+    update_tracks_ship_id_stability,
+)
 from app.utils.ai.overlay import draw_berth_state_bbox_overlays, draw_ship_detection_overlay
 from app.utils.ai.pipeline_utils import drain_queue_latest, put_queue_drop_oldest
 from app.services import pipeline_preview
@@ -45,6 +49,8 @@ class YoloWorkerThread(threading.Thread):
         record_overlay_resize_scale: float = 1.0,
         enable_preview_stream: bool = True,
         on_overlay_media_sample: Optional[Callable[[Any, list[TrackedBoat]], None]] = None,
+        ship_id_lock_stable_sec: float = 60.0,
+        catalog_is_known=None,
     ):
         super().__init__(daemon=True)
         self._detector = detector
@@ -64,6 +70,8 @@ class YoloWorkerThread(threading.Thread):
         self._record_overlay_resize_scale = record_overlay_resize_scale
         self._enable_preview_stream = enable_preview_stream
         self._on_overlay_media_sample = on_overlay_media_sample
+        self._ship_id_lock_stable_sec = float(ship_id_lock_stable_sec)
+        self._catalog_is_known = catalog_is_known
         self._fps_t0: float | None = None
 
     def run(self):
@@ -86,6 +94,12 @@ class YoloWorkerThread(threading.Thread):
 
                 boxes_list, det_confs = self._detector.predict_boxes(frame)
                 tracked_boats = self._tracker.update(boxes_list, det_confs)
+                update_tracks_ship_id_stability(
+                    tracked_boats,
+                    lock_sec=self._ship_id_lock_stable_sec,
+                    now=time.time(),
+                    catalog_is_known=self._catalog_is_known,
+                )
 
                 annotated_frame = frame.copy()
                 draw_berth_state_bbox_overlays(annotated_frame, tracked_boats)
@@ -134,11 +148,9 @@ class YoloWorkerThread(threading.Thread):
                         (overlay_frame, tracked_boats),
                     )
 
-                confirmed = [
-                    tb
-                    for tb in tracked_boats
-                    if tb.state == TrackState.CONFIRMED
-                ]
+                confirmed = tracks_open_for_recognition(
+                    [tb for tb in tracked_boats if tb.state == TrackState.CONFIRMED]
+                )
                 ocr_tick = False
                 if self.enable_ocr and self._ocr_queue is not None and len(confirmed) > 0:
                     now = time.time()

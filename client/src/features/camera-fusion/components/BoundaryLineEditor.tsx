@@ -97,9 +97,12 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
   const [berthZonePoints, setBerthZonePoints] = useState<Point[]>([]);
   const [activeLayer, setActiveLayer] = useState<ActiveLayer>(1);
   const [bboxCrossThreshold, setBboxCrossThreshold] = useState(0.3);
+  const [minBboxWidth, setMinBboxWidth] = useState(50);
+  const [minBboxHeight, setMinBboxHeight] = useState(30);
   const [frameRef, setFrameRef] = useState<FrameRef>({ w: 0, h: 0 });
   const [displaySize, setDisplaySize] = useState({ w: 0, h: 0 });
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingDetection, setIsSavingDetection] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [renderTick, setRenderTick] = useState(0);
 
@@ -135,7 +138,17 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
     portApi
       .getCamera(cameraId)
       .then((camera) => {
-        if (cancelled || !camera.boundary_lines) {
+        if (cancelled) {
+          return;
+        }
+        const detection = camera.detection_settings;
+        if (detection) {
+          const width = detection.min_bbox_width;
+          const height = detection.min_bbox_height;
+          setMinBboxWidth(typeof width === 'number' && Number.isFinite(width) ? width : 50);
+          setMinBboxHeight(typeof height === 'number' && Number.isFinite(height) ? height : 30);
+        }
+        if (!camera.boundary_lines) {
           return;
         }
         applyBoundaryLines(camera.boundary_lines);
@@ -284,6 +297,29 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
     }
   };
 
+  const handleSaveDetectionSettings = async () => {
+    setIsSavingDetection(true);
+    try {
+      const saved = await portApi.setDetectionSettings(cameraId, {
+        min_bbox_width: Math.max(1, Math.round(minBboxWidth)),
+        min_bbox_height: Math.max(1, Math.round(minBboxHeight)),
+      });
+      const detection = saved.detection_settings;
+      if (detection) {
+        const width = detection.min_bbox_width;
+        const height = detection.min_bbox_height;
+        setMinBboxWidth(typeof width === 'number' && Number.isFinite(width) ? width : 50);
+        setMinBboxHeight(typeof height === 'number' && Number.isFinite(height) ? height : 30);
+      }
+      setMessage('Đã lưu ngưỡng bbox.');
+    } catch (error) {
+      const detail = error instanceof ApiError ? error.message : null;
+      setMessage(detail ? `Lưu ngưỡng bbox thất bại: ${detail}` : 'Lưu ngưỡng bbox thất bại.');
+    } finally {
+      setIsSavingDetection(false);
+    }
+  };
+
   const img = imgRef.current;
   const zoneDisplay =
     img && berthZonePoints.length >= 3
@@ -334,6 +370,46 @@ export const BoundaryLineEditor: React.FC<Props> = ({ cameraId }) => {
           onChange={(event) => setBboxCrossThreshold(Number(event.target.value))}
           className="mt-1 w-full max-w-md"
         />
+      </div>
+
+      <div className="mb-4 grid max-w-md gap-3 sm:grid-cols-2">
+        <div>
+          <label className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+            Min bbox width (px)
+          </label>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={minBboxWidth}
+            onChange={(event) => setMinBboxWidth(Number(event.target.value))}
+            className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1 text-sm dark:border-white/10 dark:bg-[#1a1a1c]"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+            Min bbox height (px)
+          </label>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={minBboxHeight}
+            onChange={(event) => setMinBboxHeight(Number(event.target.value))}
+            className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1 text-sm dark:border-white/10 dark:bg-[#1a1a1c]"
+          />
+        </div>
+        <p className="text-xs text-gray-500 sm:col-span-2">
+          Box nhỏ hơn ngưỡng bị loại trước tracking (mặc định 50×30 px).
+        </p>
+        <div className="sm:col-span-2">
+          <Button
+            onClick={handleSaveDetectionSettings}
+            disabled={isSavingDetection || isSaving}
+          >
+            Lưu ngưỡng bbox
+          </Button>
+        </div>
       </div>
 
       <div className="mb-3 flex flex-wrap gap-2">

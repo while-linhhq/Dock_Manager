@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -11,9 +12,11 @@ import numpy as np
 
 from app.services.ai.boat_tracker import TrackedBoat
 from app.services.ai.embedding_extractor import cosine_similarity, normalize_embedding
+from app.services.ship_id_utils import is_unknown_ship_id, normalize_ship_id
 
 if TYPE_CHECKING:
     from app.services.ai.seam_anchor_verifier import SeamAnchorVerifier
+    from app.services.ai.ship_id_catalog import ShipIdCatalog
 
 
 _log = logging.getLogger(__name__)
@@ -61,6 +64,8 @@ class CrossCameraReIdManager:
         edge_zone_ratio: float = 0.1,
         on_global_track_removed=None,
         seam_anchor_verifier: 'SeamAnchorVerifier | None' = None,
+        ship_id_catalog: 'ShipIdCatalog | None' = None,
+        is_track_identity_locked: Callable[[int, str], bool] | None = None,
     ) -> None:
         self._camera_order = [int(camera_id) for camera_id in camera_order]
         self._camera_index = {
@@ -72,9 +77,17 @@ class CrossCameraReIdManager:
         self._edge_zone_ratio = float(np.clip(edge_zone_ratio, 0.01, 0.45))
         self._on_global_track_removed = on_global_track_removed
         self._seam_anchor_verifier = seam_anchor_verifier
+        self._ship_id_catalog = ship_id_catalog
+        self._is_track_identity_locked = is_track_identity_locked
         self._identities: dict[str, GlobalIdentity] = {}
         self._track_to_global: dict[TrackKey, str] = {}
         self._lock = threading.RLock()
+
+    def set_is_track_identity_locked(
+        self,
+        checker: Callable[[int, str], bool] | None,
+    ) -> None:
+        self._is_track_identity_locked = checker
 
     def set_seam_anchor_verifier(self, verifier: 'SeamAnchorVerifier | None') -> None:
         self._seam_anchor_verifier = verifier
@@ -183,7 +196,10 @@ class CrossCameraReIdManager:
             self._attach_track(identity, camera_key, track, embedding)
             self._track_to_global[track_key] = identity.global_id
             self._update_primary_camera(identity, camera_key, track, frame_shape)
-            if self._should_propagate_ship_id_to_track(identity, track_key, track):
+            if (
+                not track.ship_id_locked
+                and self._should_propagate_ship_id_to_track(identity, track_key, track)
+            ):
                 track.ship_id = identity.ship_id
                 track.last_known_ship_id = identity.ship_id
             return identity.global_id
@@ -195,7 +211,25 @@ class CrossCameraReIdManager:
         ship_id: str,
         confidence: float,
     ) -> str:
-        normalized_ship_id = str(ship_id).strip().upper()
+        if self._is_track_identity_locked is not None and self._is_track_identity_locked(
+            int(camera_id),
+            str(track_id),
+        ):
+            track_key = (int(camera_id), str(track_id))
+            with self._lock:
+                identity = self._identity_for_track(track_key)
+                return identity.global_id if identity is not None else ''
+        normalized_ship_id = normalize_ship_id(ship_id)
+        if not normalized_ship_id or is_unknown_ship_id(normalized_ship_id):
+            track_key = (int(camera_id), str(track_id))
+            with self._lock:
+                identity = self._identity_for_track(track_key)
+                return identity.global_id if identity is not None else ''
+        if self._ship_id_catalog is not None and not self._ship_id_catalog.is_known(normalized_ship_id):
+            track_key = (int(camera_id), str(track_id))
+            with self._lock:
+                identity = self._identity_for_track(track_key)
+                return identity.global_id if identity is not None else ''
         with self._lock:
             camera_key = int(camera_id)
             track_key = (camera_key, str(track_id))
@@ -211,7 +245,7 @@ class CrossCameraReIdManager:
             for other in list(self._identities.values()):
                 if other.global_id == identity.global_id or other.ship_id != normalized_ship_id:
                     continue
-                if self._identities_have_concurrent_active_tracks(identity, other):
+                if not self._may_merge_identities(identity, other):
                     continue
                 identity = self._merge_identities(identity, other)
 
@@ -425,7 +459,7 @@ class CrossCameraReIdManager:
             for identity in self._identities.values():
                 if identity.ship_id != ship_id:
                     continue
-                if self._has_concurrent_active_on_other_camera(identity, camera_id):
+                if not self._allows_ship_id_attach(identity, camera_id):
                     continue
                 return identity
 
@@ -495,6 +529,59 @@ class CrossCameraReIdManager:
             self._track_to_global[(int(camera_id), str(track_id))] = keep.global_id
         self._identities.pop(other.global_id, None)
         return keep
+
+    def _cameras_are_adjacent_pair(self, cam_a: int, cam_b: int) -> bool:
+        if int(cam_a) == int(cam_b):
+            return False
+        idx_a = self._camera_index.get(int(cam_a))
+        idx_b = self._camera_index.get(int(cam_b))
+        if idx_a is None or idx_b is None:
+            return False
+        return abs(idx_a - idx_b) == 1
+
+    def _allows_ship_id_attach(self, identity: GlobalIdentity, camera_id: int) -> bool:
+        """Allow same ship_id on adjacent cameras (seam) but not two tracks on one camera."""
+        camera_key = int(camera_id)
+        active_cams = [cam for cam, _ in identity.active_tracks]
+        if active_cams.count(camera_key) > 0:
+            return False
+        other_cams = {cam for cam in active_cams if cam != camera_key}
+        if not other_cams:
+            return True
+        return any(self._cameras_are_adjacent_pair(camera_key, oc) for oc in other_cams)
+
+    def _may_merge_identities(self, left: GlobalIdentity, right: GlobalIdentity) -> bool:
+        if not left.active_tracks or not right.active_tracks:
+            return True
+        if self._is_adjacent_seam_visit(left, right):
+            return True
+        return not self._identities_have_concurrent_active_tracks(left, right)
+
+    def _is_adjacent_seam_visit(self, left: GlobalIdentity, right: GlobalIdentity) -> bool:
+        """Same OCR-confirmed ship visible concurrently on adjacent cameras (one boat at seam)."""
+        ship_left = (left.ship_id or '').strip().upper()
+        ship_right = (right.ship_id or '').strip().upper()
+        if not ship_left or ship_left != ship_right:
+            return False
+        if not left.ocr_confirmed_tracks or not right.ocr_confirmed_tracks:
+            return False
+        if not left.active_tracks or not right.active_tracks:
+            return False
+
+        left_cams = {cam for cam, _ in left.active_tracks}
+        right_cams = {cam for cam, _ in right.active_tracks}
+        if left_cams & right_cams:
+            return False
+        if len(left.active_tracks) > len(left_cams) or len(right.active_tracks) > len(right_cams):
+            return False
+
+        for left_cam in left_cams:
+            if not any(self._cameras_are_adjacent_pair(left_cam, right_cam) for right_cam in right_cams):
+                return False
+        for right_cam in right_cams:
+            if not any(self._cameras_are_adjacent_pair(right_cam, left_cam) for left_cam in left_cams):
+                return False
+        return True
 
     def _has_concurrent_active_on_other_camera(
         self,
@@ -599,6 +686,8 @@ class CrossCameraReIdManager:
                 self._finalize_identity_locked(identity)
 
     def _finalize_identity_locked(self, identity: GlobalIdentity) -> None:
+        if identity.finalized:
+            return
         identity.finalized = True
         if self._on_global_track_removed is None or identity.last_track is None:
             return

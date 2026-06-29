@@ -26,5 +26,17 @@ class CameraRepository:
         db.refresh(obj)
         return obj
 
+    def set_detection_settings(
+        self, db: Session, camera_id: int, payload: dict
+    ) -> Optional[Camera]:
+        obj = self.get(db, camera_id)
+        if not obj:
+            return None
+        obj.detection_settings = payload
+        flag_modified(obj, 'detection_settings')
+        db.commit()
+        db.refresh(obj)
+        return obj
+
 
 camera_repo = CameraRepository()

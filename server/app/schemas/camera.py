@@ -71,6 +71,25 @@ class BoundaryLines(BaseModel):
         return data
 
 
+class CameraDetectionSettings(BaseModel):
+    min_bbox_width: int = 50
+    min_bbox_height: int = 30
+
+    @field_validator('min_bbox_width', mode='before')
+    @classmethod
+    def coerce_min_bbox_width(cls, value: Any) -> int:
+        if value is None:
+            return 50
+        return max(1, int(value))
+
+    @field_validator('min_bbox_height', mode='before')
+    @classmethod
+    def coerce_min_bbox_height(cls, value: Any) -> int:
+        if value is None:
+            return 30
+        return max(1, int(value))
+
+
 class CameraCreate(CameraBase):
     pass
 
@@ -87,6 +106,7 @@ class CameraUpdate(BaseModel):
 class CameraRead(CameraBase):
     id: int
     boundary_lines: Optional[BoundaryLines] = None
+    detection_settings: Optional[CameraDetectionSettings] = None
     created_at: datetime
     updated_at: datetime
 
@@ -96,6 +116,15 @@ class CameraRead(CameraBase):
     @classmethod
     def coerce_boundary_lines(cls, value: Any) -> Any:
         if value is None or isinstance(value, BoundaryLines):
+            return value
+        if isinstance(value, dict):
+            return value
+        return None
+
+    @field_validator('detection_settings', mode='before')
+    @classmethod
+    def coerce_detection_settings(cls, value: Any) -> Any:
+        if value is None or isinstance(value, CameraDetectionSettings):
             return value
         if isinstance(value, dict):
             return value

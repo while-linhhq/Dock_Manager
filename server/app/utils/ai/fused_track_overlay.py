@@ -7,6 +7,7 @@ import time
 import cv2
 import numpy as np
 
+from app.services.ai.ship_id_lock import effective_ship_id
 from app.services.ai.boat_tracker import TrackState, TrackedBoat
 from app.services.ai.frame_fusion import FusionMember, map_detection_box_to_fused_layout
 from app.services.ai.multi_frame_reader import TimedFrame
@@ -65,10 +66,20 @@ def _draw_text_with_bg(
         total_height += height + baseline + line_gap
     total_height += padding_y - line_gap
 
-    x1 = max(0, int(x))
-    y2 = max(total_height, int(y_bottom))
-    y1 = max(0, y2 - total_height)
-    x2 = min(frame.shape[1], x1 + max_width + padding_x * 2)
+    frame_h, frame_w = frame.shape[:2]
+    panel_w = max_width + padding_x * 2
+    # Shift panel fully into frame instead of clipping at the border.
+    x1 = int(x)
+    if x1 + panel_w > frame_w:
+        x1 = frame_w - panel_w
+    x1 = max(0, x1)
+    x2 = min(frame_w, x1 + panel_w)
+
+    y2 = min(frame_h, int(y_bottom))
+    y1 = y2 - total_height
+    if y1 < 0:
+        y1 = 0
+        y2 = min(frame_h, total_height)
     if x2 <= x1 or y2 <= y1:
         return
 
@@ -116,6 +127,7 @@ def draw_fused_track_overlay(
     ocr_cache: dict | None = None,
     ocr_lock=None,
     ocr_label_ttl: float = 0.0,
+    threshold_by_camera: dict[int, float] | None = None,
 ) -> np.ndarray:
     """Mutates and returns fused BGR image with tracker overlays."""
     if fused is None or fused.size == 0:
@@ -182,17 +194,23 @@ def draw_fused_track_overlay(
                     if isinstance(cached, dict):
                         entry = dict(cached)
 
+            sb = track.box
+            bw = int(sb[2] - sb[0])
+            bh = int(sb[3] - sb[1])
             panel_lines: list[tuple[str, tuple[int, int, int], float]] = [
-                (f'ID {track.global_id or track.track_id}', _TEXT_SECONDARY, 0.38),
+                (f'ID {track.global_id or track.track_id}  {bw}x{bh}', _TEXT_SECONDARY, 0.38),
                 (
-                    f'{track.ship_id or f"T{track.track_id}"} [{track.state.value}]',
+                    f'{effective_ship_id(track) or f"T{track.track_id}"} [{track.state.value}]',
                     _TEXT_PRIMARY,
                     0.48,
                 ),
             ]
+            zone_threshold = None
+            if threshold_by_camera is not None and camera_id is not None:
+                zone_threshold = threshold_by_camera.get(int(camera_id))
             zone_line = berth_zone_overlay_line(
                 track.berth_zone_overlap,
-                track.berth_zone_threshold,
+                zone_threshold if zone_threshold is not None else track.berth_zone_threshold,
             )
             if zone_line is not None:
                 zone_text, zone_color = zone_line

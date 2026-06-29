@@ -45,6 +45,7 @@ from app.services.ai.training_snapshot_collector import (
     TrainingSnapshotConfig,
 )
 from app.services.ai.identity_fusion import IdentityFusion
+from app.services.ai.ship_id_catalog import ShipIdCatalog
 from app.services.ai.runtime_cache_redis import RuntimeCacheRedis
 from app.services.ai.seam_anchor_verifier import SeamAnchorConfig, SeamAnchorVerifier
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
@@ -165,6 +166,9 @@ class PipelineService:
         self._vector_store: QdrantVectorStore | None = None
         self._identity_fusion: IdentityFusion | None = None
         self._visual_extractor: VisualEmbeddingExtractor | None = None
+        self._ship_id_catalog = ShipIdCatalog(
+            enabled=bool(getattr(settings, 'SHIP_ID_REQUIRE_CATALOG', False)),
+        )
 
     @staticmethod
     def _configure_dashboard_preview(runtime_cfg: dict[str, Any]) -> None:
@@ -185,10 +189,13 @@ class PipelineService:
             vector_size=runtime_cfg['qdrant_vector_size'],
             distance=runtime_cfg['qdrant_distance'],
         )
+        self._ship_id_catalog.set_vector_store(self._vector_store)
+        self._ship_id_catalog.set_enabled(bool(runtime_cfg['ship_id_require_catalog']))
         self._identity_fusion = IdentityFusion(
             match_threshold=runtime_cfg['visual_match_threshold'],
             no_ocr_match_threshold=runtime_cfg['visual_no_ocr_match_threshold'],
             conflict_threshold=runtime_cfg['visual_conflict_threshold'],
+            catalog_is_known=self._ship_id_catalog.is_known,
         )
         self._visual_extractor = get_visual_embedding_extractor()
 
@@ -281,6 +288,10 @@ class PipelineService:
                 self._to_int(cfg_map.get('yolo_imgsz', ''), int(settings.YOLO_IMGSZ)),
             ),
             'enable_ocr': self._to_bool(cfg_map.get('enable_ocr', ''), bool(settings.ENABLE_OCR)),
+            'ship_id_require_catalog': self._to_bool(
+                cfg_map.get('ship_id_require_catalog', ''),
+                bool(getattr(settings, 'SHIP_ID_REQUIRE_CATALOG', False)),
+            ),
             'ocr_label_ttl_sec': self._to_float(
                 cfg_map.get('ocr_label_ttl_sec', ''),
                 float(settings.OCR_LABEL_TTL_SEC),
@@ -447,6 +458,13 @@ class PipelineService:
                 legacy_frame_key='visual_id_interval_frames',
                 default_sec=float(settings.VISUAL_ID_INTERVAL_SEC),
                 fps=record_fps,
+            ),
+            'ship_id_lock_stable_sec': max(
+                0.0,
+                self._to_float(
+                    cfg_map.get('ship_id_lock_stable_sec', ''),
+                    float(settings.SHIP_ID_LOCK_STABLE_SEC),
+                ),
             ),
             'visual_min_crop_area': max(
                 256,
@@ -1418,6 +1436,8 @@ class PipelineService:
             record_overlay_resize_scale=runtime_cfg['resize_scale'],
             enable_preview_stream=True,
             on_overlay_media_sample=self._recording_yolo_single_overlay,
+            ship_id_lock_stable_sec=float(runtime_cfg['ship_id_lock_stable_sec']),
+            catalog_is_known=self._ship_id_catalog.is_known,
         )
 
         if ocr_active:
@@ -1431,6 +1451,7 @@ class PipelineService:
                 save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
                 on_image_captured=self._upload_captured_image,
                 on_ocr_track_media=self._on_ocr_track_media,
+                is_known_ship_id=self._ship_id_catalog.is_known,
             )
 
         if runtime_cfg['record_enable']:
@@ -1529,6 +1550,37 @@ class PipelineService:
             self._reid_manager.sync_restored_anchors(verifier.states_snapshot())
         return bg_registry, verifier
 
+    @staticmethod
+    def _load_camera_json_configs(
+        camera_ids: list[int],
+    ) -> tuple[dict[int, dict | None], dict[int, dict | None]]:
+        from app.repositories.camera_repository import camera_repo
+
+        boundary_by_camera: dict[int, dict | None] = {}
+        detection_by_camera: dict[int, dict | None] = {}
+        db = SessionLocal()
+        try:
+            for camera_id in camera_ids:
+                cam = camera_repo.get(db, int(camera_id))
+                boundary_by_camera[int(camera_id)] = (
+                    cam.boundary_lines if cam is not None else None
+                )
+                detection_by_camera[int(camera_id)] = (
+                    cam.detection_settings if cam is not None else None
+                )
+        finally:
+            db.close()
+        return boundary_by_camera, detection_by_camera
+
+    def _is_track_identity_locked(self, camera_id: int, track_id: str) -> bool:
+        camera_key = int(camera_id)
+        track_key = str(track_id)
+        for pipeline in self._per_camera_pipelines:
+            if int(pipeline.config.camera_id) != camera_key:
+                continue
+            return pipeline._tracker.is_track_identity_locked(track_key)
+        return self._boat_tracker.is_track_identity_locked(track_key)
+
     def _start_group_hybrid(
         self,
         group: Any,
@@ -1543,6 +1595,7 @@ class PipelineService:
         multi_cam = len(camera_order) > 1
         members_by_camera_id = {int(member.camera_id): member for member in enabled_members}
         ordered_members = [members_by_camera_id[camera_id] for camera_id in camera_order]
+        boundary_by_camera, detection_by_camera = self._load_camera_json_configs(camera_order)
         self._reid_manager = CrossCameraReIdManager(
             camera_order=camera_order,
             visual_threshold=runtime_cfg['reid_visual_threshold'],
@@ -1550,6 +1603,7 @@ class PipelineService:
             primary_zone_ratio=runtime_cfg['primary_zone_ratio'],
             edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
             on_global_track_removed=combined_on_removed,
+            ship_id_catalog=self._ship_id_catalog,
         )
         embedding_extractor = EmbeddingExtractor(
             model_path=runtime_cfg['reid_embedding_model_path'] or None,
@@ -1589,6 +1643,7 @@ class PipelineService:
                     min_crop_area=runtime_cfg['visual_min_crop_area'],
                     ocr_score_threshold=runtime_cfg['visual_match_threshold'],
                     no_ocr_score_threshold=runtime_cfg['visual_no_ocr_match_threshold'],
+                    ship_id_catalog=self._ship_id_catalog,
                 )
                 self._visual_worker.start()
 
@@ -1645,6 +1700,7 @@ class PipelineService:
                 save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
                 on_image_captured=self._upload_captured_image,
                 on_ocr_track_media=self._on_ocr_track_media,
+                is_known_ship_id=self._ship_id_catalog.is_known,
             )
             self._ocr_worker.start()
             ocr_device = getattr(self._ocr_recognizer, 'device', 'in-process')
@@ -1663,6 +1719,7 @@ class PipelineService:
             ocr_cache=self.ocr_cache,
             ocr_lock=self.ocr_lock,
             ocr_label_ttl_sec=runtime_cfg['ocr_label_ttl_sec'],
+            boundary_by_camera=boundary_by_camera,
         )
 
         self._per_camera_pipelines = []
@@ -1724,7 +1781,9 @@ class PipelineService:
                 enable_training_snapshot=snapshot_enabled,
                 training_snapshot_interval_sec=runtime_cfg['training_snapshot_interval_sec'],
                 enable_preview_stream=False,
-                boundary_lines=member.camera.boundary_lines if member.camera else None,
+                boundary_lines=boundary_by_camera.get(camera_id),
+                detection_settings=detection_by_camera.get(camera_id),
+                ship_id_lock_stable_sec=float(runtime_cfg['ship_id_lock_stable_sec']),
             )
             self._per_camera_pipelines.append(
                 PerCameraPipeline(
@@ -1746,6 +1805,7 @@ class PipelineService:
                     single_camera_video_queue=single_cam_q,
                     training_snapshot_collector=training_snapshot_collector,
                     rule_engine=get_rule_engine(),
+                    ship_id_catalog=self._ship_id_catalog,
                 )
             )
 
@@ -1755,6 +1815,7 @@ class PipelineService:
                 for pipeline in self._per_camera_pipelines
             ]
         )
+        self._reid_manager.set_is_track_identity_locked(self._is_track_identity_locked)
         self._group_frame_hub.start()
         for pipeline in self._per_camera_pipelines:
             pipeline.start()
@@ -1839,6 +1900,9 @@ class PipelineService:
         )
         self._start_media_sample_worker()
 
+        fused_camera_order = self._resolve_group_camera_order(group, enabled_members)
+        fused_boundary_by_camera, _ = self._load_camera_json_configs(fused_camera_order)
+
         self._group_frame_hub = GroupFrameHub(
             group=group,
             enabled_members=enabled_members,
@@ -1851,8 +1915,11 @@ class PipelineService:
             ocr_cache=self.ocr_cache,
             ocr_lock=self.ocr_lock,
             ocr_label_ttl_sec=runtime_cfg['ocr_label_ttl_sec'],
+            boundary_by_camera=fused_boundary_by_camera,
         )
         self._group_frame_hub.set_track_providers([self._boat_tracker.confirmed_boats])
+        if self._reid_manager is not None:
+            self._reid_manager.set_is_track_identity_locked(self._is_track_identity_locked)
         try:
             self._configure_dashboard_preview(runtime_cfg)
         except Exception:
@@ -1873,6 +1940,8 @@ class PipelineService:
             ocr_label_ttl=ocr_label_ttl,
             record_overlay_resize_scale=runtime_cfg['resize_scale'],
             enable_preview_stream=False,
+            ship_id_lock_stable_sec=float(runtime_cfg['ship_id_lock_stable_sec']),
+            catalog_is_known=self._ship_id_catalog.is_known,
         )
 
         if ocr_active:
@@ -1891,6 +1960,7 @@ class PipelineService:
                 save_ocr_audit_frames=runtime_cfg['ocr_audit_save_frames'],
                 on_image_captured=self._upload_captured_image,
                 on_ocr_track_media=self._on_ocr_track_media,
+                is_known_ship_id=self._ship_id_catalog.is_known,
             )
 
         if runtime_cfg['record_enable']:
@@ -2115,6 +2185,13 @@ class PipelineService:
         for pipeline in self._per_camera_pipelines:
             if int(pipeline.config.camera_id) == camera_key:
                 pipeline.update_boundary_lines(payload)
+                break
+
+    def update_camera_detection_settings(self, camera_id: int, payload: dict | None) -> None:
+        camera_key = int(camera_id)
+        for pipeline in self._per_camera_pipelines:
+            if int(pipeline.config.camera_id) == camera_key:
+                pipeline.update_detection_settings(payload)
                 break
 
 

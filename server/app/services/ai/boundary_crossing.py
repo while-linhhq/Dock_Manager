@@ -183,6 +183,21 @@ def polyline_touches_bbox(polyline: Polyline, box: Bbox) -> bool:
     return False
 
 
+def resolve_bbox_cross_threshold(payload: dict | None, *, default: float = 0.30) -> float:
+    """Read per-camera berth zone overlap threshold from cameras.boundary_lines JSON."""
+    if not isinstance(payload, dict):
+        return default
+    raw_threshold = payload.get('bbox_cross_threshold', default)
+    try:
+        threshold = float(raw_threshold)
+    except (TypeError, ValueError):
+        return default
+    # Legacy/admin payloads may store whole percents (40) instead of fractions (0.40).
+    if threshold > 1.0:
+        threshold = threshold / 100.0
+    return max(0.05, min(0.95, threshold))
+
+
 @dataclass
 class BoundaryConfig:
     frame_w: int
@@ -203,9 +218,7 @@ class BoundaryConfig:
         berth_zone = _parse_polyline(data.get('berth_zone'), min_points=3)
         if require_berth_zone and berth_zone is None:
             return None
-        raw_threshold = data.get('bbox_cross_threshold', 0.30)
-        threshold = float(raw_threshold)
-        threshold = max(0.05, min(0.95, threshold))
+        threshold = resolve_bbox_cross_threshold(data)
         return cls(
             frame_w=int(data['frame_w']),
             frame_h=int(data['frame_h']),

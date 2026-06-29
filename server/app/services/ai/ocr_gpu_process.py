@@ -22,7 +22,9 @@ _PROBE_SHAPE = (64, 128, 3)
 
 
 def _probe_recognizer(recognizer, probe: np.ndarray) -> None:
-    recognizer.ocr.ocr(recognizer._ensure_min_side_bgr(probe), cls=True)
+    from app.utils.ai.paddle_ocr_adapter import run_ocr_lines
+
+    run_ocr_lines(recognizer.ocr, recognizer._ensure_min_side_bgr(probe))
     recognizer.recognize_bgr(probe)
 
 

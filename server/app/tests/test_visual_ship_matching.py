@@ -70,15 +70,15 @@ def test_resolve_conflict_visual_wins_above_threshold():
 
 
 def test_resolve_conflict_ocr_wins_below_threshold():
-    """OCR and visual disagree; visual score < conflict_threshold → OCR wins."""
+    """OCR and visual disagree; visual score >= match_threshold → visual wins."""
     hits = [
         {'id': 'a1', 'score': 0.9, 'payload': {'ship_id': 'SG-7082'}},
     ]
     decision = resolve_visual_match(
         hits, match_threshold=0.55, ocr_hint='BD-0077', conflict_threshold=0.96
     )
-    assert decision.ship_id == 'BD-0077'
-    assert decision.source == 'conflict-ocr-wins'
+    assert decision.ship_id == 'SG-7082'
+    assert decision.source == 'conflict-visual-wins'
     assert decision.accepted is True
 
 
@@ -89,6 +89,19 @@ def test_resolve_ocr_hint_only_when_no_visual_hits():
     )
     assert decision.ship_id == 'BD-0077'
     assert decision.source == 'ocr-hint'
+
+
+def test_resolve_ocr_hint_unknown_catalog_rejected_when_no_visual_hits():
+    decision = resolve_visual_match(
+        [],
+        match_threshold=0.55,
+        ocr_hint='OO-7215',
+        conflict_threshold=0.96,
+        catalog_is_known=lambda sid: sid == 'BD-0077',
+    )
+    assert decision.accepted is False
+    assert decision.ship_id is None
+    assert decision.source == 'unknown'
 
 
 def test_resolve_visual_only_when_no_ocr():

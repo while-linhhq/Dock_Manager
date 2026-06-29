@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,6 +70,17 @@ class VisualMatchDecision:
     margin: float
 
 
+def _ocr_hint_is_trusted(
+    ship_id: str | None,
+    catalog_is_known: Callable[[str], bool] | None,
+) -> bool:
+    if not ship_id:
+        return False
+    if catalog_is_known is None:
+        return True
+    return catalog_is_known(ship_id)
+
+
 def resolve_visual_match(
     hits: list[dict[str, Any]],
     *,
@@ -77,27 +89,31 @@ def resolve_visual_match(
     ocr_hint: str | None = None,
     conflict_threshold: float = 0.96,
     no_ocr_threshold: float | None = None,
+    catalog_is_known: Callable[[str], bool] | None = None,
 ) -> VisualMatchDecision:
-    """Fuse OCR hint and visual Qdrant results using consensus logic.
-
-    Decision matrix:
-    - Both present, same ID              → source='consensus'         (conf boosted)
-    - Both present, different, vis>=thr  → source='conflict-visual-wins'
-    - Both present, different, vis<thr   → source='conflict-ocr-wins'
-    - OCR only (no visual hits)          → source='ocr-hint'
-    - Visual only (no OCR hint)          → source='visual' if score>=no_ocr_threshold
-    - Neither                            → source='unknown'
-    """
+    """Fuse OCR hint and visual Qdrant results using consensus logic."""
     ranked = aggregate_visual_hits(hits, top_m_for_mean=top_m_for_mean)
     normalized_ocr = ocr_hint.strip().upper() if ocr_hint else None
+    if normalized_ocr and not _ocr_hint_is_trusted(normalized_ocr, catalog_is_known):
+        normalized_ocr = None
     no_ocr_floor = float(no_ocr_threshold if no_ocr_threshold is not None else match_threshold)
 
     if not ranked:
+        if normalized_ocr:
+            return VisualMatchDecision(
+                accepted=True,
+                ship_id=normalized_ocr,
+                confidence=0.0,
+                source='ocr-hint',
+                best=None,
+                ranked_ships=[],
+                margin=0.0,
+            )
         return VisualMatchDecision(
-            accepted=bool(normalized_ocr),
-            ship_id=normalized_ocr,
+            accepted=False,
+            ship_id=None,
             confidence=0.0,
-            source='ocr-hint' if normalized_ocr else 'unknown',
+            source='unknown',
             best=None,
             ranked_ships=[],
             margin=0.0,
@@ -129,10 +145,7 @@ def resolve_visual_match(
                 ranked_ships=ranked,
                 margin=margin,
             )
-        if (
-            best.aggregated_score >= float(conflict_threshold)
-            and best.aggregated_score >= float(match_threshold)
-        ):
+        if best.aggregated_score >= float(match_threshold):
             return VisualMatchDecision(
                 accepted=True,
                 ship_id=best.ship_id,

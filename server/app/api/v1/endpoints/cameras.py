@@ -5,9 +5,16 @@ from typing import List
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.camera import CameraCreate, CameraUpdate, CameraRead, BoundaryLines
+from app.schemas.camera import (
+    CameraCreate,
+    CameraUpdate,
+    CameraRead,
+    BoundaryLines,
+    CameraDetectionSettings,
+)
 from app.repositories.camera_repository import camera_repo
 from app.services.ai.boundary_crossing import apply_boundary_lines_update
+from app.services.ai.detection_filter import apply_detection_settings_update
 from app.services.ai.multi_frame_reader import capture_snapshot
 
 router = APIRouter()
@@ -46,6 +53,24 @@ def set_boundary_lines(
     if not obj:
         raise HTTPException(status_code=404, detail='Camera not found')
     apply_boundary_lines_update(camera_id=camera_id, payload=obj.boundary_lines)
+    return obj
+
+
+@router.put('/{camera_id}/detection-settings', response_model=CameraRead)
+def set_detection_settings(
+    camera_id: int,
+    data: CameraDetectionSettings,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    obj = camera_repo.set_detection_settings(
+        db,
+        camera_id,
+        data.model_dump(mode='json'),
+    )
+    if not obj:
+        raise HTTPException(status_code=404, detail='Camera not found')
+    apply_detection_settings_update(camera_id=camera_id, payload=obj.detection_settings)
     return obj
 
 

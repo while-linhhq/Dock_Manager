@@ -79,18 +79,80 @@ def test_handoff_inherits_plate_after_source_track_removed() -> None:
     assert mgr.get_global_ship_id(2, 'trk_cam2') == 'SG-1111'
 
 
-def test_same_plate_merge_skipped_when_both_cameras_active() -> None:
+def test_adjacent_same_plate_merges_when_both_cameras_active() -> None:
+    mgr = CrossCameraReIdManager([5, 6], visual_threshold=0.9, handoff_window_sec=60.0)
+
+    mgr.report_track_update(5, _track('trk_x', camera_id=5))
+    mgr.report_ocr_result(5, 'trk_x', 'SG-6375', 0.9)
+
+    mgr.report_track_update(6, _track('trk_y', camera_id=6))
+    mgr.report_ocr_result(6, 'trk_y', 'SG-6375', 0.88)
+
+    gid_x = mgr._track_to_global[(5, 'trk_x')]
+    gid_y = mgr._track_to_global[(6, 'trk_y')]
+    assert gid_x == gid_y
+
+
+def test_same_plate_not_merged_on_non_adjacent_cameras() -> None:
+    mgr = CrossCameraReIdManager([1, 2, 3], visual_threshold=0.9, handoff_window_sec=60.0)
+
+    mgr.report_track_update(1, _track('trk_a', camera_id=1))
+    mgr.report_ocr_result(1, 'trk_a', 'SG-6375', 0.9)
+
+    mgr.report_track_update(3, _track('trk_c', camera_id=3))
+    mgr.report_ocr_result(3, 'trk_c', 'SG-6375', 0.88)
+
+    gid_a = mgr._track_to_global[(1, 'trk_a')]
+    gid_c = mgr._track_to_global[(3, 'trk_c')]
+    assert gid_a != gid_c
+
+
+def test_same_plate_not_merged_on_same_camera_concurrent_tracks() -> None:
     mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.9, handoff_window_sec=60.0)
 
-    mgr.report_track_update(1, _track('trk_x', camera_id=1))
-    mgr.report_ocr_result(1, 'trk_x', 'SG-6375', 0.9)
+    mgr.report_track_update(1, _track('trk_one', camera_id=1, box=(10.0, 10.0, 80.0, 80.0)))
+    mgr.report_ocr_result(1, 'trk_one', 'SG-6375', 0.9)
 
-    mgr.report_track_update(2, _track('trk_y', camera_id=2))
-    mgr.report_ocr_result(2, 'trk_y', 'SG-6375', 0.88)
+    mgr.report_track_update(1, _track('trk_two', camera_id=1, box=(200.0, 200.0, 280.0, 280.0)))
+    mgr.report_ocr_result(1, 'trk_two', 'SG-6375', 0.88)
 
-    gid_x = mgr._track_to_global[(1, 'trk_x')]
-    gid_y = mgr._track_to_global[(2, 'trk_y')]
-    assert gid_x != gid_y
+    gid_one = mgr._track_to_global[(1, 'trk_one')]
+    gid_two = mgr._track_to_global[(1, 'trk_two')]
+    assert gid_one != gid_two
+
+
+def test_finalize_once_after_adjacent_seam_merge() -> None:
+    finalized: list[str] = []
+
+    def on_removed(track, _hist):
+        finalized.append(str(track.track_id))
+
+    mgr = CrossCameraReIdManager(
+        [5, 6],
+        visual_threshold=0.9,
+        handoff_window_sec=60.0,
+        on_global_track_removed=on_removed,
+    )
+
+    boat_x = _track('trk_x', camera_id=5)
+    boat_y = _track('trk_y', camera_id=6)
+    mgr.report_track_update(5, boat_x)
+    mgr.report_ocr_result(5, 'trk_x', 'SG-1234', 0.9)
+    mgr.report_track_update(6, boat_y)
+    mgr.report_ocr_result(6, 'trk_y', 'SG-1234', 0.88)
+
+    gid = mgr._track_to_global[(5, 'trk_x')]
+    assert mgr._track_to_global[(6, 'trk_y')] == gid
+
+    identity = mgr._identities[gid]
+    identity.berth_in_ts = time.time() - 60
+    identity.berth_out_ts = time.time()
+
+    mgr.report_track_removed(5, boat_x, ocr_history=[('SG-1234', 0.9)])
+    mgr.report_track_removed(6, boat_y, ocr_history=[('SG-1234', 0.88)])
+
+    assert len(finalized) == 1
+    assert finalized[0].startswith('gid_')
 
 
 def test_get_global_id_returns_gid_after_track_report() -> None:

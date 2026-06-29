@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_UP
 from typing import Optional
 
@@ -22,6 +22,39 @@ from app.services.ship_id_utils import is_unknown_ship_id
 from app.utils.fee_billing_unit import normalize_fee_billing_unit
 
 _log = logging.getLogger('app.services.detection_invoice')
+
+_DUPLICATE_BERTH_WINDOW = timedelta(minutes=5)
+
+
+def _find_duplicate_ai_invoice_for_visit(
+    db: Session,
+    *,
+    vessel_id: int,
+    berth_in: Optional[datetime],
+) -> Optional[Invoice]:
+    """Safety net: unpaid AI invoice for same vessel + berth_in within ±5 minutes."""
+    if berth_in is None:
+        return None
+    anchor = berth_in
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+    window_start = anchor - _DUPLICATE_BERTH_WINDOW
+    window_end = anchor + _DUPLICATE_BERTH_WINDOW
+    return (
+        db.query(Invoice)
+        .join(Detection, Invoice.detection_id == Detection.id)
+        .filter(
+            Invoice.vessel_id == int(vessel_id),
+            Invoice.deleted_at.is_(None),
+            Invoice.payment_status != 'PAID',
+            Invoice.creation_source.in_(['AI', 'ORDER_AUTO']),
+            Detection.berth_in_time.isnot(None),
+            Detection.berth_in_time >= window_start,
+            Detection.berth_in_time <= window_end,
+        )
+        .order_by(Invoice.id.asc())
+        .first()
+    )
 
 
 def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decimal:
@@ -77,6 +110,27 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
         existing = invoice_repo.get_by_detection_id(db, detection_id)
         if existing:
             _log.info('Skip AI invoice detection_id=%s: invoice already exists id=%s', detection_id, existing.id)
+            return
+
+        berth_in, _berth_out = resolve_berth_window(
+            det.start_time,
+            det.end_time,
+            det.berth_in_time,
+            det.berth_out_time,
+        )
+        duplicate = _find_duplicate_ai_invoice_for_visit(
+            db,
+            vessel_id=int(vessel.id),
+            berth_in=berth_in,
+        )
+        if duplicate is not None:
+            _log.warning(
+                'Skip AI invoice detection_id=%s: duplicate visit invoice_id=%s vessel_id=%s berth_in=%s',
+                detection_id,
+                duplicate.id,
+                vessel.id,
+                berth_in,
+            )
             return
 
         fees = fee_config_repo.get_by_vessel_type(db, vessel.vessel_type_id)

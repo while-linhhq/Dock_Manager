@@ -3,6 +3,7 @@ from app.services.ai.boundary_crossing import (
     BoundaryCrossingTracker,
     bbox_fraction_inside_polygon,
     polyline_touches_bbox,
+    resolve_bbox_cross_threshold,
     segment_intersection_t,
 )
 
@@ -215,3 +216,18 @@ def test_zone_overlap_diagonal_berth_polygon_camera_bachdang_2():
     trk = BoundaryCrossingTracker(cfg)
     ratio = trk.zone_overlap_ratio((150, 950, 850, 1350), frame_w=2560, frame_h=1440)
     assert ratio >= 0.99
+
+
+def test_resolve_bbox_cross_threshold_reads_fraction_from_payload():
+    payload = {'bbox_cross_threshold': 0.4}
+    assert resolve_bbox_cross_threshold(payload) == 0.4
+
+
+def test_resolve_bbox_cross_threshold_coerces_legacy_percent_payload():
+    payload = {'bbox_cross_threshold': 40}
+    assert resolve_bbox_cross_threshold(payload) == 0.40
+
+
+def test_resolve_bbox_cross_threshold_defaults_when_missing():
+    assert resolve_bbox_cross_threshold(None) == 0.30
+    assert resolve_bbox_cross_threshold({}) == 0.30

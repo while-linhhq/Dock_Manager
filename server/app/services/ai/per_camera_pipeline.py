@@ -12,15 +12,28 @@ import numpy as np
 
 from app.services import pipeline_preview
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
-from app.services.ai.boundary_crossing import BoundaryConfig, BoundaryCrossingTracker
+from app.services.ai.boundary_crossing import (
+    BoundaryConfig,
+    BoundaryCrossingTracker,
+    resolve_bbox_cross_threshold,
+)
 from app.services.ai.visual_ship_matching import aggregate_visual_hits
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
+from app.services.ai.detection_filter import (
+    filter_boxes_by_min_size,
+    parse_min_bbox_from_detection_settings,
+)
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
+from app.services.ai.ship_id_lock import (
+    tracks_open_for_recognition,
+    update_tracks_ship_id_stability,
+)
+from app.services.ai.ship_id_catalog import ShipIdCatalog
 from app.services.ai.ocr_worker import OcrQueueItem, OcrWorkerThread
 from app.services.ai.training_snapshot_collector import (
     TrainingSnapshotCollector,
@@ -68,6 +81,8 @@ class PerCameraPipelineConfig:
     training_snapshot_interval_sec: float = 5.0
     enable_preview_stream: bool = False
     boundary_lines: dict | None = None
+    detection_settings: dict | None = None
+    ship_id_lock_stable_sec: float = 60.0
 
 
 class PerCameraPipeline(threading.Thread):
@@ -92,6 +107,7 @@ class PerCameraPipeline(threading.Thread):
         single_camera_video_queue: queue.Queue | None = None,
         training_snapshot_collector: TrainingSnapshotCollector | None = None,
         rule_engine=None,
+        ship_id_catalog=None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -132,6 +148,10 @@ class PerCameraPipeline(threading.Thread):
         self._boundary_lines_payload: dict | None = config.boundary_lines
         bcfg = BoundaryConfig.from_dict(self._boundary_lines_payload)
         self._boundary_tracker = BoundaryCrossingTracker(bcfg) if bcfg else None
+        self._detection_settings_payload: dict | None = config.detection_settings
+        self._det_min_bbox_width, self._det_min_bbox_height = parse_min_bbox_from_detection_settings(
+            self._detection_settings_payload
+        )
         self._motion_classifier = MotionClassifier()
         self._clahe_config = ClahePreprocessConfig(
             clip_limit=config.clahe_clip_limit,
@@ -141,6 +161,7 @@ class PerCameraPipeline(threading.Thread):
         self._ocr_queue: queue.Queue | None = None
         self._visual_queue: queue.Queue | None = shared_visual_queue
         self._ocr_worker: OcrWorkerThread | None = None
+        self._ship_id_catalog: ShipIdCatalog | None = ship_id_catalog
         if config.enable_ocr:
             if shared_ocr_queue is not None:
                 self._ocr_queue = shared_ocr_queue
@@ -159,6 +180,9 @@ class PerCameraPipeline(threading.Thread):
                     save_ocr_audit_frames=config.ocr_audit_save_frames,
                     on_image_captured=on_image_captured,
                     on_ocr_result=self._on_ocr_result,
+                    is_known_ship_id=(
+                        self._ship_id_catalog.is_known if self._ship_id_catalog else None
+                    ),
                 )
         self._frame_count = 0
         self._fps_started_at: float | None = None
@@ -188,9 +212,15 @@ class PerCameraPipeline(threading.Thread):
             return [track.copy_public() for track in self._overlay_tracks]
 
     def update_boundary_lines(self, payload: dict | None) -> None:
-        self._boundary_lines_payload = payload
-        bcfg = BoundaryConfig.from_dict(payload)
+        self._boundary_lines_payload = dict(payload) if isinstance(payload, dict) else None
+        bcfg = BoundaryConfig.from_dict(self._boundary_lines_payload)
         self._boundary_tracker = BoundaryCrossingTracker(bcfg) if bcfg else None
+
+    def update_detection_settings(self, payload: dict | None) -> None:
+        self._detection_settings_payload = payload
+        self._det_min_bbox_width, self._det_min_bbox_height = parse_min_bbox_from_detection_settings(
+            payload
+        )
 
     def start(self) -> None:
         if self._reader is not None:
@@ -252,6 +282,12 @@ class PerCameraPipeline(threading.Thread):
         processed = preprocess_frame_clahe(raw_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
+        boxes_list, det_confs = filter_boxes_by_min_size(
+            boxes_list,
+            det_confs,
+            self._det_min_bbox_width,
+            self._det_min_bbox_height,
+        )
         tracked_boats = self._tracker.update(boxes_list, det_confs)
 
         for track in tracked_boats:
@@ -262,7 +298,7 @@ class PerCameraPipeline(threading.Thread):
         if self._boundary_tracker is not None:
             h, w = raw_frame.shape[:2]
             now_ts = time.time()
-            threshold = float(self._boundary_tracker.config.bbox_cross_threshold)
+            threshold = resolve_bbox_cross_threshold(self._boundary_lines_payload)
             for track in tracked_boats:
                 if track.state not in (TrackState.CONFIRMED, TrackState.LOST):
                     track.berth_zone_overlap = None
@@ -304,6 +340,16 @@ class PerCameraPipeline(threading.Thread):
                 track.berth_zone_overlap = None
                 track.berth_zone_threshold = None
 
+        catalog_known = (
+            self._ship_id_catalog.is_known if self._ship_id_catalog is not None else None
+        )
+        update_tracks_ship_id_stability(
+            tracked_boats,
+            lock_sec=float(self.config.ship_id_lock_stable_sec),
+            now=time.time(),
+            catalog_is_known=catalog_known,
+        )
+
         annotated = raw_frame.copy()
         draw_berth_state_bbox_overlays(annotated, tracked_boats)
         for track in tracked_boats:
@@ -321,6 +367,7 @@ class PerCameraPipeline(threading.Thread):
             if self.config.resize_scale != 1.0
             else 1.0
         )
+        overlay_zone_threshold = resolve_bbox_cross_threshold(self._boundary_lines_payload)
         overlay_frame = draw_ship_detection_overlay(
             annotated,
             tracked_boats,
@@ -331,6 +378,7 @@ class PerCameraPipeline(threading.Thread):
             overlay_scale,
             frame_captured_mono=captured_mono,
             camera_id=int(self.config.camera_id),
+            zone_threshold=overlay_zone_threshold,
         )
         overlay_cfg = BoundaryConfig.for_overlay(self._boundary_lines_payload)
         if overlay_cfg is not None:
@@ -440,7 +488,9 @@ class PerCameraPipeline(threading.Thread):
         if now - self._last_ocr_ts < float(self.config.ocr_interval_sec):
             return
         self._last_ocr_ts = now
-        confirmed = [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+        confirmed = tracks_open_for_recognition(
+            [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+        )
         if not confirmed:
             return
 
@@ -467,7 +517,9 @@ class PerCameraPipeline(threading.Thread):
             return
         self._last_visual_ts = now
 
-        confirmed = [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+        confirmed = tracks_open_for_recognition(
+            [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+        )
         if not confirmed:
             return
         items = [(track.track_id, track.box.copy()) for track in confirmed]
@@ -484,7 +536,31 @@ class PerCameraPipeline(threading.Thread):
             ),
         )
 
+    def _should_accept_ship_id(self, ship_id: str, *, source: str, confidence: float) -> bool:
+        if self._ship_id_catalog is not None and not self._ship_id_catalog.is_known(ship_id):
+            return False
+        if source == 'ocr-hint' and confidence <= 0.0:
+            return False
+        return True
+
+    def _is_in_recognition_zone(self, track_id: str) -> bool:
+        """Gate: True when track bbox overlaps berth zone enough, or no zone configured."""
+        track = self._tracker.get_track(str(track_id))
+        if track is None:
+            return True  # track gone — don't block last-moment vote
+        overlap = getattr(track, 'berth_zone_overlap', None)
+        threshold = getattr(track, 'berth_zone_threshold', None)
+        if overlap is None or threshold is None:
+            return True  # camera has no berth zone — no gate
+        return bool(overlap >= threshold)
+
     def _on_ocr_result(self, track_id: str, ship_id: str, confidence: float) -> None:
+        if self._tracker.is_track_identity_locked(str(track_id)):
+            return
+        if not self._is_in_recognition_zone(track_id):
+            return
+        if not self._should_accept_ship_id(ship_id, source='ocr', confidence=confidence):
+            return
         self._reid_manager.report_ocr_result(
             int(self.config.camera_id),
             str(track_id),
@@ -535,9 +611,28 @@ class PerCameraPipeline(threading.Thread):
                 )
             self._ocr_cache[ck] = entry
 
-        if not ship_id:
+        if not ship_id or not self._should_accept_ship_id(
+            ship_id, source=source, confidence=confidence
+        ):
             return
-        self._tracker.update_track_metadata(str(track_id), ship_id=ship_id)
+        if self._tracker.is_track_identity_locked(str(track_id)):
+            return
+        if not self._is_in_recognition_zone(track_id):
+            return
+        self._reid_manager.report_ocr_result(
+            int(self.config.camera_id),
+            str(track_id),
+            ship_id,
+            float(confidence),
+        )
+        global_ship_id = self._reid_manager.get_global_ship_id(
+            int(self.config.camera_id),
+            str(track_id),
+        )
+        if global_ship_id:
+            self._tracker.update_track_metadata(str(track_id), ship_id=global_ship_id)
+        else:
+            self._tracker.update_track_metadata(str(track_id), ship_id=ship_id)
 
     def _on_local_track_removed(
         self,

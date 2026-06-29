@@ -14,5 +14,6 @@ class Camera(Base):
     location = Column(String(200), nullable=True)
     description = Column(Text, nullable=True)
     boundary_lines = Column(JSONB, nullable=True)
+    detection_settings = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

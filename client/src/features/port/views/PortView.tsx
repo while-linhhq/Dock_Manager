@@ -299,6 +299,9 @@ export const PortView: React.FC = () => {
           configs={configs}
           onEditConfig={handleEditConfig}
           onDeleteConfig={handleDeleteConfig}
+          onToggleConfig={(key, value, description) =>
+            upsertConfig(key, { value, description })
+          }
         />
       )}
 

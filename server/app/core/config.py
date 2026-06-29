@@ -47,7 +47,12 @@ class Settings(BaseSettings):
 
     # OCR / Paddle configuration
     OCR_INTERVAL_SEC: float = 0.5
+    # Seconds final ship_id must stay unchanged before OCR/visual stop (0 = disabled).
+    SHIP_ID_LOCK_STABLE_SEC: float = 60.0
     ENABLE_OCR: bool = True
+    # Gate OCR/embedding ship_id on catalog (Qdrant/vessel DB). False = trust
+    # rule-engine output (regex/blacklist/convert) even for unregistered ships.
+    SHIP_ID_REQUIRE_CATALOG: bool = False
     OCR_LABEL_TTL_SEC: float = 5.0
     SAVE_MIN_INTERVAL_SEC: float = 20.0
     OCR_AUDIT_ENABLE: bool = True

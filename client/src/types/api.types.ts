@@ -248,6 +248,11 @@ export type BoundaryLines = {
   bbox_cross_threshold?: number;
 };
 
+export type CameraDetectionSettings = {
+  min_bbox_width?: number;
+  min_bbox_height?: number;
+};
+
 export type CameraRead = {
   id: string;
   camera_name: string;
@@ -255,6 +260,7 @@ export type CameraRead = {
   rtsp_url: string;
   is_active: boolean;
   boundary_lines?: BoundaryLines | null;
+  detection_settings?: CameraDetectionSettings | null;
 }
 
 export type PortLogRead = {

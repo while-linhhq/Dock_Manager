@@ -174,6 +174,7 @@ class OcrWorkerThread(threading.Thread):
         on_image_captured: Callable[[str | None, str, object, str, bool], None] | None = None,
         on_ocr_track_media: Callable[[str, object, float, str, int | None], None] | None = None,
         on_ocr_result: Callable[[str, str, float], None] | None = None,
+        is_known_ship_id: Callable[[str], bool] | None = None,
     ):
         super().__init__(daemon=True)
         self.recognizer = recognizer
@@ -197,6 +198,7 @@ class OcrWorkerThread(threading.Thread):
         self._on_image_captured = on_image_captured
         self._on_ocr_track_media = on_ocr_track_media
         self._on_ocr_result = on_ocr_result
+        self._is_known_ship_id = is_known_ship_id
         self._last_cap_save_ts: dict[str, float] = {}
         self._last_noocr_cap_save_ts: dict[str, float] = {}
 
@@ -283,6 +285,9 @@ class OcrWorkerThread(threading.Thread):
                         best = ocr_res[0]
                         sid = best["id"]
                         conf = float(best["confidence"])
+                        if self._is_known_ship_id is not None and not self._is_known_ship_id(sid):
+                            continue
+
                         if job_on_result is not None:
                             try:
                                 job_on_result(track_id_str, sid, conf)

@@ -72,6 +72,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   primary_zone_ratio: 'seam',
   edge_zone_ratio: 'seam',
   enable_ocr: 'ocr',
+  ship_id_require_catalog: 'ocr',
   ocr_interval_sec: 'ocr',
   ocr_label_ttl_sec: 'ocr',
   ocr_audit_enable: 'ocr',
@@ -253,7 +254,13 @@ export type PortConfigsSectionProps = {
   configs: PortConfigRead[];
   onEditConfig: (cfg: PortConfigRead) => void;
   onDeleteConfig: (key: string) => void;
+  onToggleConfig: (key: string, value: string, description: string) => void;
 };
+
+/** Recognize boolean-valued configs so they render as a toggle, not free text. */
+const BOOL_VALUES = new Set(['true', 'false']);
+const isBoolValue = (value: string): boolean =>
+  BOOL_VALUES.has((value ?? '').trim().toLowerCase());
 
 export const PortConfigsSection: React.FC<PortConfigsSectionProps> = ({
   cfgKeyQ,
@@ -267,6 +274,7 @@ export const PortConfigsSection: React.FC<PortConfigsSectionProps> = ({
   configs,
   onEditConfig,
   onDeleteConfig,
+  onToggleConfig,
 }) => {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<CategoryId>>(new Set());
 
@@ -397,16 +405,49 @@ export const PortConfigsSection: React.FC<PortConfigsSectionProps> = ({
                           )}
                         </div>
                         <div className="flex items-center gap-4 shrink-0">
-                          <span className="px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg text-xs font-mono text-blue-500 font-bold max-w-[200px] truncate">
-                            {cfg.value}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => onEditConfig(cfg)}
-                            className="text-[10px] font-bold text-blue-600 hover:text-blue-500 uppercase tracking-widest"
-                          >
-                            Thay Đổi
-                          </button>
+                          {isBoolValue(cfg.value) ? (
+                            (() => {
+                              const on = cfg.value.trim().toLowerCase() === 'true';
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onToggleConfig(
+                                      cfg.key,
+                                      on ? 'false' : 'true',
+                                      cfg.description ?? '',
+                                    )
+                                  }
+                                  role="switch"
+                                  aria-checked={on}
+                                  className={cn(
+                                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                                    on ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-white/10',
+                                  )}
+                                >
+                                  <span
+                                    className={cn(
+                                      'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                                      on ? 'translate-x-6' : 'translate-x-1',
+                                    )}
+                                  />
+                                </button>
+                              );
+                            })()
+                          ) : (
+                            <>
+                              <span className="px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg text-xs font-mono text-blue-500 font-bold max-w-[200px] truncate">
+                                {cfg.value}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => onEditConfig(cfg)}
+                                className="text-[10px] font-bold text-blue-600 hover:text-blue-500 uppercase tracking-widest"
+                              >
+                                Thay Đổi
+                              </button>
+                            </>
+                          )}
                           <button
                             type="button"
                             onClick={() => onDeleteConfig(cfg.key)}

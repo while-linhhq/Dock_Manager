@@ -10,6 +10,7 @@ import numpy as np
 
 from app.services.ai.boat_tracker import BoatTracker
 from app.services.ai.identity_fusion import IdentityFusion
+from app.services.ai.ship_id_catalog import ShipIdCatalog
 from app.services.ai.runtime_cache_redis import RuntimeCacheRedis
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
@@ -45,6 +46,7 @@ class VisualIdWorkerThread(threading.Thread):
         min_crop_area: int = 4096,
         ocr_score_threshold: float = 0.72,
         no_ocr_score_threshold: float = 0.55,
+        ship_id_catalog: ShipIdCatalog | None = None,
     ) -> None:
         super().__init__(daemon=True, name=worker_name)
         self._queue = visual_queue
@@ -57,6 +59,12 @@ class VisualIdWorkerThread(threading.Thread):
         self._min_crop_area = max(64, int(min_crop_area))
         self._ocr_score_threshold = float(ocr_score_threshold)
         self._no_ocr_score_threshold = float(no_ocr_score_threshold)
+        self._ship_id_catalog = ship_id_catalog
+
+    def _catalog_is_known(self, ship_id: str) -> bool:
+        if self._ship_id_catalog is None:
+            return True
+        return self._ship_id_catalog.is_known(ship_id)
 
     def run(self) -> None:
         try:
@@ -98,6 +106,9 @@ class VisualIdWorkerThread(threading.Thread):
                         ocr_cache=item.ocr_cache,
                         ocr_lock=item.ocr_lock,
                         camera_id=int(item.camera_id),
+                        catalog_is_known=(
+                            self._ship_id_catalog.is_known if self._ship_id_catalog else None
+                        ),
                     )
                     top_k = []
                     if self._vector_store is not None:

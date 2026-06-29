@@ -79,3 +79,22 @@ def test_bare_track_id_cache_key_misses_multi_camera_entry():
 
     # Legacy broken lookup path would miss this entry.
     assert ocr_cache.get('trk_1') is None
+
+
+def test_resolve_ocr_hint_drops_unknown_ship_id_with_catalog_gate():
+    tracker = MagicMock(spec=BoatTracker)
+    tracker.get_voted_ship_id.return_value = 'OO-7215'
+    ocr_cache = {}
+    lock = MagicMock()
+    lock.__enter__ = MagicMock(return_value=None)
+    lock.__exit__ = MagicMock(return_value=False)
+
+    hint = resolve_ocr_hint_for_visual(
+        boat_tracker=tracker,
+        track_id='trk_1',
+        ocr_cache=ocr_cache,
+        ocr_lock=lock,
+        camera_id=7,
+        catalog_is_known=lambda sid: sid == 'SG-8212',
+    )
+    assert hint is None

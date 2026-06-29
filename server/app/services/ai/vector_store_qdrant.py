@@ -206,6 +206,10 @@ class QdrantVectorStore:
             logger.exception('Qdrant search failed')
             return []
 
+    def has_ship_id(self, *, ship_id: str) -> bool:
+        """True when at least one reference embedding exists for ship_id."""
+        return bool(self.list_by_ship_id(ship_id=ship_id, limit=1))
+
     def list_by_ship_id(
         self,
         *,

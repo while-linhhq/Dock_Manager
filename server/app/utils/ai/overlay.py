@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from app.services.ai.boat_tracker import TrackedBoat, TrackState
+from app.services.ai.ship_id_lock import effective_ship_id
 from app.utils.ai.pipeline_utils import ocr_cache_key_track
 from app.utils.ai.time_sync import format_capture_wall_clock
 
@@ -119,23 +120,20 @@ def ocr_overlay_line(entry: dict | None) -> str:
 
 
 def emb_overlay_line(entry: dict | None) -> str:
-    """Always include EMB label; value empty when visual search has not run yet."""
-    emb_id = str(
-        (entry or {}).get('visual_emb_ship_id') or (entry or {}).get('visual_ship_id') or ''
-    ).strip()
+    """EMB from Qdrant top hit only — never echo OCR-hint fusion fallback."""
+    emb_id = str((entry or {}).get('visual_emb_ship_id') or '').strip()
     if not emb_id:
         return 'EMB:'
-    emb_conf = float(
-        (entry or {}).get('visual_emb_confidence') or (entry or {}).get('visual_confidence') or 0.0
-    )
+    emb_conf = float((entry or {}).get('visual_emb_confidence') or 0.0)
     conf_pct = max(0.0, min(1.0, emb_conf)) * 100.0
     return f'EMB: {emb_id} ({conf_pct:.1f}%)'
 
 
 def final_overlay_line(track: TrackedBoat, entry: dict | None) -> str:
     source = str((entry or {}).get('visual_source') or 'ocr').strip()
-    final_id = str(track.ship_id or 'N/A')
-    return f'Final: {final_id} [{source}]'
+    final_id = str(effective_ship_id(track) or 'N/A')
+    lock_suffix = ' [LOCK]' if track.ship_id_locked else ''
+    return f'Final: {final_id} [{source}]{lock_suffix}'
 
 
 def draw_ship_detection_overlay(
@@ -149,6 +147,7 @@ def draw_ship_detection_overlay(
     *,
     frame_captured_mono: float | None = None,
     camera_id: int | None = None,
+    zone_threshold: float | None = None,
 ):
     """
     Vẽ 3 dòng trên bbox: gid / trk+state / det conf.
@@ -183,9 +182,11 @@ def draw_ship_detection_overlay(
             2,
         )
 
+        bw = int(b[2] - b[0])
+        bh = int(b[3] - b[1])
         cv2.putText(
             display_frame,
-            f"det: {tb.conf:.2f}",
+            f"det: {tb.conf:.2f}  {bw}x{bh}",
             (x1, y1 - 38),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -193,7 +194,10 @@ def draw_ship_detection_overlay(
             2,
         )
 
-        zone_line = berth_zone_overlay_line(tb.berth_zone_overlap, tb.berth_zone_threshold)
+        zone_line = berth_zone_overlay_line(
+            tb.berth_zone_overlap,
+            zone_threshold if zone_threshold is not None else tb.berth_zone_threshold,
+        )
         if zone_line is not None:
             zone_text, zone_color = zone_line
             cv2.putText(

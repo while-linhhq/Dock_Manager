@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import queue
 import re
-from typing import Any
+from typing import Any, Callable
 
 _OCR_LABEL_SHIP_ID = re.compile(r'^([A-Z]{2}-\d{4})')
 
@@ -43,29 +43,34 @@ def resolve_ocr_hint_for_visual(
     ocr_cache: dict,
     ocr_lock: Any,
     camera_id: int,
+    catalog_is_known: Callable[[str], bool] | None = None,
 ) -> str | None:
     """
     OCR ship ID for visual fusion: tracker vote first, then cache ``ocr_ship_id`` / label text.
-    Must use ``ocr_cache_key_track`` — bare ``track_id`` misses multi-camera cache entries.
+    Unknown catalog IDs are stripped so bogus OCR does not poison visual search.
     """
+    hint: str | None = None
     if boat_tracker is not None:
         voted = boat_tracker.get_voted_ship_id(str(track_id))
         if voted:
             normalized = str(voted).strip().upper()
             if normalized:
-                return normalized
+                hint = normalized
 
-    cache_key = ocr_cache_key_track(track_id, camera_id)
-    with ocr_lock:
-        entry = ocr_cache.get(cache_key)
-    if not isinstance(entry, dict):
+    if hint is None:
+        cache_key = ocr_cache_key_track(track_id, camera_id)
+        with ocr_lock:
+            entry = ocr_cache.get(cache_key)
+        if isinstance(entry, dict):
+            explicit = str(entry.get('ocr_ship_id') or '').strip().upper()
+            if explicit:
+                hint = explicit
+            else:
+                hint = parse_ocr_ship_id_from_label(str(entry.get('text') or ''))
+
+    if hint and catalog_is_known is not None and not catalog_is_known(hint):
         return None
-
-    explicit = str(entry.get('ocr_ship_id') or '').strip().upper()
-    if explicit:
-        return explicit
-
-    return parse_ocr_ship_id_from_label(str(entry.get('text') or ''))
+    return hint
 
 
 def drain_queue_latest(q: "queue.Queue", first):

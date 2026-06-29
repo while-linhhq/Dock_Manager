@@ -80,6 +80,10 @@ class TrackedBoat:
     berth_out_ts: float | None = None
     berth_zone_overlap: float | None = None
     berth_zone_threshold: float | None = None
+    ship_id_stable_candidate: str | None = None
+    ship_id_stable_since_ts: float | None = None
+    ship_id_locked: bool = False
+    ship_id_locked_value: str | None = None
 
     def copy_public(self) -> TrackedBoat:
         """Shallow copy with copied box array (safe for queue consumers)."""
@@ -106,6 +110,10 @@ class TrackedBoat:
             berth_out_ts=self.berth_out_ts,
             berth_zone_overlap=self.berth_zone_overlap,
             berth_zone_threshold=self.berth_zone_threshold,
+            ship_id_stable_candidate=self.ship_id_stable_candidate,
+            ship_id_stable_since_ts=self.ship_id_stable_since_ts,
+            ship_id_locked=self.ship_id_locked,
+            ship_id_locked_value=self.ship_id_locked_value,
         )
 
 
@@ -259,6 +267,9 @@ class BoatTracker:
         """Tích lũy một phiếu OCR cho track; cập nhật ship_id theo voted result."""
         now = time.time()
         with self._lock:
+            tb = self._tracks.get(track_id)
+            if tb is not None and tb.ship_id_locked:
+                return
             self._ocr_history.setdefault(track_id, []).append((ship_id, confidence))
             best = self.get_voted_ship_id(track_id)
             tb = self._tracks.get(track_id)
@@ -462,15 +473,26 @@ class BoatTracker:
             out.sort(key=lambda x: (x.first_seen_ts, x.track_id))
             return out
 
+    def get_track(self, track_id: str) -> TrackedBoat | None:
+        with self._lock:
+            return self._tracks.get(track_id)
+
     def get_track_state(self, track_id: str) -> TrackState | None:
         with self._lock:
             tb = self._tracks.get(track_id)
             return tb.state if tb is not None else None
 
+    def is_track_identity_locked(self, track_id: str) -> bool:
+        with self._lock:
+            tb = self._tracks.get(track_id)
+            return bool(tb is not None and tb.ship_id_locked)
+
     def set_ship_id(self, track_id: str, ship_id: str | None) -> None:
         """Direct set (legacy compat); prefer add_ocr_vote for voting."""
         with self._lock:
             tb = self._tracks.get(track_id)
+            if tb is not None and tb.ship_id_locked:
+                return
             if tb is not None:
                 tb.ship_id = ship_id
                 if ship_id:
@@ -492,7 +514,7 @@ class BoatTracker:
                 tb.embedding = np.asarray(embedding, dtype=np.float32).copy()
             if motion_state is not None:
                 tb.motion_state = motion_state
-            if ship_id:
+            if ship_id and not tb.ship_id_locked:
                 tb.ship_id = ship_id
                 tb.last_known_ship_id = ship_id
 

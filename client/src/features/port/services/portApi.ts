@@ -1,5 +1,11 @@
 import { httpClient } from '../../../services/httpClient';
-import type { DetectionRead, CameraRead, DetectionMediaRead, BoundaryLines } from '../../../types/api.types';
+import type {
+  DetectionRead,
+  CameraRead,
+  DetectionMediaRead,
+  BoundaryLines,
+  CameraDetectionSettings,
+} from '../../../types/api.types';
 
 export type DetectionVerify = {
   is_accepted: boolean;
@@ -71,6 +77,12 @@ export const portApi = {
     payload: BoundaryLines,
   ): Promise<CameraRead> => {
     return httpClient.put<CameraRead>(`/cameras/${cameraId}/boundary-lines`, payload);
+  },
+  setDetectionSettings: async (
+    cameraId: string | number,
+    payload: CameraDetectionSettings,
+  ): Promise<CameraRead> => {
+    return httpClient.put<CameraRead>(`/cameras/${cameraId}/detection-settings`, payload);
   },
   clearBoundaryLines: async (cameraId: string | number): Promise<CameraRead> => {
     return httpClient.delete<CameraRead>(`/cameras/${cameraId}/boundary-lines`);

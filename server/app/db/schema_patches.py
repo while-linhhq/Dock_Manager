@@ -512,6 +512,15 @@ def _ensure_visual_stack_port_configs() -> None:
             '1.0',
             'Seconds between visual-id attempts for confirmed tracks.',
         ),
+        'ship_id_lock_stable_sec': (
+            '60',
+            'Seconds final ship_id must remain stable before OCR/visual recognition stops (0 = off).',
+        ),
+        'ship_id_require_catalog': (
+            'false',
+            'Require ship_id to exist in catalog (Qdrant/vessel DB) before OCR/embedding locks it. '
+            'false = trust rule-engine output (regex/blacklist/convert) for unregistered ships.',
+        ),
         'visual_min_crop_area': (
             '4096',
             'Minimum crop area (pixels) to run visual embedding extraction.',
@@ -1634,6 +1643,37 @@ def _ensure_cameras_boundary_lines() -> None:
         raise
 
 
+def _ensure_cameras_detection_settings() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('cameras'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('cameras')}
+        if 'detection_settings' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect cameras: %s', err)
+        return
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE cameras ADD COLUMN IF NOT EXISTS detection_settings JSONB')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE cameras ADD COLUMN detection_settings TEXT')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add cameras.detection_settings manually',
+            dialect,
+        )
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added cameras.detection_settings')
+    except Exception as err:
+        logger.error('schema_patches: failed to add cameras.detection_settings: %s', err)
+        raise
+
+
 def _ensure_boundary_crossing_events() -> None:
     dialect = engine.dialect.name
     if dialect == 'postgresql':
@@ -1843,6 +1883,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_detections_audit_image_path()
     _ensure_detections_berth_times()
     _ensure_cameras_boundary_lines()
+    _ensure_cameras_detection_settings()
     _ensure_fee_configs_berth_limit()
     _ensure_fee_configs_penalty_fields()
     _ensure_invoices_is_over_berth_limit()
