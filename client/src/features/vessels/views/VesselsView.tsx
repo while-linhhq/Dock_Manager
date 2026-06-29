@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2 } from 'lucide-react';
@@ -21,8 +22,21 @@ import { Button } from '../../../components/Button/Button';
 import { ImageMultiDropzone } from '../../../components/ImageMultiDropzone/ImageMultiDropzone';
 import type { VesselVisualReference } from '../services/vesselsApi';
 
+const VESSELS_TAB_IDS: VesselsMainTab[] = ['vessels', 'types', 'recognition'];
+
+function parseVesselsTab(value: string | null): VesselsMainTab {
+  if (value && VESSELS_TAB_IDS.includes(value as VesselsMainTab)) {
+    return value as VesselsMainTab;
+  }
+  return 'vessels';
+}
+
 export const VesselsView: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<VesselsMainTab>('vessels');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = useMemo(
+    () => parseVesselsTab(searchParams.get('tab')),
+    [searchParams],
+  );
   const [isVesselModalOpen, setIsVesselModalOpen] = useState(false);
   const [isTypeModalOpen, setIsTypeModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -64,18 +78,30 @@ export const VesselsView: React.FC = () => {
     resolver: zodResolver(vesselTypeSchema),
   });
 
-  useEffect(() => {
-    void fetchShipIdRules();
-  }, [fetchShipIdRules]);
+  const handleTabChange = (tab: VesselsMainTab) => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'vessels') {
+      next.delete('tab');
+    } else {
+      next.set('tab', tab);
+    }
+    setSearchParams(next, { replace: true });
+  };
 
   useEffect(() => {
+    if (activeTab === 'recognition') {
+      void fetchShipIdRules();
+      return;
+    }
     if (activeTab === 'vessels') {
       fetchVessels();
       fetchVesselTypes();
-    } else {
+      return;
+    }
+    if (activeTab === 'types') {
       fetchVesselTypes();
     }
-  }, [activeTab, fetchVessels, fetchVesselTypes]);
+  }, [activeTab, fetchVessels, fetchVesselTypes, fetchShipIdRules]);
 
   const filteredVessels = useMemo(() => {
     return vessels.filter((v) => {
@@ -263,11 +289,11 @@ export const VesselsView: React.FC = () => {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <VesselsMainTabs
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
         activePatternCount={activePatternCount}
       />
 
-      {activeTab === 'vessels' ? (
+      {activeTab === 'vessels' && (
         <VesselsListSection
           vesselQ={vesselQ}
           setVesselQ={setVesselQ}
@@ -294,7 +320,9 @@ export const VesselsView: React.FC = () => {
           onDeleteVessel={handleDeleteVessel}
           onOpenUploadModal={handleOpenUploadModal}
         />
-      ) : activeTab === 'types' ? (
+      )}
+
+      {activeTab === 'types' && (
         <VesselTypesSection
           typeQ={typeQ}
           setTypeQ={setTypeQ}
@@ -311,9 +339,9 @@ export const VesselsView: React.FC = () => {
           onEditType={handleEditType}
           onDeleteType={(id) => void handleDeleteType(id)}
         />
-      ) : (
-        <RecognitionConfigSection />
       )}
+
+      {activeTab === 'recognition' && <RecognitionConfigSection />}
 
       <VesselsModals
         isVesselModalOpen={isVesselModalOpen}

@@ -3,8 +3,41 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
+
+
+def start_disconnect_watch(ws: WebSocket) -> tuple[asyncio.Event, asyncio.Task[None]]:
+    """Drain inbound frames so peer close is observed without send/drain races."""
+    done = asyncio.Event()
+
+    async def _watch() -> None:
+        try:
+            while True:
+                msg = await ws.receive()
+                if msg.get('type') == 'websocket.disconnect':
+                    break
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.debug('WebSocket disconnect watch ended', exc_info=True)
+        finally:
+            done.set()
+
+    return done, asyncio.create_task(_watch())
+
+
+async def stop_disconnect_watch(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
 
 
 class SafeWebSocket:

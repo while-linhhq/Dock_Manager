@@ -13,6 +13,7 @@ from app.services.ai_lab_service import (
     decode_upload_bgr,
     media_kind_from_name,
     run_detection_lab,
+    run_ocr_lab,
     visual_search_ranked,
 )
 
@@ -47,6 +48,7 @@ async def lab_detect_media(
     file: UploadFile = File(...),
     frame_stride: int = Form(8),
     max_output_frames: int = Form(48),
+    enable_ocr: bool = Form(True),
     _user=Depends(get_current_user),
 ):
     filename = str(file.filename or 'upload.bin')
@@ -77,6 +79,7 @@ async def lab_detect_media(
             media_kind=media_kind,
             frame_stride=frame_stride,
             max_output_frames=max_output_frames,
+            enable_ocr=enable_ocr,
         )
         result['filename'] = filename
         return result
@@ -87,6 +90,34 @@ async def lab_detect_media(
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
+
+
+@router.post('/ocr')
+async def lab_ocr_image(
+    file: UploadFile = File(...),
+    _user=Depends(get_current_user),
+):
+    filename = str(file.filename or 'upload.jpg')
+    if media_kind_from_name(filename) != 'image':
+        raise HTTPException(status_code=400, detail='OCR lab requires an image upload')
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail='Empty upload')
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail='Image too large (max 25MB)')
+
+    try:
+        frame = decode_upload_bgr(content)
+        result = run_ocr_lab(frame)
+        return {
+            'filename': filename,
+            **result,
+        }
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err
 
 
 @router.post('/visual-search')

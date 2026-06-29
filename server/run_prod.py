@@ -26,6 +26,7 @@ def main() -> None:
         host=host,
         port=port,
         workers=1,
+        ws='wsproto',
         ws_ping_interval=None,
         ws_ping_timeout=None,
     )

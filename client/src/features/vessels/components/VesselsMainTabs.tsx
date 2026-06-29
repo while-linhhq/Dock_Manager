@@ -16,7 +16,7 @@ export const VesselsMainTabs: React.FC<VesselsMainTabsProps> = ({
   activePatternCount,
 }) => {
   return (
-    <div className="flex space-x-1 bg-gray-100 dark:bg-white/5 p-1 rounded-xl w-fit">
+    <div className="flex space-x-1 bg-gray-100 dark:bg-white/5 p-1 rounded-xl w-fit max-w-full overflow-x-auto">
       <button
         type="button"
         onClick={() => onTabChange('vessels')}

@@ -1,6 +1,6 @@
 /**
  * Chạy tuần tự hai suite (giống logic dùng trong Chrome MCP evaluate_script).
- * Usage: node mcp_run_all.cjs
+ * Usage: API_PORT=8000 node mcp_run_all.cjs
  */
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +17,7 @@ const vm = require('vm');
       URLSearchParams,
       setTimeout,
       clearTimeout,
+      process: { env: { ...process.env } },
     };
     const p = vm.runInNewContext(code, ctx, { filename: f, timeout: 120000 });
     const r = await p;

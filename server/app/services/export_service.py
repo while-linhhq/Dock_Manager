@@ -1,7 +1,7 @@
 import json
 import logging
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -45,12 +45,20 @@ class ExportService:
             return str(dt)
 
     @staticmethod
+    def _coerce_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    @staticmethod
     def _berth_duration_text(invoice) -> str:
         det = getattr(invoice, 'detection', None)
         if det is None:
             return ''
-        start = det.berth_in_time or det.start_time
-        end = det.berth_out_time or det.end_time
+        start = ExportService._coerce_utc(det.berth_in_time or det.start_time)
+        end = ExportService._coerce_utc(det.berth_out_time or det.end_time)
         if start is None or end is None:
             return ''
         total_seconds = int((end - start).total_seconds())
@@ -142,7 +150,7 @@ class ExportService:
                 cell.border = _THIN_BORDER
                 if col in (1, 6, 7):
                     cell.alignment = Alignment(horizontal='center', vertical='center')
-                elif col == 10:
+                elif col == 11:
                     cell.alignment = Alignment(horizontal='right', vertical='center')
                 else:
                     cell.alignment = Alignment(horizontal='left', vertical='center')
@@ -233,8 +241,8 @@ class ExportService:
         det = getattr(invoice, 'detection', None)
         if det is None:
             return None
-        start = det.berth_in_time or det.start_time
-        end = det.berth_out_time or det.end_time
+        start = ExportService._coerce_utc(det.berth_in_time or det.start_time)
+        end = ExportService._coerce_utc(det.berth_out_time or det.end_time)
         if start is not None and end is not None:
             secs = (end - start).total_seconds()
             if secs > 0:
@@ -273,7 +281,8 @@ class ExportService:
             'HÌNH ẢNH',
             'SỐ LƯỢT CẬP BẾN',
             'SỐ LƯỢT RỜI BẾN',
-            'THỜI GIAN CẬP BẾN',
+            'THỜI ĐIỂM CẬP BẾN',
+            'THỜI ĐIỂM RỜI BẾN',
             'THỜI GIAN NEO ĐẬU',
             'THÀNH TIỀN',
         ]
@@ -317,10 +326,15 @@ class ExportService:
             ws.cell(
                 row=row_idx,
                 column=8,
-                value=self._display_datetime(arrival_time) if det is not None else '',
+                value=self._display_datetime(arrival_time) if arrival_time is not None else '',
             )
-            ws.cell(row=row_idx, column=9, value=self._berth_duration_text(inv))
-            amount_cell = ws.cell(row=row_idx, column=10, value=float(inv.total_amount or 0))
+            ws.cell(
+                row=row_idx,
+                column=9,
+                value=self._display_datetime(departure_time) if departure_time is not None else '',
+            )
+            ws.cell(row=row_idx, column=10, value=self._berth_duration_text(inv))
+            amount_cell = ws.cell(row=row_idx, column=11, value=float(inv.total_amount or 0))
             amount_cell.number_format = '#,##0'
             ws.row_dimensions[row_idx].height = 72
 
@@ -335,8 +349,9 @@ class ExportService:
             6: 16,
             7: 16,
             8: 22,
-            9: 18,
+            9: 22,
             10: 18,
+            11: 18,
         }
         for col, width in widths.items():
             ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width

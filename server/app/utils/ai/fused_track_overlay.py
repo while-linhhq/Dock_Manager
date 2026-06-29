@@ -14,6 +14,9 @@ from app.utils.ai.overlay import (
     BERTH_FILL_ALPHA,
     berth_fill_color_for_state,
     berth_zone_overlay_line,
+    emb_overlay_line,
+    final_overlay_line,
+    ocr_overlay_line,
     resolve_berth_visual_state,
     tint_bbox_overlay,
 )
@@ -194,20 +197,19 @@ def draw_fused_track_overlay(
             if zone_line is not None:
                 zone_text, zone_color = zone_line
                 panel_lines.append((zone_text.replace('ZONE: ', 'ZONE '), zone_color, 0.38))
-            if entry is not None:
-                ocr_text = str(entry.get('text') or '').strip()
-                if ocr_text:
-                    panel_lines.append((f'OCR {ocr_text}', _TEXT_OCR, 0.38))
-                emb_ship_id = str(entry.get('visual_ship_id') or '').strip()
-                emb_conf = float(entry.get('visual_confidence') or 0.0)
-                if emb_ship_id:
-                    emb_pct = max(0.0, min(1.0, emb_conf)) * 100.0
-                    panel_lines.append((f'EMB {emb_ship_id} {emb_pct:.0f}%', _TEXT_EMB, 0.38))
-                final_source = str(entry.get('visual_source') or 'ocr').strip()
-                final_ship = str(track.ship_id or 'N/A')
-                panel_lines.append((f'FINAL {final_ship} [{final_source}]', _TEXT_FINAL, 0.40))
-            elif track.ship_id:
-                panel_lines.append((f'FINAL {track.ship_id} [ocr]', _TEXT_FINAL, 0.40))
+
+            cache_entry = entry if isinstance(entry, dict) else None
+            ocr_panel = ocr_overlay_line(cache_entry).replace('OCR: ', 'OCR ', 1)
+            emb_panel = emb_overlay_line(cache_entry).replace('EMB: ', 'EMB ', 1)
+            panel_lines.append((ocr_panel, _TEXT_OCR, 0.38))
+            panel_lines.append((emb_panel, _TEXT_EMB, 0.38))
+            panel_lines.append(
+                (
+                    final_overlay_line(track, cache_entry).replace('Final: ', 'FINAL ', 1),
+                    _TEXT_FINAL,
+                    0.40,
+                )
+            )
 
             panel_bottom = min(canvas_h - 4, y1 - 4) if y1 > 72 else min(canvas_h - 4, y2 + 72)
             _draw_text_with_bg(fused, panel_lines, x1, panel_bottom)

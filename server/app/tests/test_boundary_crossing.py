@@ -194,3 +194,24 @@ def test_zone_overlap_when_live_frame_differs_from_config():
 
     ratio_out = trk.zone_overlap_ratio((10, 80, 40, 120), frame_w=200, frame_h=200)
     assert ratio_out == 0.0
+
+
+def test_zone_overlap_diagonal_berth_polygon_camera_bachdang_2():
+    """Regression: diagonal berth_zone must not clip to 0% (tangent-as-normal bug)."""
+    cfg = BoundaryConfig(
+        frame_w=2560,
+        frame_h=1440,
+        line1=[(3, 804), (1782, 379), (2393, 657)],
+        line2=[(3, 818), (1779, 403), (2379, 670)],
+        berth_zone=[
+            (3, 808),
+            (1782, 393),
+            (2543, 749),
+            (2530, 1394),
+            (3, 1421),
+        ],
+        bbox_cross_threshold=0.30,
+    )
+    trk = BoundaryCrossingTracker(cfg)
+    ratio = trk.zone_overlap_ratio((150, 950, 850, 1350), frame_w=2560, frame_h=1440)
+    assert ratio >= 0.99

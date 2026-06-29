@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+from sqlalchemy.exc import DBAPIError, OperationalError
+
 from app.db.session import SessionLocal
 from app.services.sepay_config_service import get_sepay_config
 from app.services.sepay_sync_service import sync_sepay_payments
@@ -10,21 +12,36 @@ logger = logging.getLogger('app.sepay.background')
 _task: asyncio.Task | None = None
 
 
+def _sync_once() -> int:
+    """Run one SEPay sync cycle; return next interval (seconds)."""
+    db = SessionLocal()
+    try:
+        cfg = get_sepay_config(db)
+        if cfg.api_token:
+            result = sync_sepay_payments(db)
+            if result.get('recorded'):
+                logger.info('SEPay background sync: %s', result)
+        return cfg.sync_interval_sec
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 async def _sync_loop() -> None:
     interval = 30
     while True:
-        db = SessionLocal()
         try:
-            cfg = get_sepay_config(db)
-            interval = cfg.sync_interval_sec
-            if cfg.api_token:
-                result = sync_sepay_payments(db)
-                if result.get('recorded'):
-                    logger.info('SEPay background sync: %s', result)
+            interval = _sync_once()
+        except (OperationalError, DBAPIError) as exc:
+            logger.warning('SEPay sync: DB connection error (%s), retrying once', exc)
+            try:
+                interval = _sync_once()
+            except Exception:
+                logger.exception('SEPay background sync error')
         except Exception:
             logger.exception('SEPay background sync error')
-        finally:
-            db.close()
 
         await asyncio.sleep(interval)
 

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { FlaskConical, ScanSearch, Video } from 'lucide-react';
+import { FlaskConical, ScanSearch, ScanText, Video } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { DetectionLabPanel } from '../components/DetectionLabPanel';
 import { EmbeddingComparePanel } from '../components/EmbeddingComparePanel';
+import { OcrLabPanel } from '../components/OcrLabPanel';
 
-type LabTab = 'detection' | 'embedding';
+type LabTab = 'detection' | 'ocr' | 'embedding';
 
 export const AiLabView: React.FC = () => {
   const [tab, setTab] = useState<LabTab>('detection');
@@ -21,7 +22,7 @@ export const AiLabView: React.FC = () => {
               AI Lab — Kiểm tra &amp; so sánh
             </h1>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              Test nhận diện offline và tra cứu embedding Qdrant
+              Test nhận diện, OCR pipeline và tra cứu embedding Qdrant
             </p>
           </div>
         </div>
@@ -42,6 +43,19 @@ export const AiLabView: React.FC = () => {
           </button>
           <button
             type="button"
+            onClick={() => setTab('ocr')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition-all',
+              tab === 'ocr'
+                ? 'bg-white dark:bg-emerald-600 text-emerald-600 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400',
+            )}
+          >
+            <ScanText className="h-3.5 w-3.5" />
+            OCR
+          </button>
+          <button
+            type="button"
             onClick={() => setTab('embedding')}
             className={cn(
               'inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition-all',
@@ -56,7 +70,13 @@ export const AiLabView: React.FC = () => {
         </div>
       </div>
 
-      {tab === 'detection' ? <DetectionLabPanel /> : <EmbeddingComparePanel />}
+      {tab === 'detection' ? (
+        <DetectionLabPanel />
+      ) : tab === 'ocr' ? (
+        <OcrLabPanel />
+      ) : (
+        <EmbeddingComparePanel />
+      )}
     </div>
   );
 };

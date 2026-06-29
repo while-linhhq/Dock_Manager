@@ -27,6 +27,7 @@ from app.services.storage.minio_service import (
     put_file,
     remove_object,
 )
+from app.utils.ai.rtsp_capture import configure_rtsp_decode, nvdec_status
 from app.services.ship_id_utils import is_unknown_ship_id
 
 from app.utils.ai.gpu_bootstrap import init_cuda_library_path
@@ -50,7 +51,7 @@ from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_factory import get_visual_embedding_extractor
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
 from app.services.ai.visual_id_worker import VisualIdWorkerThread
-from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
+from app.utils.ai.ship_id_recognizer import create_ship_id_recognizer
 from app.services.ai.track_media_collector import TrackMediaCollector
 from app.services.ai.track_video_registry import RecordedVideo, TrackVideoRegistry
 from app.services.ai.video_recorder import VideoRecorderThread
@@ -128,6 +129,7 @@ class PipelineService:
         self._group_frame_hub: GroupFrameHub | None = None
         self._yolo_worker: YoloWorkerThread | None = None
         self._ocr_worker: OcrWorkerThread | None = None
+        self._ocr_recognizer: Any = None
         self._visual_worker: VisualIdWorkerThread | None = None
         self._video_worker: VideoRecorderThread | None = None
         self._single_video_worker: VideoRecorderThread | None = None
@@ -185,6 +187,7 @@ class PipelineService:
         )
         self._identity_fusion = IdentityFusion(
             match_threshold=runtime_cfg['visual_match_threshold'],
+            no_ocr_match_threshold=runtime_cfg['visual_no_ocr_match_threshold'],
             conflict_threshold=runtime_cfg['visual_conflict_threshold'],
         )
         self._visual_extractor = get_visual_embedding_extractor()
@@ -453,6 +456,10 @@ class PipelineService:
                 cfg_map.get('visual_match_threshold', ''),
                 float(settings.VISUAL_MATCH_THRESHOLD),
             ),
+            'visual_no_ocr_match_threshold': self._to_float(
+                cfg_map.get('visual_no_ocr_match_threshold', ''),
+                float(settings.VISUAL_NO_OCR_MATCH_THRESHOLD),
+            ),
             'visual_conflict_threshold': self._to_float(
                 cfg_map.get('visual_conflict_threshold', ''),
                 0.96,
@@ -536,7 +543,24 @@ class PipelineService:
                 default_sec=float(settings.TRACK_MAX_LOST_SEC),
                 fps=record_fps,
             ),
+            'rtsp_nvdec_enabled': self._to_bool(
+                cfg_map.get('rtsp_nvdec_enabled', ''),
+                bool(settings.RTSP_NVDEC_ENABLED),
+            ),
+            'ffmpeg_path': _s('ffmpeg_path', settings.FFMPEG_PATH),
+            'rtsp_transport': _s('rtsp_transport', settings.RTSP_TRANSPORT) or 'tcp',
         }
+
+    @staticmethod
+    def _apply_rtsp_decode_config(runtime_cfg: dict[str, Any]) -> None:
+        configure_rtsp_decode(
+            use_nvdec=bool(runtime_cfg.get('rtsp_nvdec_enabled')),
+            ffmpeg_path=str(runtime_cfg.get('ffmpeg_path') or ''),
+            rtsp_transport=str(runtime_cfg.get('rtsp_transport') or 'tcp'),
+            hwaccel=str(settings.RTSP_NVDEC_HWACCEL or 'cuda'),
+            output_scale=1.0,
+        )
+        _log.info('RTSP decode: %s', nvdec_status())
 
     @property
     def is_running(self) -> bool:
@@ -1335,6 +1359,7 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
+        self._apply_rtsp_decode_config(runtime_cfg)
 
         # Load detector if not loaded
         detector_sig = (
@@ -1396,7 +1421,8 @@ class PipelineService:
         )
 
         if ocr_active:
-            recognizer = ShipIdRecognizer(rule_engine=get_rule_engine())
+            recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine())
+            self._ocr_recognizer = recognizer
             self._ocr_worker = OcrWorkerThread(
                 recognizer, self._ocr_queue, self.ocr_cache, self.ocr_lock, self._stop,
                 ocr_label_ttl, runtime_cfg['save_min_interval_sec'],
@@ -1422,6 +1448,8 @@ class PipelineService:
         self._yolo_worker.start()
         if self._ocr_worker:
             self._ocr_worker.start()
+            ocr_device = getattr(self._ocr_recognizer, 'device', 'in-process')
+            _log.info('OCR enabled device=%s', ocr_device)
             
         _log.info(f"Pipeline started with source: {source}")
 
@@ -1559,7 +1587,8 @@ class PipelineService:
                     stop_event=self._stop,
                     top_k=runtime_cfg['visual_top_k'],
                     min_crop_area=runtime_cfg['visual_min_crop_area'],
-                    score_threshold=runtime_cfg['visual_match_threshold'],
+                    ocr_score_threshold=runtime_cfg['visual_match_threshold'],
+                    no_ocr_score_threshold=runtime_cfg['visual_no_ocr_match_threshold'],
                 )
                 self._visual_worker.start()
 
@@ -1601,7 +1630,8 @@ class PipelineService:
             self._single_video_worker.start()
 
         if ocr_active:
-            recognizer = ShipIdRecognizer(rule_engine=get_rule_engine())
+            recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine())
+            self._ocr_recognizer = recognizer
             self._ocr_queue = queue.Queue(maxsize=max(20, len(camera_order) * 8))
             self._ocr_worker = OcrWorkerThread(
                 recognizer,
@@ -1617,6 +1647,8 @@ class PipelineService:
                 on_ocr_track_media=self._on_ocr_track_media,
             )
             self._ocr_worker.start()
+            ocr_device = getattr(self._ocr_recognizer, 'device', 'in-process')
+            _log.info('OCR enabled device=%s', ocr_device)
 
         self._group_frame_hub = GroupFrameHub(
             group=group,
@@ -1634,11 +1666,7 @@ class PipelineService:
         )
 
         self._per_camera_pipelines = []
-        # Allow .env flag to force-enable training snapshots even if legacy
-        # port_configs still carries seeded default "false".
-        snapshot_enabled = bool(runtime_cfg['enable_training_snapshot']) or bool(
-            settings.ENABLE_TRAINING_SNAPSHOT
-        )
+        snapshot_enabled = bool(runtime_cfg['enable_training_snapshot'])
         training_snapshot_collector: TrainingSnapshotCollector | None = None
         if snapshot_enabled:
             snap_rel = str(runtime_cfg['training_snapshot_base_dir'] or 'snapshot').strip()
@@ -1767,6 +1795,7 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
+        self._apply_rtsp_decode_config(runtime_cfg)
 
         detector_sig = (
             runtime_cfg['model_path'],
@@ -1847,7 +1876,8 @@ class PipelineService:
         )
 
         if ocr_active:
-            recognizer = ShipIdRecognizer(rule_engine=get_rule_engine())
+            recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine())
+            self._ocr_recognizer = recognizer
             self._ocr_worker = OcrWorkerThread(
                 recognizer,
                 self._ocr_queue,
@@ -1879,6 +1909,8 @@ class PipelineService:
         self._yolo_worker.start()
         if self._ocr_worker:
             self._ocr_worker.start()
+            ocr_device = getattr(self._ocr_recognizer, 'device', 'in-process')
+            _log.info('OCR enabled device=%s', ocr_device)
 
         _log.info(
             'Pipeline started with camera_group_id=%s cameras=%s',
@@ -1896,6 +1928,14 @@ class PipelineService:
             self._yolo_worker.join(timeout=2.0)
         if self._ocr_worker:
             self._ocr_worker.join(timeout=2.0)
+        if self._ocr_recognizer is not None:
+            try:
+                close_fn = getattr(self._ocr_recognizer, 'close', None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                _log.exception('Failed to close OCR recognizer')
+            self._ocr_recognizer = None
         if self._visual_worker:
             self._visual_worker.join(timeout=2.0)
         if self._video_worker:
@@ -2007,7 +2047,7 @@ class PipelineService:
         ocr_interval_sec = float(settings.OCR_INTERVAL_SEC)
         last_ocr_ts = 0.0
 
-        recognizer = ShipIdRecognizer(rule_engine=get_rule_engine()) if enable_ocr else None
+        recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine()) if enable_ocr else None
         
         cap = cv2.VideoCapture(source)
         if not cap.isOpened():

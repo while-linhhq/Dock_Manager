@@ -66,6 +66,12 @@ class EmbeddingExtractor:
         return self._extract_histogram(crop_bgr)
 
     def _load_torch_model(self, model_path: str | None) -> None:
+        if (
+            self._visual_extractor is not None
+            and self._visual_extractor.backend != 'unavailable'
+        ):
+            return
+
         try:
             import torch
             from torchvision import models, transforms
@@ -100,7 +106,13 @@ class EmbeddingExtractor:
             logger.exception('Failed to load embedding model')
             self._model = None
             self._preprocess = None
-            self._backend = 'histogram'
+            if (
+                self._visual_extractor is not None
+                and self._visual_extractor.backend != 'unavailable'
+            ):
+                self._backend = self._visual_extractor.backend
+            else:
+                self._backend = 'histogram'
 
     def _extract_torch(self, crop_bgr: np.ndarray) -> np.ndarray | None:
         import torch

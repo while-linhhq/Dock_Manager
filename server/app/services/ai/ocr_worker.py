@@ -299,7 +299,7 @@ class OcrWorkerThread(threading.Thread):
                         else:
                             label = f'{sid} ({conf:.2f})'
 
-                        updates.append((ck, {'text': label, 'time': now}))
+                        updates.append((ck, {'text': label, 'ocr_ship_id': sid, 'time': now}))
 
                         if state == TrackState.CONFIRMED:
                             last_ts = self._last_cap_save_ts.get(track_id_str, 0.0)

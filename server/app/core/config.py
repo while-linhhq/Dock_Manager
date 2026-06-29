@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # Single FPS for RTSP read, AI, dashboard preview, and video record (port_configs: record_fps).
     RECORD_FPS: int = 20
 
+    # RTSP decode — FFmpeg NVDEC (requires CUDA-enabled ffmpeg binary)
+    RTSP_NVDEC_ENABLED: bool = False
+    RTSP_NVDEC_HWACCEL: str = 'cuda'  # cuda | nvdec (auto-picks first available)
+    FFMPEG_PATH: str = ''  # empty = PATH, then imageio-ffmpeg
+    RTSP_TRANSPORT: str = 'tcp'  # tcp | udp
+
     # Video transcode (ensure browser-playable MP4)
     VIDEO_TRANSCODE_ENABLE: bool = True
     VIDEO_TRANSCODE_PRESET: str = "veryfast"
@@ -88,6 +94,7 @@ class Settings(BaseSettings):
     VISUAL_ID_INTERVAL_SEC: float = 1.0
     VISUAL_MIN_CROP_AREA: int = 4096
     VISUAL_MATCH_THRESHOLD: float = 0.55
+    VISUAL_NO_OCR_MATCH_THRESHOLD: float = 0.55
     VISUAL_TOP_K: int = 20
     VISUAL_MODEL_PATH: str = ""
     VISUAL_BACKBONE: str = "vit_base_patch14_dinov2"
@@ -108,6 +115,7 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION: str = "vessel_visual_embeddings_dinov2"
     QDRANT_VECTOR_SIZE: int = 768
     QDRANT_DISTANCE: str = "COSINE"
+    QDRANT_TIMEOUT_SEC: float = 15.0
 
     # Training snapshot collection (crops + snapshot/yolo full-frame labels for YOLO)
     ENABLE_TRAINING_SNAPSHOT: bool = False

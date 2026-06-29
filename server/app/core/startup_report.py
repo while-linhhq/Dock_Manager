@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.db.session import engine
+from app.utils.port_config_runtime import effective_device, effective_model_path
 
 log = logging.getLogger('app.startup')
 
@@ -112,10 +113,53 @@ def _log_sepay() -> None:
 
 
 def _log_runtime() -> None:
-    _ok('Runtime', f'LOG_LEVEL={settings.LOG_LEVEL}  DEVICE={settings.DEVICE}')
-    model = str(getattr(settings, 'MODEL_PATH', '') or '')
+    device = effective_device()
+    _ok('Runtime', f'LOG_LEVEL={settings.LOG_LEVEL}  DEVICE={device}')
+    model = effective_model_path()
     if model:
-        log.info('             AI model %s', model)
+        env_model = str(settings.MODEL_PATH or '').strip()
+        if model != env_model:
+            log.info('             AI model %s (port_configs)', model)
+        else:
+            log.info('             AI model %s', model)
+
+
+def _configure_rtsp_decode() -> None:
+    from app.repositories.port_config_repository import port_config_repo
+    from app.db.session import SessionLocal
+    from app.utils.ai.rtsp_capture import configure_rtsp_decode, nvdec_status
+
+    use_nvdec = bool(settings.RTSP_NVDEC_ENABLED)
+    ffmpeg_path = str(settings.FFMPEG_PATH or '').strip()
+    rtsp_transport = str(settings.RTSP_TRANSPORT or 'tcp').strip() or 'tcp'
+    db = SessionLocal()
+    try:
+        rows = port_config_repo.get_all(db)
+        cfg = {row.key: row.value for row in rows}
+        if cfg.get('rtsp_nvdec_enabled') is not None:
+            use_nvdec = str(cfg.get('rtsp_nvdec_enabled', '')).strip().lower() in {
+                '1',
+                'true',
+                'yes',
+                'on',
+            }
+        if cfg.get('ffmpeg_path') is not None:
+            ffmpeg_path = str(cfg.get('ffmpeg_path') or '').strip()
+        if cfg.get('rtsp_transport') is not None:
+            rtsp_transport = str(cfg.get('rtsp_transport') or 'tcp').strip() or 'tcp'
+    except Exception as exc:
+        log.warning('  · RTSP      port_configs unavailable (%s) — using env', exc)
+    finally:
+        db.close()
+
+    configure_rtsp_decode(
+        use_nvdec=use_nvdec,
+        ffmpeg_path=ffmpeg_path,
+        rtsp_transport=rtsp_transport,
+        hwaccel=str(settings.RTSP_NVDEC_HWACCEL or 'cuda'),
+        output_scale=1.0,
+    )
+    _ok('RTSP', nvdec_status())
 
 
 def run_startup_checks() -> None:
@@ -128,9 +172,14 @@ def run_startup_checks() -> None:
         raise RuntimeError('Database connection failed')
 
     _run_schema_patches()
+    _configure_rtsp_decode()
     _check_minio()
     _log_sepay()
     _log_runtime()
+
+    from app.utils.ai.gpu_probe import log_ai_component_matrix
+
+    log_ai_component_matrix()
 
     log.info(_BANNER)
     log.info('  Ready — %s', settings.PROJECT_NAME)

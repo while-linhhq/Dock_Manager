@@ -13,6 +13,7 @@ import cv2
 
 from app.services.ai.frame_reader import open_rtsp
 from app.utils.ai.frame_quality import is_usable_bgr_frame
+from app.utils.ai.rtsp_capture import FfmpegNvdecCapture
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,10 @@ class MultiFrameReaderThread(threading.Thread):
 
             next_emit = time.monotonic()
             while not self._stop_event.is_set():
-                if self._drain_rtsp_buffer:
+                if isinstance(self._cap, FfmpegNvdecCapture):
+                    ok, frame = self._cap.read()
+                    frame = frame if ok and frame is not None else None
+                elif self._drain_rtsp_buffer:
                     frame = _drain_latest_from_capture(
                         self._cap,
                         max_grabs=self._max_drain_grabs,

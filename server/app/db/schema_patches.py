@@ -518,7 +518,11 @@ def _ensure_visual_stack_port_configs() -> None:
         ),
         'visual_match_threshold': (
             '0.55',
-            'Minimum aggregated similarity to accept ship ID when OCR has no result.',
+            'Minimum aggregated visual similarity when OCR result is present (Qdrant filter + conflict override).',
+        ),
+        'visual_no_ocr_match_threshold': (
+            '0.55',
+            'Minimum aggregated visual similarity to accept ship ID when OCR has no result.',
         ),
         'visual_top_k': (
             '20',
@@ -621,7 +625,11 @@ def _ensure_visual_stack_port_configs() -> None:
 _DINOV2_PORT_CONFIG_VALUES: dict[str, tuple[str, str]] = {
     'visual_match_threshold': (
         '0.55',
-        'Minimum aggregated similarity to accept ship ID when OCR has no result.',
+        'Minimum aggregated visual similarity when OCR result is present (Qdrant filter + conflict override).',
+    ),
+    'visual_no_ocr_match_threshold': (
+        '0.55',
+        'Minimum aggregated visual similarity to accept ship ID when OCR has no result.',
     ),
     'visual_conflict_threshold': (
         '0.96',
@@ -786,6 +794,66 @@ def _ensure_training_snapshot_port_configs() -> None:
         _patch_done('ensured training snapshot port_configs keys')
     except Exception as err:
         logger.error('schema_patches: failed to seed training snapshot port_configs: %s', err)
+        raise
+
+
+def _ensure_rtsp_nvdec_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'rtsp_nvdec_enabled': (
+            'false',
+            'Hardware-decode RTSP via FFmpeg NVDEC (needs CUDA-enabled ffmpeg).',
+        ),
+        'ffmpeg_path': (
+            '',
+            'Optional path to ffmpeg with NVDEC; empty uses PATH then bundled imageio-ffmpeg.',
+        ),
+        'rtsp_transport': (
+            'tcp',
+            'RTSP transport for decode: tcp or udp.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed rtsp nvdec port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured rtsp nvdec port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed rtsp nvdec port_configs: %s', err)
         raise
 
 
@@ -1789,6 +1857,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_visual_stack_port_configs()
     _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
+    _ensure_rtsp_nvdec_port_configs()
     _ensure_yolo_imgsz_port_config()
     _migrate_port_config_frames_to_seconds()
     _ensure_bulk_payment_sessions()

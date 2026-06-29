@@ -51,6 +51,17 @@ class ShipIdRuleEngine:
         with self._lock:
             patterns = list(self._compiled_patterns)
 
+        if not patterns:
+            match = _DEFAULT_PATTERN.search(clean)
+            if match:
+                prefix = match.group(1).replace('5', 'S').replace('0', 'O')
+                number = match.group(2)
+                candidate = f'{prefix}-{number}'
+                final_id = self.apply(candidate)
+                if final_id is not None:
+                    results.append({'id': final_id, 'confidence': 1.0, 'raw_text': text})
+            return results
+
         for entry in patterns:
             compiled: re.Pattern = entry['pattern']
             match = compiled.search(clean)

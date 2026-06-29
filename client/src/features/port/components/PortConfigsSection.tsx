@@ -81,6 +81,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   visual_id_interval_sec: 'visual',
   visual_min_crop_area: 'visual',
   visual_match_threshold: 'visual',
+  visual_no_ocr_match_threshold: 'visual',
   visual_conflict_threshold: 'visual',
   visual_top_k: 'visual',
   visual_model_path: 'visual',
@@ -169,7 +170,11 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   visual_id_interval_sec: 'Khoảng thời gian (giây) giữa các lần visual-id trên track CONFIRMED.',
   visual_min_crop_area: 'Diện tích crop tối thiểu (pixel) để chạy trích đặc trưng.',
   visual_match_threshold:
-    'Ngưỡng similarity (0–1) chấp nhận mã số tàu khi OCR không có kết quả — tương tự detection_confidence_threshold.',
+    'Ngưỡng similarity (0–1) khi đã có OCR: lọc Qdrant + điều kiện embedding thắng OCR khi conflict.',
+  visual_no_ocr_match_threshold:
+    'Ngưỡng similarity (0–1) chấp nhận mã tàu từ embedding khi OCR không có kết quả.',
+  visual_conflict_threshold:
+    'Ngưỡng similarity tối thiểu để embedding ghi đè OCR khi hai phương pháp cho kết quả khác nhau.',
   visual_top_k: 'Số ứng viên gần nhất trả về từ vector search.',
   visual_model_path: 'Đường dẫn model TorchScript (để trống = DINOv2 timm mặc định).',
   visual_backbone: 'Tên backbone timm (mặc định `vit_base_patch14_dinov2`).',

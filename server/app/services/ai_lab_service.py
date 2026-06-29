@@ -13,9 +13,12 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.repositories.port_config_repository import port_config_repo
 from app.services.ai.boat_tracker import BoatTracker, TrackState
+from app.services.ai.ship_id_rule_engine import get_rule_engine
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
 from app.utils.ai.overlay import draw_ship_detection_overlay
+from app.utils.ai.pipeline_utils import clamp_box
+from app.utils.ai.ship_id_recognizer import create_ship_id_recognizer
 from app.utils.ai.yolo_detector import load_yolo_detector
 
 logger = logging.getLogger(__name__)
@@ -61,14 +64,69 @@ def _encode_jpeg_base64(frame: np.ndarray, *, max_width: int = 1280) -> str:
     return base64.b64encode(encoded.tobytes()).decode('ascii')
 
 
-def _boat_payload(tb) -> dict[str, Any]:
+def _boat_payload(tb, *, ocr_frame: dict | None = None) -> dict[str, Any]:
     box = [int(tb.box[0]), int(tb.box[1]), int(tb.box[2]), int(tb.box[3])]
-    return {
+    payload: dict[str, Any] = {
         'track_id': str(tb.track_id),
         'state': tb.state.value,
         'confidence': float(tb.conf),
         'box': box,
         'ship_id': str(tb.ship_id) if tb.ship_id else None,
+    }
+    if ocr_frame:
+        payload['ocr'] = ocr_frame
+    return payload
+
+
+def _run_ocr_on_tracks(
+    frame: np.ndarray,
+    tracked_boats: list,
+    *,
+    tracker: BoatTracker,
+    recognizer,
+) -> None:
+    if recognizer is None:
+        return
+    height, width = frame.shape[:2]
+    for tb in tracked_boats:
+        if tb.state != TrackState.CONFIRMED:
+            continue
+        x1, y1, x2, y2 = clamp_box(tb.box, width, height)
+        crop = frame[y1:y2, x1:x2]
+        if crop.size <= 0:
+            continue
+        try:
+            ocr_res = recognizer.recognize_bgr(crop)
+        except Exception:
+            logger.exception('AI Lab OCR failed track_id=%s', tb.track_id)
+            continue
+        if not ocr_res:
+            continue
+        best = ocr_res[0]
+        sid = str(best.get('id') or '').strip()
+        conf = float(best.get('confidence') or 0.0)
+        if not sid:
+            continue
+        tracker.add_ocr_vote(str(tb.track_id), sid, conf)
+        voted = tracker.get_voted_ship_id(str(tb.track_id))
+        if voted:
+            tb.ship_id = voted
+            tb.last_known_ship_id = voted
+
+
+def _ocr_snapshot_for_track(tracker: BoatTracker, track_id: str) -> dict[str, Any] | None:
+    hist = tracker.get_ocr_history(track_id)
+    if not hist:
+        return None
+    vote_summary = tracker.get_vote_summary(track_id)
+    voted = tracker.get_voted_ship_id(track_id)
+    last_sid, last_conf = hist[-1]
+    return {
+        'last_id': last_sid,
+        'last_confidence': round(float(last_conf), 4),
+        'voted_id': voted,
+        'attempts': len(hist),
+        'votes': vote_summary,
     }
 
 
@@ -78,9 +136,12 @@ def _process_frame(
     detector,
     tracker: BoatTracker,
     fps_est: float,
+    recognizer=None,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     boxes_list, det_confs = detector.predict_boxes(frame)
     tracked_boats = tracker.update(boxes_list, det_confs)
+
+    _run_ocr_on_tracks(frame, tracked_boats, tracker=tracker, recognizer=recognizer)
 
     annotated = frame.copy()
     for tb in tracked_boats:
@@ -103,7 +164,14 @@ def _process_frame(
         fps_est,
         1.0,
     )
-    return overlay, [_boat_payload(tb) for tb in tracked_boats]
+    boats_out = [
+        _boat_payload(
+            tb,
+            ocr_frame=_ocr_snapshot_for_track(tracker, str(tb.track_id)),
+        )
+        for tb in tracked_boats
+    ]
+    return overlay, boats_out
 
 
 def _parse_positive_int(raw: str, default: int) -> int:
@@ -147,6 +215,7 @@ def run_detection_lab(
     media_kind: str,
     frame_stride: int = 8,
     max_output_frames: int = 48,
+    enable_ocr: bool = True,
 ) -> dict[str, Any]:
     model_path, device, conf, imgsz = _resolve_lab_yolo_params()
     detector, _ = load_yolo_detector(
@@ -167,74 +236,100 @@ def run_detection_lab(
         max_lost_sec=float(settings.TRACK_MAX_LOST_SEC),
     )
 
+    recognizer = None
+    ocr_device: str | None = None
+    if enable_ocr and settings.ENABLE_OCR:
+        recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine())
+        ocr_device = str(getattr(recognizer, 'device', 'in-process'))
+
     stride = max(1, int(frame_stride))
     max_frames = max(1, min(int(max_output_frames), 120))
     frames_out: list[dict[str, Any]] = []
 
-    if media_kind == 'image':
-        frame = cv2.imread(source_path)
-        if frame is None or frame.size == 0:
-            raise ValueError('Could not decode image file')
-        overlay, boats = _process_frame(frame, detector=detector, tracker=tracker, fps_est=0.0)
-        frames_out.append(
-            {
-                'frame_index': 0,
-                'time_sec': 0.0,
-                'jpeg_base64': _encode_jpeg_base64(overlay),
-                'boats': boats,
-            },
-        )
+    try:
+        if media_kind == 'image':
+            frame = cv2.imread(source_path)
+            if frame is None or frame.size == 0:
+                raise ValueError('Could not decode image file')
+            overlay, boats = _process_frame(
+                frame,
+                detector=detector,
+                tracker=tracker,
+                fps_est=0.0,
+                recognizer=recognizer,
+            )
+            frames_out.append(
+                {
+                    'frame_index': 0,
+                    'time_sec': 0.0,
+                    'jpeg_base64': _encode_jpeg_base64(overlay),
+                    'boats': boats,
+                },
+            )
+            return {
+                'media_type': 'image',
+                'total_frames': 1,
+                'sampled_frames': 1,
+                'ocr_enabled': bool(recognizer),
+                'ocr_device': ocr_device,
+                'frames': frames_out,
+            }
+
+        cap = cv2.VideoCapture(source_path)
+        if not cap.isOpened():
+            raise ValueError(f'Could not open video: {source_path}')
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+        frame_index = 0
+        processed = 0
+
+        while processed < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_index += 1
+            if (frame_index - 1) % stride != 0:
+                continue
+
+            overlay, boats = _process_frame(
+                frame,
+                detector=detector,
+                tracker=tracker,
+                fps_est=fps,
+                recognizer=recognizer,
+            )
+            time_sec = (frame_index - 1) / fps if fps > 0 else 0.0
+            frames_out.append(
+                {
+                    'frame_index': frame_index - 1,
+                    'time_sec': round(time_sec, 3),
+                    'jpeg_base64': _encode_jpeg_base64(overlay),
+                    'boats': boats,
+                },
+            )
+            processed += 1
+
+        cap.release()
+        tracker.flush_shutdown_logs()
+
         return {
-            'media_type': 'image',
-            'total_frames': 1,
-            'sampled_frames': 1,
+            'media_type': 'video',
+            'total_frames': total_frames if total_frames > 0 else frame_index,
+            'sampled_frames': len(frames_out),
+            'frame_stride': stride,
+            'ocr_enabled': bool(recognizer),
+            'ocr_device': ocr_device,
             'frames': frames_out,
         }
-
-    cap = cv2.VideoCapture(source_path)
-    if not cap.isOpened():
-        raise ValueError(f'Could not open video: {source_path}')
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
-    frame_index = 0
-    processed = 0
-
-    while processed < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame_index += 1
-        if (frame_index - 1) % stride != 0:
-            continue
-
-        overlay, boats = _process_frame(
-            frame,
-            detector=detector,
-            tracker=tracker,
-            fps_est=fps,
-        )
-        time_sec = (frame_index - 1) / fps if fps > 0 else 0.0
-        frames_out.append(
-            {
-                'frame_index': frame_index - 1,
-                'time_sec': round(time_sec, 3),
-                'jpeg_base64': _encode_jpeg_base64(overlay),
-                'boats': boats,
-            },
-        )
-        processed += 1
-
-    cap.release()
-    tracker.flush_shutdown_logs()
-
-    return {
-        'media_type': 'video',
-        'total_frames': total_frames if total_frames > 0 else frame_index,
-        'sampled_frames': len(frames_out),
-        'frame_stride': stride,
-        'frames': frames_out,
-    }
+    finally:
+        if recognizer is not None:
+            try:
+                close_fn = getattr(recognizer, 'close', None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                logger.exception('AI Lab failed to close OCR recognizer')
 
 
 def decode_upload_bgr(content: bytes) -> np.ndarray:
@@ -243,6 +338,53 @@ def decode_upload_bgr(content: bytes) -> np.ndarray:
     if frame is None or frame.size == 0:
         raise ValueError('Invalid image file')
     return frame
+
+
+def run_ocr_lab(image_bgr: np.ndarray) -> dict[str, Any]:
+    """Run pipeline OCR (same recognizer as live pipeline) on a single image/crop."""
+    import time
+
+    if image_bgr is None or image_bgr.size == 0:
+        raise ValueError('Empty image')
+
+    height, width = image_bgr.shape[:2]
+    recognizer = None
+    started = time.perf_counter()
+    try:
+        recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine())
+        ship_ids = list(recognizer.recognize_bgr(image_bgr) or [])
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        ocr_device = str(getattr(recognizer, 'device', 'in-process'))
+
+        normalized: list[dict[str, Any]] = []
+        for item in ship_ids:
+            sid = str(item.get('id') or '').strip()
+            if not sid:
+                continue
+            normalized.append(
+                {
+                    'id': sid,
+                    'confidence': round(float(item.get('confidence') or 0.0), 4),
+                    'raw_text': str(item.get('raw_text') or ''),
+                }
+            )
+
+        return {
+            'ocr_device': ocr_device,
+            'processing_ms': round(elapsed_ms, 1),
+            'image_size': {'width': int(width), 'height': int(height)},
+            'matched': len(normalized) > 0,
+            'ship_ids': normalized,
+            'jpeg_base64': _encode_jpeg_base64(image_bgr),
+        }
+    finally:
+        if recognizer is not None:
+            try:
+                close_fn = getattr(recognizer, 'close', None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                logger.exception('AI Lab OCR failed to close recognizer')
 
 
 def visual_search_ranked(

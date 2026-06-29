@@ -13,6 +13,7 @@ import numpy as np
 from app.services import pipeline_preview
 from app.services.ai.boat_tracker import BoatTracker, TrackState, TrackedBoat
 from app.services.ai.boundary_crossing import BoundaryConfig, BoundaryCrossingTracker
+from app.services.ai.visual_ship_matching import aggregate_visual_hits
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.embedding_extractor import EmbeddingExtractor
@@ -33,7 +34,7 @@ from app.utils.ai.pipeline_utils import (
     ocr_cache_key_track,
     put_queue_drop_oldest,
 )
-from app.utils.ai.ship_id_recognizer import ShipIdRecognizer
+from app.utils.ai.ship_id_recognizer import create_ship_id_recognizer
 
 _COLOR_TENTATIVE = (128, 128, 128)
 _COLOR_CONFIRMED = (0, 255, 0)
@@ -146,7 +147,7 @@ class PerCameraPipeline(threading.Thread):
             else:
                 self._ocr_queue = queue.Queue(maxsize=5)
                 self._ocr_worker = OcrWorkerThread(
-                    ShipIdRecognizer(rule_engine=rule_engine),
+                    create_ship_id_recognizer(rule_engine=rule_engine),
                     self._ocr_queue,
                     self._ocr_cache,
                     self._ocr_lock,
@@ -500,29 +501,43 @@ class PerCameraPipeline(threading.Thread):
     def _on_visual_result(
         self,
         track_id: str,
-        ship_id: str,
+        ship_id: str | None,
         confidence: float,
         source: str,
         top_k: list[dict],
     ) -> None:
-        # Visual ID acts as fallback signal when OCR is unavailable/weak.
-        if not ship_id:
-            return
-        self._tracker.update_track_metadata(str(track_id), ship_id=ship_id)
+        ranked = aggregate_visual_hits(top_k) if top_k else []
+        if ranked:
+            emb_id = ranked[0].ship_id
+            emb_conf = float(ranked[0].aggregated_score)
+        else:
+            emb_id = ''
+            emb_conf = 0.0
+
         ck = ocr_cache_key_track(str(track_id), int(self.config.camera_id))
         with self._ocr_lock:
             entry = self._ocr_cache.get(ck) if isinstance(self._ocr_cache.get(ck), dict) else {}
-            best_score = float(top_k[0].get('score', confidence)) if top_k else float(confidence)
             entry.update(
                 {
-                    'visual_ship_id': str(ship_id).strip().upper(),
-                    'visual_confidence': best_score,
-                    'visual_source': source,
+                    'visual_emb_ship_id': emb_id,
+                    'visual_emb_confidence': emb_conf,
                     'visual_top_k': top_k,
                     'time': time.time(),
                 }
             )
+            if ship_id:
+                entry.update(
+                    {
+                        'visual_ship_id': str(ship_id).strip().upper(),
+                        'visual_confidence': float(confidence),
+                        'visual_source': source,
+                    }
+                )
             self._ocr_cache[ck] = entry
+
+        if not ship_id:
+            return
+        self._tracker.update_track_metadata(str(track_id), ship_id=ship_id)
 
     def _on_local_track_removed(
         self,

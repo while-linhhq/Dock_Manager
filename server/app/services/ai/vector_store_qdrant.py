@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
 import numpy as np
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
+
+_INIT_RETRIES = 3
+_INIT_RETRY_DELAY_SEC = 2.0
 
 
 class QdrantVectorStore:
@@ -28,37 +34,78 @@ class QdrantVectorStore:
         self._distance = str(distance or 'COSINE').strip().upper()
         self._client = None
         self._healthy = False
+        self._last_connect_error: str | None = None
         self._init_client()
 
     @property
     def healthy(self) -> bool:
         return self._healthy and self._client is not None
 
-    def _init_client(self) -> None:
+    def _connect_once(self) -> bool:
+        """Single connect attempt; returns True when collection is ready."""
         try:
             from qdrant_client import QdrantClient, models
         except Exception:
             logger.warning('qdrant-client package unavailable; vector store disabled')
-            return
+            return False
+
+        timeout = max(1.0, float(settings.QDRANT_TIMEOUT_SEC))
         try:
             self._client = QdrantClient(
                 host=self._host,
                 port=self._port,
                 api_key=self._api_key,
-                timeout=3.0,
+                timeout=timeout,
+                check_compatibility=False,
             )
             self._healthy = bool(self._client.collection_exists(self._collection_name))
             if not self._healthy:
                 distance = getattr(models.Distance, self._distance, models.Distance.COSINE)
                 self._client.create_collection(
                     collection_name=self._collection_name,
-                    vectors_config=models.VectorParams(size=self._vector_size, distance=distance),
+                    vectors_config=models.VectorParams(
+                        size=self._vector_size,
+                        distance=distance,
+                    ),
                 )
                 self._healthy = True
-        except Exception:
-            logger.exception('Failed to initialize Qdrant vector store')
+            return self._healthy
+        except Exception as exc:
+            self._last_connect_error = str(exc)
+            logger.debug('Qdrant connect failed: %s', exc)
             self._client = None
             self._healthy = False
+            return False
+
+    def _init_client(self) -> None:
+        last_err: str | None = None
+        for attempt in range(1, _INIT_RETRIES + 1):
+            if self._connect_once():
+                if attempt > 1:
+                    logger.info(
+                        'Qdrant vector store connected at %s:%s (attempt %s)',
+                        self._host,
+                        self._port,
+                        attempt,
+                    )
+                return
+            last_err = self._last_connect_error or f'attempt {attempt} failed'
+            if attempt < _INIT_RETRIES:
+                logger.warning(
+                    'Qdrant init attempt %s/%s failed; retry in %.0fs',
+                    attempt,
+                    _INIT_RETRIES,
+                    _INIT_RETRY_DELAY_SEC,
+                )
+                time.sleep(_INIT_RETRY_DELAY_SEC)
+
+        logger.error(
+            'Failed to initialize Qdrant vector store at %s:%s after %s attempts: %s',
+            self._host,
+            self._port,
+            _INIT_RETRIES,
+            last_err,
+        )
 
     def collection_vector_size(self) -> int | None:
         if self._client is None:
@@ -78,7 +125,7 @@ class QdrantVectorStore:
 
     def healthcheck(self) -> bool:
         if self._client is None:
-            return False
+            return self._connect_once()
         try:
             self._client.get_collection(self._collection_name)
             self._healthy = True

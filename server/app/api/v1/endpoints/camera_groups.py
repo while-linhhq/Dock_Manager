@@ -23,7 +23,7 @@ from app.schemas.camera_group import (
 from app.services.ai.frame_fusion import FrameFuser, FusionConfig, FusionMember, scaled_fusion_config
 from app.services.ai.multi_frame_reader import TimedFrame, capture_snapshot
 from app.services.editor_preview import editor_preview_manager
-from app.utils.ws_safe import SafeWebSocket
+from app.utils.ws_safe import SafeWebSocket, start_disconnect_watch, stop_disconnect_watch
 from app.services.fused_preview_worker import FusedPreviewWorker
 
 router = APIRouter()
@@ -269,11 +269,12 @@ async def editor_camera_preview_stream(websocket: WebSocket, camera_id: int) -> 
     editor_preview_manager.acquire(camera_id, source, boundary_lines=camera.boundary_lines)
     ws = SafeWebSocket(websocket)
     await ws.accept()
+    disconnect, watch_task = start_disconnect_watch(websocket)
     loop = asyncio.get_running_loop()
     try:
         last_sent = loop.time()
         last_sequence = 0
-        while True:
+        while not disconnect.is_set():
             sequence, jpeg = editor_preview_manager.get_jpeg_with_sequence(camera_id)
             if jpeg and sequence > last_sequence:
                 last_sequence = sequence
@@ -290,6 +291,7 @@ async def editor_camera_preview_stream(websocket: WebSocket, camera_id: int) -> 
     except Exception:
         return
     finally:
+        await stop_disconnect_watch(watch_task)
         editor_preview_manager.release(camera_id)
 
 

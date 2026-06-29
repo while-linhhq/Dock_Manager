@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import queue
+import re
+from typing import Any
+
+_OCR_LABEL_SHIP_ID = re.compile(r'^([A-Z]{2}-\d{4})')
 
 
 def clamp_box(b, w, h):
@@ -21,6 +25,47 @@ def ocr_cache_key_track(track_id: str | int, camera_id: int | None = None) -> st
     if camera_id is not None:
         return f'c{int(camera_id)}:t{track_id}'
     return f't{track_id}'
+
+
+def parse_ocr_ship_id_from_label(text: str) -> str | None:
+    """Extract ship ID from OCR overlay label, e.g. ``BS-1234 (0.92)`` or ``BS-1234 (voted)``."""
+    raw = str(text or '').strip().upper()
+    if not raw:
+        return None
+    match = _OCR_LABEL_SHIP_ID.match(raw)
+    return match.group(1) if match else None
+
+
+def resolve_ocr_hint_for_visual(
+    *,
+    boat_tracker: Any | None,
+    track_id: str,
+    ocr_cache: dict,
+    ocr_lock: Any,
+    camera_id: int,
+) -> str | None:
+    """
+    OCR ship ID for visual fusion: tracker vote first, then cache ``ocr_ship_id`` / label text.
+    Must use ``ocr_cache_key_track`` — bare ``track_id`` misses multi-camera cache entries.
+    """
+    if boat_tracker is not None:
+        voted = boat_tracker.get_voted_ship_id(str(track_id))
+        if voted:
+            normalized = str(voted).strip().upper()
+            if normalized:
+                return normalized
+
+    cache_key = ocr_cache_key_track(track_id, camera_id)
+    with ocr_lock:
+        entry = ocr_cache.get(cache_key)
+    if not isinstance(entry, dict):
+        return None
+
+    explicit = str(entry.get('ocr_ship_id') or '').strip().upper()
+    if explicit:
+        return explicit
+
+    return parse_ocr_ship_id_from_label(str(entry.get('text') or ''))
 
 
 def drain_queue_latest(q: "queue.Queue", first):

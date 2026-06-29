@@ -13,7 +13,7 @@ from app.services.ai.identity_fusion import IdentityFusion
 from app.services.ai.runtime_cache_redis import RuntimeCacheRedis
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
-from app.utils.ai.pipeline_utils import clamp_box
+from app.utils.ai.pipeline_utils import clamp_box, resolve_ocr_hint_for_visual
 from app.utils.ai.visual_crop import crop_frame_box
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,8 @@ class VisualIdWorkerThread(threading.Thread):
         stop_event: threading.Event,
         top_k: int = 5,
         min_crop_area: int = 4096,
-        score_threshold: float = 0.72,
+        ocr_score_threshold: float = 0.72,
+        no_ocr_score_threshold: float = 0.55,
     ) -> None:
         super().__init__(daemon=True, name=worker_name)
         self._queue = visual_queue
@@ -54,7 +55,8 @@ class VisualIdWorkerThread(threading.Thread):
         self._stop_event = stop_event
         self._top_k = max(1, int(top_k))
         self._min_crop_area = max(64, int(min_crop_area))
-        self._score_threshold = float(score_threshold)
+        self._ocr_score_threshold = float(ocr_score_threshold)
+        self._no_ocr_score_threshold = float(no_ocr_score_threshold)
 
     def run(self) -> None:
         try:
@@ -90,17 +92,24 @@ class VisualIdWorkerThread(threading.Thread):
                     if embedding is None:
                         continue
                     track_id, _, _ = refs[index]
-                    ocr_hint = None
-                    with item.ocr_lock:
-                        cache_entry = item.ocr_cache.get(str(track_id))
-                        if isinstance(cache_entry, dict):
-                            ocr_hint = str(cache_entry.get('text') or '').strip().upper() or None
+                    ocr_hint = resolve_ocr_hint_for_visual(
+                        boat_tracker=item.boat_tracker,
+                        track_id=track_id,
+                        ocr_cache=item.ocr_cache,
+                        ocr_lock=item.ocr_lock,
+                        camera_id=int(item.camera_id),
+                    )
                     top_k = []
                     if self._vector_store is not None:
+                        search_threshold = (
+                            self._ocr_score_threshold
+                            if ocr_hint
+                            else self._no_ocr_score_threshold
+                        )
                         top_k = self._vector_store.search(
                             embedding=embedding,
                             top_k=self._top_k,
-                            score_threshold=self._score_threshold,
+                            score_threshold=search_threshold,
                         )
                     result = self._identity_fusion.fuse(visual_top_k=top_k, ocr_hint=ocr_hint)
                     if self._runtime_cache is not None:
@@ -113,7 +122,7 @@ class VisualIdWorkerThread(threading.Thread):
                                 'top_k': result.top_k,
                             },
                         )
-                    if item.on_visual_result is not None and result.ship_id:
+                    if item.on_visual_result is not None:
                         item.on_visual_result(
                             track_id,
                             result.ship_id,

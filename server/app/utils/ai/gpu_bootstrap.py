@@ -3,9 +3,18 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from typing import Literal
 
 _CUDA_BOOTSTRAP_DONE = False
+_RUNTIME_CUDNN_LINK_DIR: Path | None = None
+
+# Paddle dlopen unversioned .so names; nvidia wheels ship only .so.N
+_RUNTIME_CUDA_SYMLINKS: tuple[tuple[str, str, str], ...] = (
+    ('libcudnn.so', 'nvidia/cudnn/lib', 'libcudnn.so.9'),
+    ('libcublas.so', 'nvidia/cublas/lib', 'libcublas.so.12'),
+    ('libcublasLt.so', 'nvidia/cublas/lib', 'libcublasLt.so.12'),
+)
 
 
 def _site_packages() -> str:
@@ -134,6 +143,82 @@ def _linux_cudnn_preload_paths() -> list[str]:
         os.path.join(cudnn_lib, 'libcudnn_graph.so.9'),
     ]
     return [path for path in candidates if os.path.isfile(path)]
+
+
+def _runtime_cuda_link_dir() -> Path | None:
+    """Symlink unversioned CUDA libs Paddle expects (libcudnn.so, libcublas.so, …)."""
+    global _RUNTIME_CUDNN_LINK_DIR
+    if _RUNTIME_CUDNN_LINK_DIR is not None:
+        return _RUNTIME_CUDNN_LINK_DIR
+
+    site = Path(_site_packages())
+    runtime_dir = Path(__file__).resolve().parents[3] / 'app' / 'runtime-media' / 'cuda-libs'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    linked = False
+    for link_name, rel_lib_dir, target_name in _RUNTIME_CUDA_SYMLINKS:
+        target = site / rel_lib_dir / target_name
+        if not target.is_file():
+            continue
+        link = runtime_dir / link_name
+        if not link.exists():
+            link.symlink_to(target)
+        linked = True
+
+    if not linked:
+        return None
+
+    _RUNTIME_CUDNN_LINK_DIR = runtime_dir
+    return runtime_dir
+
+
+def _runtime_cudnn_link_dir() -> Path | None:
+    return _runtime_cuda_link_dir()
+
+
+def prepare_paddle_subprocess_env() -> dict[str, str]:
+    """
+    LD_PRELOAD / LD_LIBRARY_PATH for a Paddle-only child process.
+    Must be applied to os.environ before multiprocessing spawn (LD_PRELOAD is exec-time).
+    """
+    site_packages = _site_packages()
+    cudnn_lib = os.path.join(site_packages, 'nvidia', 'cudnn', 'lib')
+    lib_dirs: list[str] = []
+    runtime_dir = _runtime_cudnn_link_dir()
+    if runtime_dir is not None:
+        lib_dirs.append(str(runtime_dir))
+    if os.path.isdir(cudnn_lib):
+        lib_dirs.append(cudnn_lib)
+    lib_dirs.extend(_nvidia_lib_dirs(site_packages))
+
+    patch: dict[str, str] = {}
+    if lib_dirs:
+        existing = os.environ.get('LD_LIBRARY_PATH', '')
+        prefix = ':'.join(lib_dirs)
+        patch['LD_LIBRARY_PATH'] = f'{prefix}:{existing}' if existing else prefix
+
+    preload_libs = _linux_cudnn_preload_paths()
+    if preload_libs:
+        existing = os.environ.get('LD_PRELOAD', '')
+        prefix = ':'.join(preload_libs)
+        patch['LD_PRELOAD'] = f'{prefix}:{existing}' if existing else prefix
+
+    return patch
+
+
+def apply_env_patch(patch: dict[str, str]) -> dict[str, str | None]:
+    saved: dict[str, str | None] = {}
+    for key, value in patch.items():
+        saved[key] = os.environ.get(key)
+        os.environ[key] = value
+    return saved
+
+
+def restore_env_patch(saved: dict[str, str | None]) -> None:
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 def reexec_with_cuda_bootstrap_if_needed() -> None:

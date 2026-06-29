@@ -129,8 +129,10 @@ def _clip_polygon_by_segment_edge(
     edge_end: Point,
 ) -> list[Point]:
     """Clip subject polygon to the inside of a convex polygon edge (CCW half-plane)."""
-    normal = (edge_end[0] - edge_start[0], edge_end[1] - edge_start[1])
-    return _clip_polygon_by_halfplane(subject, edge_start, normal)
+    dx = edge_end[0] - edge_start[0]
+    dy = edge_end[1] - edge_start[1]
+    inward = (-dy, dx)
+    return _clip_polygon_by_halfplane(subject, edge_start, inward)
 
 
 def bbox_fraction_inside_polygon(box: Bbox, polygon: Polyline) -> float:

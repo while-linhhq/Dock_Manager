@@ -83,6 +83,6 @@ def test_no_patterns_falls_back_to_default():
     engine._compiled_patterns = []
     engine._blacklist = set()
     engine._convert_map = {}
-    # With no patterns, extract_ship_ids should return empty (no fallback at engine level)
     results = engine.extract_ship_ids('SG-1234')
-    assert results == []
+    assert len(results) == 1
+    assert results[0]['id'] == 'SG-1234'

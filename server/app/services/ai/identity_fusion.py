@@ -18,9 +18,11 @@ class IdentityFusion:
         self,
         *,
         match_threshold: float,
+        no_ocr_match_threshold: float,
         conflict_threshold: float = 0.96,
     ) -> None:
         self._match_threshold = float(match_threshold)
+        self._no_ocr_match_threshold = float(no_ocr_match_threshold)
         self._conflict_threshold = float(conflict_threshold)
 
     def fuse(
@@ -32,6 +34,7 @@ class IdentityFusion:
         decision = resolve_visual_match(
             visual_top_k,
             match_threshold=self._match_threshold,
+            no_ocr_threshold=self._no_ocr_match_threshold,
             conflict_threshold=self._conflict_threshold,
             ocr_hint=ocr_hint,
         )

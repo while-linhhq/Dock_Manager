@@ -16,6 +16,7 @@ function frameDataUrl(frame: LabDetectionFrame): string {
 export const DetectionLabPanel: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
   const [frameStride, setFrameStride] = useState(8);
+  const [enableOcr, setEnableOcr] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LabDetectionResponse | null>(null);
@@ -54,6 +55,7 @@ export const DetectionLabPanel: React.FC = () => {
       const response = await aiLabApi.detectMedia(file, {
         frameStride,
         maxOutputFrames: 48,
+        enableOcr,
       });
       setResult(response);
       setFrameIdx(0);
@@ -96,7 +98,7 @@ export const DetectionLabPanel: React.FC = () => {
             Kiểm tra nhận diện (pipeline offline)
           </h3>
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Kéo thả hoặc chọn ảnh/video — chạy YOLO + tracker giống pipeline, trả frame có overlay bbox/track.
+            Kéo thả hoặc chọn ảnh/video — YOLO + tracker + OCR (CONFIRMED) giống pipeline.
           </p>
         </div>
 
@@ -124,6 +126,16 @@ export const DetectionLabPanel: React.FC = () => {
               className="mt-1 w-full rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm"
             />
           </div>
+
+          <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300 pb-2">
+            <input
+              type="checkbox"
+              checked={enableOcr}
+              onChange={(event) => setEnableOcr(event.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Bật OCR (Paddle)
+          </label>
 
           <Button
             type="button"
@@ -163,6 +175,11 @@ export const DetectionLabPanel: React.FC = () => {
               <p>Loại: {result.media_type}</p>
               <p>Tổng frame: {result.total_frames}</p>
               <p>Frame trả về: {result.sampled_frames}</p>
+              {result.ocr_enabled ? (
+                <p>OCR: bật · device {result.ocr_device ?? '—'}</p>
+              ) : (
+                <p>OCR: tắt</p>
+              )}
               {isVideo ? <p>Stride: {result.frame_stride ?? frameStride}</p> : null}
               {activeFrame ? <p>Thời điểm: {activeFrame.time_sec.toFixed(2)}s</p> : null}
               {summary ? (
@@ -209,6 +226,17 @@ export const DetectionLabPanel: React.FC = () => {
                       <p className="text-gray-500 truncate">
                         ship_id: {boat.ship_id ?? '—'}
                       </p>
+                      {boat.ocr ? (
+                        <p className="text-emerald-600 dark:text-emerald-400">
+                          OCR: {boat.ocr.voted_id ?? boat.ocr.last_id ?? '—'}
+                          {boat.ocr.last_confidence != null
+                            ? ` (${(boat.ocr.last_confidence * 100).toFixed(1)}%)`
+                            : ''}
+                          {boat.ocr.attempts > 1 ? ` · ${boat.ocr.attempts} lần` : ''}
+                        </p>
+                      ) : boat.state === 'CONFIRMED' ? (
+                        <p className="text-amber-600 dark:text-amber-400">OCR: không đọc được</p>
+                      ) : null}
                       <p className="text-gray-400">
                         bbox: [{boat.box.join(', ')}]
                       </p>

@@ -1,0 +1,4 @@
+# Install BEFORE torch (separate index). See Dockerfile + gpu-pytorch-conda-setup skill.
+--index-url https://www.paddlepaddle.org.cn/packages/stable/cu120/
+--extra-index-url https://pypi.org/simple
+paddlepaddle-gpu==2.6.2.post120

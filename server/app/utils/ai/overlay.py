@@ -112,6 +112,32 @@ def berth_zone_overlay_line(
     return label, color
 
 
+def ocr_overlay_line(entry: dict | None) -> str:
+    """Always include OCR label; value empty when OCR has not run yet."""
+    text = str((entry or {}).get('text') or '').strip()
+    return f'OCR: {text}'
+
+
+def emb_overlay_line(entry: dict | None) -> str:
+    """Always include EMB label; value empty when visual search has not run yet."""
+    emb_id = str(
+        (entry or {}).get('visual_emb_ship_id') or (entry or {}).get('visual_ship_id') or ''
+    ).strip()
+    if not emb_id:
+        return 'EMB:'
+    emb_conf = float(
+        (entry or {}).get('visual_emb_confidence') or (entry or {}).get('visual_confidence') or 0.0
+    )
+    conf_pct = max(0.0, min(1.0, emb_conf)) * 100.0
+    return f'EMB: {emb_id} ({conf_pct:.1f}%)'
+
+
+def final_overlay_line(track: TrackedBoat, entry: dict | None) -> str:
+    source = str((entry or {}).get('visual_source') or 'ocr').strip()
+    final_id = str(track.ship_id or 'N/A')
+    return f'Final: {final_id} [{source}]'
+
+
 def draw_ship_detection_overlay(
     display_frame,
     tracked_boats: list[TrackedBoat],
@@ -191,56 +217,37 @@ def draw_ship_detection_overlay(
                 b = tb.box
                 y_base = min(int(b[3]) + 24, display_frame.shape[0] - 6)
 
-                if ent:
-                    ocr_text = str(ent.get('text') or '').strip()
-                    if ocr_text:
-                        cv2.putText(
-                            display_frame,
-                            f"OCR: {ocr_text}",
-                            (int(b[0]), y_base),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.55,
-                            (0, 220, 255),
-                            2,
-                        )
-                    y_base = min(y_base + 20, display_frame.shape[0] - 6)
+                cv2.putText(
+                    display_frame,
+                    ocr_overlay_line(ent if isinstance(ent, dict) else None),
+                    (int(b[0]), y_base),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 220, 255),
+                    2,
+                )
+                y_base = min(y_base + 20, display_frame.shape[0] - 6)
 
-                    visual_ship_id = str(ent.get('visual_ship_id') or '').strip()
-                    visual_conf = float(ent.get('visual_confidence') or 0.0)
-                    if visual_ship_id:
-                        conf_pct = max(0.0, min(1.0, visual_conf)) * 100.0
-                        cv2.putText(
-                            display_frame,
-                            f"EMB: {visual_ship_id} ({conf_pct:.1f}%)",
-                            (int(b[0]), y_base),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.52,
-                            (120, 255, 120),
-                            2,
-                        )
-                    y_base = min(y_base + 20, display_frame.shape[0] - 6)
+                cv2.putText(
+                    display_frame,
+                    emb_overlay_line(ent if isinstance(ent, dict) else None),
+                    (int(b[0]), y_base),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (120, 255, 120),
+                    2,
+                )
+                y_base = min(y_base + 20, display_frame.shape[0] - 6)
 
-                    source = str(ent.get('visual_source') or 'ocr').strip()
-                    final_id = str(tb.ship_id or 'N/A')
-                    cv2.putText(
-                        display_frame,
-                        f"Final: {final_id} [{source}]",
-                        (int(b[0]), y_base),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.52,
-                        (255, 220, 80),
-                        2,
-                    )
-                elif tb.ship_id:
-                    cv2.putText(
-                        display_frame,
-                        f"Final: {tb.ship_id} [ocr]",
-                        (int(b[0]), y_base),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.52,
-                        (255, 220, 80),
-                        2,
-                    )
+                cv2.putText(
+                    display_frame,
+                    final_overlay_line(tb, ent if isinstance(ent, dict) else None),
+                    (int(b[0]), y_base),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (255, 220, 80),
+                    2,
+                )
 
     if frame_captured_mono is not None:
         sync_label = format_capture_wall_clock(frame_captured_mono, camera_id=camera_id)

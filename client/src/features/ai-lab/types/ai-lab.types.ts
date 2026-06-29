@@ -1,9 +1,34 @@
+export type LabOcrHit = {
+  id: string;
+  confidence: number;
+  raw_text: string;
+};
+
+export type LabOcrResponse = {
+  filename: string;
+  ocr_device: string | null;
+  processing_ms: number;
+  image_size: { width: number; height: number };
+  matched: boolean;
+  ship_ids: LabOcrHit[];
+  jpeg_base64: string;
+};
+
+export type LabOcrSnapshot = {
+  last_id: string;
+  last_confidence: number;
+  voted_id: string | null;
+  attempts: number;
+  votes: Record<string, { count: number; total_conf: number }>;
+};
+
 export type LabBoatDetection = {
   track_id: string;
   state: string;
   confidence: number;
   box: [number, number, number, number];
   ship_id: string | null;
+  ocr?: LabOcrSnapshot | null;
 };
 
 export type LabDetectionFrame = {
@@ -19,6 +44,8 @@ export type LabDetectionResponse = {
   total_frames: number;
   sampled_frames: number;
   frame_stride?: number;
+  ocr_enabled?: boolean;
+  ocr_device?: string | null;
   frames: LabDetectionFrame[];
 };
 

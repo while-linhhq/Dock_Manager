@@ -5,7 +5,8 @@
  * detections/port_logs: POST tạo bản ghi dùng một lần rồi DELETE → luôn mong đợi 204.
  */
 (async () => {
-  const base = 'http://127.0.0.1:8080/api/v1';
+  const port = process.env.API_PORT || '8080';
+  const base = `http://127.0.0.1:${port}/api/v1`;
   const steps = [];
   const log = (name, ok, detail) => {
     steps.push({ name, ok, detail: detail == null ? null : String(detail).slice(0, 500) });

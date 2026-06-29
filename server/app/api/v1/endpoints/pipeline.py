@@ -17,7 +17,7 @@ from app.services.ai import seam_anchor_baseline
 from app.services.ai.multi_frame_reader import capture_snapshot
 from app.utils.ai.frame_quality import is_usable_bgr_frame
 from app.services.pipeline_service import pipeline_service
-from app.utils.ws_safe import SafeWebSocket
+from app.utils.ws_safe import SafeWebSocket, start_disconnect_watch, stop_disconnect_watch
 
 router = APIRouter()
 
@@ -105,16 +105,23 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
 
     ws = SafeWebSocket(websocket)
     await ws.accept()
+    disconnect, watch_task = start_disconnect_watch(websocket)
     loop = asyncio.get_running_loop()
     try:
         last_sent = loop.time()
         last_sequence = 0
-        while True:
-            sequence, jpeg = await asyncio.to_thread(
-                pipeline_preview.wait_for_jpeg,
-                last_sequence,
-                1.0,
-            )
+        while not disconnect.is_set():
+            try:
+                sequence, jpeg = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        pipeline_preview.wait_for_jpeg,
+                        last_sequence,
+                        0.5,
+                    ),
+                    timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                sequence, jpeg = last_sequence, None
             if jpeg and sequence > last_sequence:
                 last_sequence = sequence
                 await ws.send_bytes(jpeg)
@@ -129,6 +136,8 @@ async def pipeline_preview_stream(websocket: WebSocket) -> None:
     except Exception:
         # Best-effort: avoid crashing the server loop on transient send errors
         return
+    finally:
+        await stop_disconnect_watch(watch_task)
 
 @router.post("/test-video")
 async def test_video(req: PipelineTestVideoRequest):

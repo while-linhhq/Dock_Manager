@@ -1,7 +1,7 @@
 /**
  * API regression (không gọi pipeline): mỗi nhóm tạo 3 bản ghi, 1 DELETE, còn lại GET/PUT/PATCH...
  *
- * Chạy nhanh (Node 18+): node mcp_run_all.cjs
+ * Chạy nhanh (Node 18+): API_PORT=8000 node mcp_run_all.cjs
  * Chrome DevTools MCP: navigate tới http://127.0.0.1:8080/docs rồi evaluate_script
  *   async () => { ...copy toàn bộ thân file từ dòng sau (async () => { đến return...); }
  * Hoặc dán IIFE này vào Console trên tab /docs.
@@ -10,7 +10,8 @@
  */
 /* eslint-disable */
 (async () => {
-  const base = 'http://127.0.0.1:8080/api/v1';
+  const port = process.env.API_PORT || '8080';
+  const base = `http://127.0.0.1:${port}/api/v1`;
   const steps = [];
   const ts = () => Date.now();
   const tag = `T${ts()}`;

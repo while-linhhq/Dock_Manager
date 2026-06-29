@@ -15,18 +15,6 @@ from app.utils.ai.gpu_bootstrap import init_cuda_library_path
 
 logger = logging.getLogger(__name__)
 
-_PADDLE_GPU_PROBE_SCRIPT = """
-from app.utils.ai.gpu_bootstrap import init_cuda_library_path
-init_cuda_library_path("pre")
-import paddle
-if paddle.device.cuda.device_count() <= 0:
-    raise SystemExit(1)
-paddle.set_device("gpu:0")
-x = paddle.randn([1, 3, 8, 8])
-_ = paddle.nn.Conv2D(3, 4, 3)(x)
-"""
-
-
 def _torch_cudnn_blocks_paddle_gpu() -> bool:
     """Torch đã load cuDNN 9.1 (bundled) → Paddle GPU conv sẽ SIGABRT trong cùng process."""
     try:
@@ -41,15 +29,33 @@ def _torch_cudnn_blocks_paddle_gpu() -> bool:
 
 
 def _paddle_gpu_probe_subprocess() -> bool:
-    """Probe trong subprocess — SIGABRT từ cuDNN mismatch không kill API process."""
+    """Probe Paddle GPU OCR in an isolated subprocess (same env as OCR worker)."""
+    from app.utils.ai.gpu_bootstrap import prepare_paddle_subprocess_env
+
     server_root = Path(__file__).resolve().parents[3]
+    probe_script = """
+from app.utils.ai.gpu_bootstrap import init_cuda_library_path
+init_cuda_library_path("pre")
+import numpy as np
+import paddle
+if paddle.device.cuda.device_count() <= 0:
+    raise SystemExit(1)
+paddle.set_device("gpu:0")
+from paddleocr import PaddleOCR
+ocr = PaddleOCR(use_angle_cls=True, lang="en", use_gpu=True, show_log=False)
+img = np.zeros((64, 128, 3), dtype=np.uint8)
+if ocr.ocr(img, cls=True) is None:
+    raise SystemExit(2)
+"""
+    env = os.environ.copy()
+    env.update(prepare_paddle_subprocess_env())
     try:
         proc = subprocess.run(
-            [sys.executable, '-c', _PADDLE_GPU_PROBE_SCRIPT],
+            [sys.executable, '-c', probe_script],
             cwd=str(server_root),
-            env=os.environ.copy(),
+            env=env,
             capture_output=True,
-            timeout=45,
+            timeout=120,
             check=False,
         )
     except Exception as exc:
@@ -81,16 +87,53 @@ def _gpu_actually_works() -> bool:
     return True
 
 
+def create_ship_id_recognizer(
+    rule_engine: 'ShipIdRuleEngine | None' = None,
+    *,
+    prefer_gpu_subprocess: bool = True,
+):
+    """
+    OCR for pipeline: GPU subprocess when torch/cuDNN clash blocks in-process GPU;
+    falls back to in-process CPU (legacy stable path).
+    """
+    use_subprocess = prefer_gpu_subprocess and str(
+        os.environ.get('OCR_GPU_SUBPROCESS', '1')
+    ).strip().lower() not in ('0', 'false', 'no', 'off')
+
+    if use_subprocess:
+        from app.services.ai.ocr_gpu_process import OcrGpuProcessClient
+
+        client = OcrGpuProcessClient()
+        if client.start():
+            return client
+        client.close()
+        logger.warning('OCR GPU subprocess unavailable — in-process CPU')
+
+    return ShipIdRecognizer(rule_engine=rule_engine, use_gpu=False)
+
+
 class ShipIdRecognizer:
-    def __init__(self, lang="en", use_gpu=None, show_log=False, rule_engine=None):
+    def __init__(
+        self,
+        lang="en",
+        use_gpu=None,
+        show_log=False,
+        rule_engine=None,
+        *,
+        assume_gpu_available: bool = False,
+    ):
         """Khởi tạo PaddleOCR; auto fallback CPU nếu GPU/cuDNN không sẵn sàng."""
         init_cuda_library_path('pre')
         import paddle
 
         if use_gpu is None:
-            use_gpu = _gpu_actually_works()
+            use_gpu = (
+                assume_gpu_available and paddle.device.cuda.device_count() > 0
+            ) or _gpu_actually_works()
         elif use_gpu:
-            if not _gpu_actually_works():
+            if assume_gpu_available and paddle.device.cuda.device_count() > 0:
+                pass
+            elif not _gpu_actually_works():
                 use_gpu = False
 
         paddle.set_device('gpu:0' if use_gpu else 'cpu')
@@ -106,6 +149,10 @@ class ShipIdRecognizer:
         logger.info("ShipIdRecognizer initialized (device=%s)", "gpu" if use_gpu else "cpu")
         self.pattern = r"([A-Z50]{2})[-\s]?(\d{4})"
         self._rule_engine = rule_engine  # ShipIdRuleEngine | None
+
+    def close(self) -> None:
+        """No-op for in-process recognizer; subprocess client overrides."""
+        return None
 
     @staticmethod
     def _ensure_min_side_bgr(img_bgr, min_side: int = 480):

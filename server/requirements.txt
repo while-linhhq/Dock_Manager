@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+wsproto>=1.2.0
 sqlalchemy
 psycopg2-binary
 alembic

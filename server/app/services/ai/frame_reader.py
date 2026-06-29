@@ -7,6 +7,7 @@ import threading
 import time
 
 from app.utils.ai.ffmpeg_log import suppress_ffmpeg_decoder_logs
+from app.utils.ai.rtsp_capture import open_rtsp, read_latest_frame
 
 suppress_ffmpeg_decoder_logs()
 
@@ -16,10 +17,6 @@ try:
     cv2.setLogLevel(2)
 except Exception:
     pass
-
-
-def open_rtsp(rtsp_url: str) -> cv2.VideoCapture:
-    return cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
 
 
 class FrameReaderThread(threading.Thread):
@@ -66,7 +63,7 @@ class FrameReaderThread(threading.Thread):
 
             next_emit = time.monotonic()
             while not self._stop_event.is_set():
-                ok, frame = self._cap.read()
+                ok, frame = read_latest_frame(self._cap)
                 if not ok or frame is None:
                     if isinstance(self.rtsp_url, str):
                         print("Stream lost, reconnecting...")

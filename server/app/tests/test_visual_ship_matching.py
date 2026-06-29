@@ -25,7 +25,7 @@ def test_resolve_accepts_on_match_threshold_only():
     hits_low = [
         {'id': 'a1', 'score': 0.5, 'payload': {'ship_id': 'BD-0077'}},
     ]
-    decision_low = resolve_visual_match(hits_low, match_threshold=0.55)
+    decision_low = resolve_visual_match(hits_low, match_threshold=0.55, no_ocr_threshold=0.55)
     assert decision_low.accepted is False
     assert decision_low.ship_id is None
 
@@ -43,6 +43,17 @@ def test_resolve_consensus_when_ocr_and_visual_agree():
     assert decision.source == 'consensus'
     assert decision.accepted is True
     assert decision.confidence > 0.9
+
+
+def test_resolve_consensus_requires_match_threshold_when_ocr_present():
+    """Same ID but visual below match_threshold → OCR wins, not consensus."""
+    hits = [{'id': 'a1', 'score': 0.82, 'payload': {'ship_id': 'BD-0077'}}]
+    decision = resolve_visual_match(
+        hits, match_threshold=0.9, ocr_hint='BD-0077', conflict_threshold=0.96
+    )
+    assert decision.ship_id == 'BD-0077'
+    assert decision.source == 'conflict-ocr-wins'
+    assert decision.accepted is True
 
 
 def test_resolve_conflict_visual_wins_above_threshold():
@@ -81,11 +92,42 @@ def test_resolve_ocr_hint_only_when_no_visual_hits():
 
 
 def test_resolve_visual_only_when_no_ocr():
-    """No OCR hint, visual score above threshold → source='visual'."""
+    """No OCR hint, visual score above no_ocr_threshold → source='visual'."""
     hits = [{'id': 'a1', 'score': 0.82, 'payload': {'ship_id': 'BD-0077'}}]
-    decision = resolve_visual_match(hits, match_threshold=0.55, conflict_threshold=0.96)
+    decision = resolve_visual_match(
+        hits,
+        match_threshold=0.9,
+        no_ocr_threshold=0.55,
+        conflict_threshold=0.96,
+    )
     assert decision.ship_id == 'BD-0077'
     assert decision.source == 'visual'
+
+
+def test_resolve_no_ocr_rejects_below_no_ocr_threshold_even_if_match_lower():
+    hits = [{'id': 'a1', 'score': 0.82, 'payload': {'ship_id': 'BD-0077'}}]
+    decision = resolve_visual_match(
+        hits,
+        match_threshold=0.55,
+        no_ocr_threshold=0.9,
+        conflict_threshold=0.96,
+    )
+    assert decision.accepted is False
+    assert decision.ship_id is None
+    assert decision.source == 'unknown'
+
+
+def test_resolve_conflict_visual_requires_match_threshold_when_ocr_present():
+    hits = [{'id': 'a1', 'score': 0.97, 'payload': {'ship_id': 'SG-7082'}}]
+    decision = resolve_visual_match(
+        hits,
+        match_threshold=0.99,
+        no_ocr_threshold=0.55,
+        ocr_hint='BD-0077',
+        conflict_threshold=0.96,
+    )
+    assert decision.ship_id == 'BD-0077'
+    assert decision.source == 'conflict-ocr-wins'
 
 
 def test_resolve_default_conflict_threshold_is_096():
