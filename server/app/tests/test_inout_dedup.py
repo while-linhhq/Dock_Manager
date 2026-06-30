@@ -78,7 +78,9 @@ def test_two_cameras_merge_then_finalize_writes_one_in_one_out():
     # Merge 2 identity lại (simulate OCR match)
     gid1 = mgr.get_global_id(1, 't1')
     gid2 = mgr.get_global_id(2, 't2')
-    if gid1 and gid2 and gid1 != gid2:
+    assert gid1 is not None, 'track1 not registered with manager'
+    assert gid2 is not None, 'track2 not registered with manager'
+    if gid1 != gid2:
         with mgr._lock:
             id1 = mgr._identities.get(gid1)
             id2 = mgr._identities.get(gid2)
@@ -87,7 +89,9 @@ def test_two_cameras_merge_then_finalize_writes_one_in_one_out():
 
     mgr.flush_all()
 
-    # Đếm IN/OUT từ on_global_track_removed callback — must be exactly 1 each
+    # _finalize_identity_locked copies identity.berth_in_ts / berth_out_ts onto
+    # the track object it passes to on_global_track_removed (lines 698-699 of
+    # cross_camera_reid.py), so checking track.berth_in_ts here is correct.
     in_count = sum(
         1 for (track, _) in mgr._recorded
         if getattr(track, 'berth_in_ts', None) is not None
@@ -123,7 +127,6 @@ def test_only_in_no_out_finalize_writes_in_only():
 
 def test_events_written_guard_prevents_double_finalize():
     """Double finalize (anchor release + flush) → events_written chặn → không double row."""
-    _stub_mod.record_boundary_crossing_event.reset_mock()  # type: ignore[attr-defined]
     mgr = _manager()
     track = _fake_track('t1', 1)
     mgr.report_track_update(1, track, embedding=None, frame_shape=None)
@@ -132,24 +135,22 @@ def test_events_written_guard_prevents_double_finalize():
     gid = mgr.get_global_id(1, 't1')
     assert gid is not None
 
+    # Grab a reference before finalize — finalize may remove the identity from
+    # _identities, so a second dict lookup would return None and silently skip the guard.
+    with mgr._lock:
+        identity = mgr._identities.get(gid)
+    assert identity is not None
+
     # Finalize lần 1 (anchor release)
     with mgr._lock:
-        identity = mgr._identities.get(gid)
-        assert identity is not None
         mgr._finalize_identity_locked(identity)
 
-    # Finalize lần 2 (flush expired) — phải bị chặn bởi events_written
+    # Finalize lần 2 (flush expired) — same object reference, must be blocked by events_written
     with mgr._lock:
-        identity = mgr._identities.get(gid)
-        if identity is not None:
-            mgr._finalize_identity_locked(identity)
+        mgr._finalize_identity_locked(identity)
 
-    # After double finalize, events_written must be True and callback fired exactly once
-    with mgr._lock:
-        identity = mgr._identities.get(gid)
-        # This will AttributeError until events_written is added to GlobalIdentity
-        assert identity is not None
-        assert identity.events_written is True
+    # events_written must exist and be True — AttributeError here until field is added
+    assert identity.events_written is True  # type: ignore[attr-defined]
     assert len(mgr._recorded) == 1, f'Expected 1 callback, got {len(mgr._recorded)}'
 
 
