@@ -676,6 +676,20 @@ class CrossCameraReIdManager:
         if identity.finalized:
             return
         identity.finalized = True
+
+        # Last-chance merge (C1): before writing, absorb other inactive identities with same ship_id
+        if identity.ship_id:
+            for other in list(self._identities.values()):
+                if other is identity or other.finalized:
+                    continue
+                if other.ship_id == identity.ship_id and not other.active_tracks:
+                    identity = self._merge_identities(identity, other)
+
+        # Write IN/OUT events exactly once
+        if not identity.events_written:
+            identity.events_written = True
+            self._write_boundary_events_locked(identity)
+
         if self._on_global_track_removed is None or identity.last_track is None:
             return
         track = identity.last_track.copy_public()
@@ -686,3 +700,35 @@ class CrossCameraReIdManager:
         track.berth_out_ts = identity.berth_out_ts
         history = list(identity.ocr_history)
         self._on_global_track_removed(track, history)
+
+    def _write_boundary_events_locked(self, identity: GlobalIdentity) -> None:
+        from app.services.boundary_crossing_event_service import record_boundary_crossing_event
+
+        if identity.berth_in_ts is not None and identity.berth_out_ts is not None:
+            if identity.berth_out_ts < identity.berth_in_ts:
+                _log.warning(
+                    'reid: identity %s berth_out_ts %.1f < berth_in_ts %.1f — writing as-is',
+                    identity.global_id,
+                    identity.berth_out_ts,
+                    identity.berth_in_ts,
+                )
+
+        camera_id = identity.primary_camera_id or next(iter(identity.camera_tracks), 0)
+        track_id = identity.global_id
+
+        if identity.berth_in_ts is not None:
+            record_boundary_crossing_event(
+                camera_id=int(camera_id),
+                track_id=str(track_id),
+                direction='in',
+                crossed_at_ts=float(identity.berth_in_ts),
+                ship_id=identity.ship_id,
+            )
+        if identity.berth_out_ts is not None:
+            record_boundary_crossing_event(
+                camera_id=int(camera_id),
+                track_id=str(track_id),
+                direction='out',
+                crossed_at_ts=float(identity.berth_out_ts),
+                ship_id=identity.ship_id,
+            )
