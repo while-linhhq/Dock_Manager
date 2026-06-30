@@ -181,3 +181,31 @@ def test_no_db_write_during_report_boundary_crossing():
     mgr.report_boundary_crossing(1, 't1', 'in', 100.0)
     mgr.report_boundary_crossing(1, 't1', 'out', 200.0)
     _stub_mod.record_boundary_crossing_event.assert_not_called()  # type: ignore[attr-defined]
+
+
+def test_last_chance_merge_before_finalize_prevents_double_in():
+    """C1: 2 identity cùng ship_id inactive → last-chance merge → 1 IN duy nhất."""
+    recorded = []
+    mgr = CrossCameraReIdManager(
+        camera_order=[1, 2],
+        visual_threshold=0.6,
+        handoff_window_sec=5.0,
+        on_global_track_removed=lambda t, h: recorded.append((t, h)),
+    )
+    track1 = _fake_track('t1', 1, ship_id='BD-0001')
+    track2 = _fake_track('t2', 2, ship_id='BD-0001')
+    mgr.report_track_update(1, track1, embedding=None, frame_shape=None)
+    mgr.report_track_update(2, track2, embedding=None, frame_shape=None)
+
+    mgr.report_boundary_crossing(1, 't1', 'in', 100.0)
+    mgr.report_boundary_crossing(2, 't2', 'in', 101.0)
+
+    # Cả 2 track removed (tàu đi hết)
+    mgr.report_track_removed(1, track1, [])
+    mgr.report_track_removed(2, track2, [])
+
+    mgr.flush_all()
+
+    # last-chance merge gom 2 identity cùng ship_id → 1 finalize → 1 IN
+    in_events = [t for t, _ in recorded if t.berth_in_ts is not None]
+    assert len(in_events) == 1, f'Expected 1 IN event, got {len(in_events)}'
