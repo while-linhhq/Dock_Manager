@@ -52,6 +52,9 @@ def absorb_contained(db: Session, detection_id: int) -> int:
 
     now = datetime.now(timezone.utc)
 
+    # Stage all mutations first, then commit once — avoids partial-commit
+    # orphans when there are multiple losers, and prevents DetachedInstanceError
+    # from mid-loop commits expiring SQLAlchemy attributes.
     for det in pool:
         if det.id == winner.id:
             continue
@@ -60,8 +63,6 @@ def absorb_contained(db: Session, detection_id: int) -> int:
             if inv.payment_status == 'UNPAID' and inv.deleted_at is None:
                 inv.deleted_at = now
 
-        db.commit()
-
         detection_repo.soft_delete(db, det.id)
 
         _log.info(
@@ -69,5 +70,7 @@ def absorb_contained(db: Session, detection_id: int) -> int:
             det.id,
             winner.id,
         )
+
+    db.commit()
 
     return winner.id

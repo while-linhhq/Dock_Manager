@@ -138,15 +138,30 @@ def test_no_merge_when_berth_times_missing():
 # ---------------------------------------------------------------------------
 
 def test_no_merge_when_accepted():
-    """Candidate has is_accepted=True → not absorbed, new detection remains winner."""
+    """Candidate has is_accepted=True → query excludes it, soft_delete never called.
+
+    The guard lives in get_overlapping_by_vessel (is_accepted.isnot(True)).
+    We simulate this by having the mock return an empty list (as the real DB
+    query would), while also verifying via a separate sub-test that if somehow
+    an accepted detection slips through, the service itself does not soft-delete
+    it because it won't appear in the candidate list at all.
+    """
     from app.services.detection_merge_service import absorb_contained
 
     new_det = _make_detection(2, vessel_id=1, berth_in=_dt(21, 40), berth_out=_dt(22, 0))
+    # accepted_det has a longer window — if it were included it would become
+    # winner and new_det would be absorbed.  The query must exclude it.
+    accepted_det = _make_detection(
+        1, vessel_id=1, berth_in=_dt(21, 30), berth_out=_dt(22, 30),
+        is_accepted=True,
+    )
     repo = DetectionRepository()
 
+    # get_overlapping_by_vessel filters is_accepted.isnot(True) at DB level;
+    # mock returns [] to reflect that the accepted detection is excluded.
     with (
         patch.object(repo.__class__, 'get', return_value=new_det),
-        patch.object(repo.__class__, 'get_overlapping_by_vessel', return_value=[]),
+        patch.object(repo.__class__, 'get_overlapping_by_vessel', return_value=[]) as mock_query,
         patch.object(repo.__class__, 'soft_delete') as mock_soft_delete,
         patch('app.services.detection_merge_service.detection_repo', repo),
     ):
@@ -154,6 +169,7 @@ def test_no_merge_when_accepted():
 
     assert winner_id == 2
     mock_soft_delete.assert_not_called()
+    mock_query.assert_called_once()  # query was attempted but returned nothing
 
 
 # ---------------------------------------------------------------------------

@@ -99,12 +99,12 @@ class DetectionRepository:
         window_hours: int = 2,
     ) -> List[Detection]:
         from datetime import timedelta
-        from sqlalchemy import and_
 
         earliest = berth_in - timedelta(hours=window_hours)
         latest = berth_out + timedelta(hours=window_hours)
         return (
             db.query(Detection)
+            .options(joinedload(Detection.invoices))
             .filter(
                 Detection.vessel_id == vessel_id,
                 Detection.id != exclude_id,
@@ -119,13 +119,11 @@ class DetectionRepository:
         )
 
     def soft_delete(self, db: Session, detection_id: int) -> None:
-        from datetime import timezone as _tz
-
+        """Mark detection as deleted. Caller is responsible for committing."""
         db_obj = self.get(db, detection_id)
         if db_obj is None:
             return
-        db_obj.deleted_at = datetime.now(_tz.utc)
-        db.commit()
+        db_obj.deleted_at = datetime.now(timezone.utc)
 
 
 detection_repo = DetectionRepository()
