@@ -458,7 +458,7 @@ class CrossCameraReIdManager:
         for identity in self._identities.values():
             if identity.finalized:
                 continue
-            if self._has_concurrent_active_on_other_camera(identity, camera_id):
+            if self._has_concurrent_active_on_non_adjacent_camera(identity, camera_id):
                 continue
             if not identity.anchored and now - identity.last_seen_ts > self._handoff_window_sec:
                 continue
@@ -578,6 +578,21 @@ class CrossCameraReIdManager:
         """True when another camera still has a live track on this identity."""
         camera_key = int(camera_id)
         return any(cam != camera_key for cam, _ in identity.active_tracks)
+
+    def _has_concurrent_active_on_non_adjacent_camera(
+        self,
+        identity: GlobalIdentity,
+        camera_id: int,
+    ) -> bool:
+        """True when a non-adjacent camera has a live track on this identity.
+
+        Adjacent cameras share overlapping FOV (consecutive in camera_order), so
+        a track re-appearing on cam4 while cam3 still holds the identity is a
+        valid overlap-merge signal, not a conflict.
+        """
+        camera_key = int(camera_id)
+        candidate_cameras = {camera_key, *self.adjacent_camera_ids(camera_key)}
+        return any(cam not in candidate_cameras for cam, _ in identity.active_tracks)
 
     def _identities_have_concurrent_active_tracks(
         self,
