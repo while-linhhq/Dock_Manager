@@ -89,5 +89,43 @@ class DetectionRepository:
         db.commit()
         return True
 
+    def get_overlapping_by_vessel(
+        self,
+        db: Session,
+        vessel_id: int,
+        berth_in: datetime,
+        berth_out: datetime,
+        exclude_id: int,
+        window_hours: int = 2,
+    ) -> List[Detection]:
+        from datetime import timedelta
+        from sqlalchemy import and_
+
+        earliest = berth_in - timedelta(hours=window_hours)
+        latest = berth_out + timedelta(hours=window_hours)
+        return (
+            db.query(Detection)
+            .filter(
+                Detection.vessel_id == vessel_id,
+                Detection.id != exclude_id,
+                Detection.deleted_at.is_(None),
+                Detection.is_accepted.isnot(True),
+                Detection.berth_in_time.isnot(None),
+                Detection.berth_out_time.isnot(None),
+                Detection.berth_in_time >= earliest,
+                Detection.berth_out_time <= latest,
+            )
+            .all()
+        )
+
+    def soft_delete(self, db: Session, detection_id: int) -> None:
+        from datetime import timezone as _tz
+
+        db_obj = self.get(db, detection_id)
+        if db_obj is None:
+            return
+        db_obj.deleted_at = datetime.now(_tz.utc)
+        db.commit()
+
 
 detection_repo = DetectionRepository()
