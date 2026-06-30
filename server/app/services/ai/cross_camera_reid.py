@@ -683,6 +683,7 @@ class CrossCameraReIdManager:
                 if other is identity or other.finalized:
                     continue
                 if other.ship_id == identity.ship_id and not other.active_tracks:
+                    other.finalized = True  # prevent re-visit if loop snapshot still holds this ref
                     identity = self._merge_identities(identity, other)
 
         # Write IN/OUT events exactly once
