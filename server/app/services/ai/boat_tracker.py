@@ -12,6 +12,8 @@ from typing import Callable, Sequence
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from app.services.ai.ship_id_evidence import ShipIdDecision, ShipIdEvidence, ShipIdEvidenceConfig
+
 
 class TrackState(str, Enum):
     TENTATIVE = "TENTATIVE"
@@ -84,6 +86,9 @@ class TrackedBoat:
     ship_id_stable_since_ts: float | None = None
     ship_id_locked: bool = False
     ship_id_locked_value: str | None = None
+    ship_id_decision_state: str | None = None
+    ship_id_decision_source: str | None = None
+    ship_id_evidence_summary: dict | None = None
 
     def copy_public(self) -> TrackedBoat:
         """Shallow copy with copied box array (safe for queue consumers)."""
@@ -114,6 +119,9 @@ class TrackedBoat:
             ship_id_stable_since_ts=self.ship_id_stable_since_ts,
             ship_id_locked=self.ship_id_locked,
             ship_id_locked_value=self.ship_id_locked_value,
+            ship_id_decision_state=self.ship_id_decision_state,
+            ship_id_decision_source=self.ship_id_decision_source,
+            ship_id_evidence_summary=self.ship_id_evidence_summary,
         )
 
 
@@ -148,6 +156,10 @@ class BoatTracker:
         min_confirm_sec: float | None = None,
         max_tentative_sec: float | None = None,
         max_lost_sec: float | None = None,
+        visual_match_threshold: float = 0.55,
+        visual_no_ocr_match_threshold: float = 0.55,
+        visual_conflict_threshold: float = 0.96,
+        ocr_confidence_threshold: float = 0.0,
     ):
         self.min_hits = max(1, int(min_hits))
         self.max_tentative_misses = max(1, int(max_tentative_misses))
@@ -171,6 +183,13 @@ class BoatTracker:
 
         self._tracks: dict[str, TrackedBoat] = {}
         self._ocr_history: dict[str, list[tuple[str, float]]] = {}
+        self._ship_id_evidence: dict[str, ShipIdEvidence] = {}
+        self._ship_id_evidence_config = ShipIdEvidenceConfig(
+            visual_match_threshold=float(visual_match_threshold),
+            visual_no_ocr_match_threshold=float(visual_no_ocr_match_threshold),
+            visual_conflict_threshold=float(visual_conflict_threshold),
+            ocr_confidence_threshold=float(ocr_confidence_threshold),
+        )
         self._id_day: datetime.date | None = None
         self._daily_seq = 0
         self._pending_removed: list[PendingRemoved] = []
@@ -263,21 +282,48 @@ class BoatTracker:
                 still.append(pending)
         self._pending_removed = still
 
+    def _apply_ship_id_decision(self, tb: TrackedBoat, decision: ShipIdDecision) -> None:
+        tb.ship_id_decision_state = decision.state
+        tb.ship_id_decision_source = decision.source
+        tb.ship_id_evidence_summary = self.get_evidence_summary(tb.track_id)
+        if decision.ship_id is None:
+            return
+        tb.ship_id = decision.ship_id
+        tb.last_known_ship_id = decision.ship_id
+
+    def _resolve_ship_id_evidence(self, track_id: str, tb: TrackedBoat) -> ShipIdDecision | None:
+        evidence = self._ship_id_evidence.get(track_id)
+        if evidence is None:
+            return None
+        decision = evidence.resolve(self._ship_id_evidence_config)
+        self._apply_ship_id_decision(tb, decision)
+        return decision
+
     def add_ocr_vote(self, track_id: str, ship_id: str, confidence: float) -> None:
-        """Tích lũy một phiếu OCR cho track; cập nhật ship_id theo voted result."""
+        """Tích lũy một phiếu OCR cho track; cập nhật ship_id theo evidence resolver."""
         now = time.time()
         with self._lock:
             tb = self._tracks.get(track_id)
             if tb is not None and tb.ship_id_locked:
                 return
             self._ocr_history.setdefault(track_id, []).append((ship_id, confidence))
-            best = self.get_voted_ship_id(track_id)
+            evidence = self._ship_id_evidence.setdefault(track_id, ShipIdEvidence())
+            evidence.add_ocr(ship_id, confidence, now=now)
             tb = self._tracks.get(track_id)
-            if tb is not None and best is not None:
-                tb.ship_id = best
-                tb.last_known_ship_id = best
+            if tb is not None:
+                self._resolve_ship_id_evidence(track_id, tb)
             if tb is not None and self.reid_window_sec > 0:
                 self._try_shipid_reid(track_id, tb, now)
+
+    def add_embedding_vote(self, track_id: str, ship_id: str, confidence: float) -> None:
+        now = time.time()
+        with self._lock:
+            tb = self._tracks.get(track_id)
+            if tb is None or tb.ship_id_locked:
+                return
+            evidence = self._ship_id_evidence.setdefault(track_id, ShipIdEvidence())
+            evidence.add_embedding(ship_id, confidence, now=now)
+            self._resolve_ship_id_evidence(track_id, tb)
 
     def get_voted_ship_id(self, track_id: str) -> str | None:
         """Confidence-weighted majority vote: tổng conf mỗi sid, trả sid cao nhất."""
@@ -295,7 +341,7 @@ class BoatTracker:
             return list(self._ocr_history.get(track_id, []))
 
     def get_vote_summary(self, track_id: str) -> dict[str, dict]:
-        """Per-sid: count + total confidence."""
+        """Per-sid: count + total confidence (legacy OCR only)."""
         with self._lock:
             hist = self._ocr_history.get(track_id, [])
             out: dict[str, dict] = {}
@@ -304,6 +350,33 @@ class BoatTracker:
                     out[sid] = {"count": 0, "total_conf": 0.0}
                 out[sid]["count"] += 1
                 out[sid]["total_conf"] += conf
+            return out
+
+    def get_evidence_summary(self, track_id: str) -> dict[str, dict]:
+        """Two-pool evidence summary for port_logs: {ocr: {...}, embedding: {...}}."""
+        with self._lock:
+            evidence = self._ship_id_evidence.get(track_id)
+            if evidence is None:
+                return {}
+            out: dict[str, dict] = {}
+            if evidence.ocr_pool.votes:
+                ocr_rows: dict[str, dict] = {}
+                for sid, scores in evidence.ocr_pool.votes.items():
+                    ocr_rows[sid] = {
+                        "count": len(scores),
+                        "total_conf": sum(scores),
+                    }
+                out["ocr"] = ocr_rows
+            if evidence.embedding_pool.votes:
+                emb_rows: dict[str, dict] = {}
+                for sid, scores in evidence.embedding_pool.votes.items():
+                    total = sum(scores)
+                    emb_rows[sid] = {
+                        "count": len(scores),
+                        "total_score": total,
+                        "avg_score": total / max(1, len(scores)),
+                    }
+                out["embedding"] = emb_rows
             return out
 
     def update(
@@ -396,6 +469,7 @@ class BoatTracker:
             for tid in to_del:
                 tb = self._tracks.pop(tid)
                 hist = self._ocr_history.pop(tid, [])
+                self._ship_id_evidence.pop(tid, None)
                 if not tb.ever_confirmed:
                     continue
                 if self.reid_window_sec > 0:
@@ -418,6 +492,27 @@ class BoatTracker:
             if self.reid_window_sec > 0:
                 self._flush_expired_pending(now)
 
+            return self.all_active()
+
+    def update_ship_id_stability(
+        self,
+        *,
+        lock_sec: float,
+        now: float,
+        catalog_is_known: Callable[[str], bool] | None = None,
+    ) -> list[TrackedBoat]:
+        """Update ship_id lock state on live tracks and return active copies."""
+        from app.services.ai.ship_id_lock import update_tracks_ship_id_stability
+
+        with self._lock:
+            for track_id, track in self._tracks.items():
+                self._resolve_ship_id_evidence(track_id, track)
+            update_tracks_ship_id_stability(
+                list(self._tracks.values()),
+                lock_sec=lock_sec,
+                now=now,
+                catalog_is_known=catalog_is_known,
+            )
             return self.all_active()
 
     def _should_confirm_tentative(self, tb: TrackedBoat, now: float) -> bool:
@@ -515,6 +610,14 @@ class BoatTracker:
             if motion_state is not None:
                 tb.motion_state = motion_state
             if ship_id and not tb.ship_id_locked:
+                normalized_ship_id = str(ship_id).strip().upper()
+                current_ship_id = str(tb.ship_id or '').strip().upper()
+                if (
+                    tb.ship_id_decision_state == 'final'
+                    and current_ship_id
+                    and normalized_ship_id != current_ship_id
+                ):
+                    return
                 tb.ship_id = ship_id
                 tb.last_known_ship_id = ship_id
 
@@ -531,6 +634,7 @@ class BoatTracker:
                 self._pending_removed.clear()
                 self._tracks.clear()
                 self._ocr_history.clear()
+                self._ship_id_evidence.clear()
                 return
 
             for pending in list(self._pending_removed):
@@ -549,8 +653,10 @@ class BoatTracker:
                 if not tb.ever_confirmed:
                     self._tracks.pop(tid, None)
                     self._ocr_history.pop(tid, None)
+                    self._ship_id_evidence.pop(tid, None)
                     continue
                 hist = list(self._ocr_history.pop(tid, []))
+                self._ship_id_evidence.pop(tid, None)
                 self._tracks.pop(tid, None)
                 snap = tb.copy_public()
                 snap.state = TrackState.REMOVED

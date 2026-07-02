@@ -1739,6 +1739,39 @@ def _ensure_boundary_crossing_events() -> None:
         raise
 
 
+def _ensure_detections_deleted_at() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('detections'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('detections')}
+        if 'deleted_at' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect detections table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE detections ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE detections ADD COLUMN deleted_at TIMESTAMP')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add detections.deleted_at manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added detections.deleted_at')
+    except Exception as err:
+        logger.error('schema_patches: failed to add detections.deleted_at: %s', err)
+        raise
+
+
 def _ensure_ship_id_rules_tables() -> None:
     try:
         inspector = inspect(engine)
@@ -1872,6 +1905,39 @@ def _ensure_ship_id_rules_tables() -> None:
         raise
 
 
+def _ensure_invoice_items_quantity_precision() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('invoice_items'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect invoice_items table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE invoice_items ALTER COLUMN quantity TYPE NUMERIC(12, 6)')
+    elif dialect == 'sqlite':
+        logger.warning(
+            'schema_patches: sqlite cannot alter invoice_items.quantity precision automatically'
+        )
+        return
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — alter invoice_items.quantity manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('altered invoice_items.quantity to NUMERIC(12, 6)')
+    except Exception as err:
+        logger.error('schema_patches: failed to alter invoice_items.quantity precision: %s', err)
+        raise
+
+
 def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     global _patch_quiet, _patch_applied
     _patch_quiet = quiet
@@ -1891,6 +1957,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_invoices_discount_amount()
     _ensure_invoices_discount_workflow()
     _ensure_invoices_financial_snapshots()
+    _ensure_invoice_items_quantity_precision()
     _ensure_camera_groups()
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()
@@ -1907,4 +1974,48 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_media_short_links()
     _ensure_boundary_crossing_events()
     _ensure_ship_id_rules_tables()
+    _ensure_detections_deleted_at()
+    _ensure_anchored_identities_berth_columns()
     return list(_patch_applied)
+
+
+def _ensure_anchored_identities_berth_columns() -> None:
+    """Add berth_in_ts and berth_out_ts to anchored_identities for existing DBs."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('anchored_identities'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('anchored_identities')}
+        if 'berth_in_ts' in cols and 'berth_out_ts' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect anchored_identities: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        if 'berth_in_ts' not in cols:
+            stmts.append(text('ALTER TABLE anchored_identities ADD COLUMN IF NOT EXISTS berth_in_ts DOUBLE PRECISION'))
+        if 'berth_out_ts' not in cols:
+            stmts.append(text('ALTER TABLE anchored_identities ADD COLUMN IF NOT EXISTS berth_out_ts DOUBLE PRECISION'))
+    elif dialect == 'sqlite':
+        if 'berth_in_ts' not in cols:
+            stmts.append(text('ALTER TABLE anchored_identities ADD COLUMN berth_in_ts REAL'))
+        if 'berth_out_ts' not in cols:
+            stmts.append(text('ALTER TABLE anchored_identities ADD COLUMN berth_out_ts REAL'))
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add anchored_identities berth columns manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        _patch_done('ensured anchored_identities berth columns')
+    except Exception as err:
+        logger.error('schema_patches: failed to add anchored_identities berth columns: %s', err)
+        raise

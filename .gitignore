@@ -38,3 +38,9 @@ server/app/db/sqlCommand/detections/
 
 # Local cuDNN 8 symlinks for paddlepaddle-gpu 2.6.x (host-specific)
 server/.cudnn8/
+
+# YOLO model weights (binary, tracked out-of-band)
+*.pt
+
+# Ultralytics training/predict runs
+runs/

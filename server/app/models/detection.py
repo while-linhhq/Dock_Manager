@@ -23,6 +23,7 @@ class Detection(Base):
     verified_by = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     verified_at = Column(DateTime(timezone=True), nullable=True)
     rejection_reason = Column(Text, nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     vessel = relationship('Vessel', back_populates='detections')

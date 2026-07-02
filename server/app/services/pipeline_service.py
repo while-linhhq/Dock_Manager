@@ -256,6 +256,9 @@ class PipelineService:
             'min_confirm_sec': runtime_cfg['track_min_confirm_sec'],
             'max_tentative_sec': runtime_cfg['track_max_tentative_sec'],
             'max_lost_sec': runtime_cfg['track_max_lost_sec'],
+            'visual_match_threshold': runtime_cfg['visual_match_threshold'],
+            'visual_no_ocr_match_threshold': runtime_cfg['visual_no_ocr_match_threshold'],
+            'visual_conflict_threshold': runtime_cfg['visual_conflict_threshold'],
         }
 
     def _load_runtime_config(self) -> dict[str, Any]:
@@ -482,6 +485,14 @@ class PipelineService:
                 cfg_map.get('visual_conflict_threshold', ''),
                 0.96,
             ),
+            'detection_confidence_threshold': self._to_float(
+                cfg_map.get('detection_confidence_threshold', ''),
+                0.0,
+            ),
+            'ocr_confidence_threshold': self._to_float(
+                cfg_map.get('ocr_confidence_threshold', ''),
+                float(settings.OCR_CONFIDENCE_THRESHOLD),
+            ),
             'visual_top_k': max(
                 1,
                 self._to_int(cfg_map.get('visual_top_k', ''), int(settings.VISUAL_TOP_K)),
@@ -579,6 +590,37 @@ class PipelineService:
             output_scale=1.0,
         )
         _log.info('RTSP decode: %s', nvdec_status())
+
+    @staticmethod
+    def _warmup_gst_probe_cache(enabled_members: list[Any]) -> None:
+        """Pre-populate GStreamer codec probe cache before launching per-camera pipelines.
+        Probes one camera per unique host so all subsequent camera opens are instant."""
+        try:
+            from app.utils.ai.rtsp_capture import GStreamerNvdecCapture
+
+            if not getattr(settings, 'RTSP_GST_NVDEC_ENABLED', False):
+                return
+            if not GStreamerNvdecCapture.available():
+                return
+
+            import urllib.parse
+            seen_hosts: set[str] = set()
+            for member in enabled_members:
+                camera = getattr(member, 'camera', None)
+                if camera is None:
+                    continue
+                url = getattr(camera, 'rtsp_url', '') or ''
+                if not url:
+                    continue
+                host = urllib.parse.urlparse(url).hostname or ''
+                if not host or host in seen_hosts:
+                    continue
+                seen_hosts.add(host)
+                # Probe one URL per host — result caches for all other cameras on same host.
+                _log.debug('GStreamer warmup probe for host %s (%s)', host, url[:30])
+                GStreamerNvdecCapture._probe_codec_via_rtspsrc(url, None, None, 'tcp')
+        except Exception as exc:
+            _log.warning('GStreamer warmup probe error: %s', exc)
 
     @property
     def is_running(self) -> bool:
@@ -838,6 +880,15 @@ class PipelineService:
                 dest_key,
             )
             return f'minio://{ref.bucket}/{dest_key}'
+        except RuntimeError as exc:
+            if 'Cloudflare 524' in str(exc):
+                _log.warning(
+                    'Keeping staging video because MinIO server-side copy is denied: %s',
+                    ref.object_key,
+                )
+            else:
+                _log.exception('Failed to promote staging video to detection layout')
+            return src_uri
         except Exception:
             _log.exception('Failed to promote staging video to detection layout')
             return src_uri
@@ -1305,12 +1356,16 @@ class PipelineService:
             today_logs = port_log_repo.get_logs_by_date(db, datetime.date.today())
             next_seq = len(today_logs) + 1
             
-            vote_summary = {}
+            vote_summary: dict[str, Any] = {}
             for sid, conf in hist:
                 if sid not in vote_summary:
                     vote_summary[sid] = {"count": 0, "total_conf": 0.0}
                 vote_summary[sid]["count"] += 1
                 vote_summary[sid]["total_conf"] += conf
+
+            evidence_summary = getattr(tb, 'ship_id_evidence_summary', None)
+            if evidence_summary:
+                vote_summary['_evidence'] = evidence_summary
 
             port_log_repo.create(db, PortLogCreate(
                 seq=next_seq,
@@ -1784,6 +1839,10 @@ class PipelineService:
                 boundary_lines=boundary_by_camera.get(camera_id),
                 detection_settings=detection_by_camera.get(camera_id),
                 ship_id_lock_stable_sec=float(runtime_cfg['ship_id_lock_stable_sec']),
+                visual_match_threshold=runtime_cfg['visual_match_threshold'],
+                visual_no_ocr_match_threshold=runtime_cfg['visual_no_ocr_match_threshold'],
+                visual_conflict_threshold=runtime_cfg['visual_conflict_threshold'],
+                ocr_confidence_threshold=runtime_cfg['ocr_confidence_threshold'],
             )
             self._per_camera_pipelines.append(
                 PerCameraPipeline(
@@ -1857,6 +1916,10 @@ class PipelineService:
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
         self._apply_rtsp_decode_config(runtime_cfg)
+
+        # Pre-warm GStreamer codec probe cache so per-camera pipelines open
+        # via GStreamer NVDEC (GPU BGR convert) instead of FFmpeg (CPU scale).
+        self._warmup_gst_probe_cache(enabled_members)
 
         detector_sig = (
             runtime_cfg['model_path'],

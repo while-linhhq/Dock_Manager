@@ -63,6 +63,14 @@ def update_ship_id_stability(
     if lock_sec <= 0:
         return
 
+    decision_state = getattr(track, 'ship_id_decision_state', None)
+    if decision_state in {'conflict', 'none'}:
+        _reset_stability(track)
+        return
+    if decision_state == 'provisional':
+        _reset_stability(track)
+        return
+
     current_id = _normalize_ship_id(track.ship_id)
     if not is_lockable_ship_id(current_id, catalog_is_known=catalog_is_known):
         _reset_stability(track)

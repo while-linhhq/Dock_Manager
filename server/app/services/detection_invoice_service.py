@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_UP
-from typing import Optional
+from decimal import Decimal
+from typing import Optional, cast
 
 from sqlalchemy.orm import Session
 
@@ -58,9 +58,11 @@ def _find_duplicate_ai_invoice_for_visit(
 
 
 def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decimal:
-    """Thời gian neo (giờ), tối thiểu 0.01h; mặc định 1h nếu thiếu mốc."""
+    """Thời gian neo theo giờ thực, không làm tròn lên 0.01h."""
+    if start is None and end is None:
+        return Decimal('0')
     if start is None or end is None:
-        return Decimal('1')
+        return Decimal('0')
     s, e = start, end
     if s.tzinfo is None:
         s = s.replace(tzinfo=timezone.utc)
@@ -68,9 +70,8 @@ def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decim
         e = e.replace(tzinfo=timezone.utc)
     secs = (e - s).total_seconds()
     if secs <= 0:
-        return Decimal('1')
-    raw = Decimal(str(secs)) / Decimal('3600')
-    return max(raw.quantize(Decimal('0.01'), rounding=ROUND_UP), Decimal('0.01'))
+        return Decimal('0')
+    return Decimal(str(secs)) / Decimal('3600')
 
 
 def resolve_berth_window(
@@ -79,8 +80,35 @@ def resolve_berth_window(
     berth_in: Optional[datetime],
     berth_out: Optional[datetime],
 ) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Chọn billing window dựa trên berth_in/berth_out, fallback start/end khi thiếu.
+
+    Không clamp — nếu berth_in/out là timestamps từ cross-camera identity
+    không giao với detection window, trả về (None, None) để tạo invoice
+    tối thiểu (0.01h), không tính tiền neo đậu từ camera khác.
+    """
     if berth_in is not None and berth_out is not None:
-        return berth_in, berth_out
+        # Đủ cả hai mốc: dùng trực tiếp — đây là thời gian thực tàu đậu
+        s, e = berth_in, berth_out
+        # Chỉ fallback nếu window không hợp lệ (berth hoàn toàn ngoài detection)
+        if (start is not None and e < start) or (end is not None and s > end):
+            # Berth window không giao với detection này => không tính neo
+            return None, None
+        if s >= e:
+            return None, None
+        return s, e
+    if berth_in is not None and end is not None:
+        # Có berth_in, thiếu berth_out: dùng berth_in → end (rời camera)
+        s = berth_in
+        if end is not None and s > end:
+            return None, None
+        return s, end
+    if berth_out is not None and start is not None:
+        # Có berth_out, thiếu berth_in: dùng start → berth_out
+        e = berth_out
+        if start is not None and start > e:
+            return None, None
+        return start, e
+    # Không có berth info nào: fallback toàn track
     return start, end
 
 
@@ -142,16 +170,15 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             )
             return
 
+        # Cột "neo đậu" trên trang hóa đơn hiển thị theo detection.start_time/end_time,
+        # nên quantity tính tiền phải dùng cùng một window này. berth_in/out chỉ là
+        # tín hiệu vào/ra vùng dùng cho duplicate/penalty, không được làm lệch số tiền
+        # so với thời gian neo đậu đang hiển thị cho người dùng.
         hours = _berthing_hours(
-            *resolve_berth_window(
-                det.start_time,
-                det.end_time,
-                det.berth_in_time,
-                det.berth_out_time,
-            )
+            cast(Optional[datetime], det.start_time),
+            cast(Optional[datetime], det.end_time),
         )
         items: list[InvoiceItemCreate] = []
-        has_period = False
 
         for fee in fees:
             unit = normalize_fee_billing_unit(fee.unit)
@@ -177,7 +204,6 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
                     )
                 )
             elif unit in ('per_month', 'per_year'):
-                has_period = True
                 label = 'tháng' if unit == 'per_month' else 'năm'
                 items.append(
                     InvoiceItemCreate(
@@ -212,6 +238,9 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             'Hóa đơn tự động từ nhận dạng tàu.',
             f'Track: {det.track_id or "—"}',
         ]
+        subtotal = sum((_line_sub(it) for it in items), Decimal('0')).quantize(Decimal('0.01'))
+        # AI invoice không cộng VAT/tax. Phí tháng/năm chỉ là dòng tham chiếu amount=0;
+        # nếu có per_hour/per_berth_visit/penalty thì subtotal vẫn là tiền thật cần thu.
         payload = InvoiceCreate(
             invoice_number=inv_no,
             vessel_id=vessel.id,
@@ -219,21 +248,11 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             creation_source='AI',
             created_by=None,
             notes='\n'.join(notes_parts),
+            subtotal=subtotal,
+            tax_amount=Decimal('0'),
+            total_amount=subtotal,
             items=items,
         )
-
-        if has_period:
-            subtotal = sum((_line_sub(it) for it in items), Decimal('0'))
-            # Chỉ để tổng = 0 khi mọi dòng đều là phí tháng/năm tham chiếu (chưa nhập tổng).
-            # Nếu có thêm per_berth_visit / per_hour thì vẫn tính tiền bình thường.
-            if subtotal <= 0:
-                payload = payload.model_copy(
-                    update={
-                        'subtotal': subtotal,
-                        'tax_amount': Decimal('0'),
-                        'total_amount': Decimal('0'),
-                    }
-                )
 
         invoice_service.create_with_items(db, payload)
         _log.info(

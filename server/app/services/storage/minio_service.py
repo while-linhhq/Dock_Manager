@@ -189,18 +189,9 @@ def copy_object_same_bucket(*, bucket: str, src_key: str, dest_key: str) -> None
         if exc.code != 'AccessDenied':
             raise
 
-    response = client.get_object(bucket, src_key)
-    try:
-        client.put_object(
-            bucket,
-            dest_key,
-            data=response,
-            length=-1,
-            part_size=10 * 1024 * 1024,
-        )
-    finally:
-        response.close()
-        response.release_conn()
+    raise RuntimeError(
+        'server-side copy denied; streaming fallback disabled to avoid Cloudflare 524'
+    )
 
 
 def remove_object(*, bucket: str, object_key: str) -> None:

@@ -135,6 +135,8 @@ class AnchoredIdentityRepository:
             'anchored_at': _utc_from_ts(state.anchored_at),
             'last_track': _track_to_payload(state.last_track),
             'confidence': float(state.last_track.conf) if state.last_track else None,
+            'berth_in_ts': state.berth_in_ts,
+            'berth_out_ts': state.berth_out_ts,
         }
 
         db: Session = SessionLocal()

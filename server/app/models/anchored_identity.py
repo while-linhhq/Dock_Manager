@@ -25,6 +25,8 @@ class AnchoredIdentity(Base):
     anchored_at = Column(DateTime(timezone=True), nullable=False)
     last_track = Column(JSONB, nullable=True)
     confidence = Column(Float, nullable=True)
+    berth_in_ts = Column(Float, nullable=True)
+    berth_out_ts = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

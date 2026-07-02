@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     SAVE_MIN_INTERVAL_SEC: float = 20.0
     OCR_AUDIT_ENABLE: bool = True
     OCR_AUDIT_SAVE_FRAMES: bool = True
+    OCR_CONFIDENCE_THRESHOLD: float = 0.0
     
     # Video record configuration
     RECORD_ENABLE: bool = True
@@ -70,6 +71,10 @@ class Settings(BaseSettings):
     RTSP_NVDEC_HWACCEL: str = 'cuda'  # cuda | nvdec (auto-picks first available)
     FFMPEG_PATH: str = ''  # empty = PATH, then imageio-ffmpeg
     RTSP_TRANSPORT: str = 'tcp'  # tcp | udp
+    # GStreamer NVDEC: nvh264dec/nvh265dec → cudaconvertscale(BGR,GPU) → cudadownload.
+    # Requires gst-plugins-bad nvcodec with cudaconvertscale + libnvrtc.so in LD_LIBRARY_PATH.
+    # Takes priority over FFmpeg NVDEC when both RTSP_NVDEC_ENABLED and this are True.
+    RTSP_GST_NVDEC_ENABLED: bool = False
 
     # Video transcode (ensure browser-playable MP4)
     VIDEO_TRANSCODE_ENABLE: bool = True

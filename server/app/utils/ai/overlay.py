@@ -130,7 +130,10 @@ def emb_overlay_line(entry: dict | None) -> str:
 
 
 def final_overlay_line(track: TrackedBoat, entry: dict | None) -> str:
-    source = str((entry or {}).get('visual_source') or 'ocr').strip()
+    # Source from evidence resolver decision (ocr/embedding/consensus), not visual cache.
+    source = str(getattr(track, 'ship_id_decision_source', None) or '').strip()
+    if not source:
+        source = str((entry or {}).get('visual_source') or 'n/a').strip()
     final_id = str(effective_ship_id(track) or 'N/A')
     lock_suffix = ' [LOCK]' if track.ship_id_locked else ''
     return f'Final: {final_id} [{source}]{lock_suffix}'

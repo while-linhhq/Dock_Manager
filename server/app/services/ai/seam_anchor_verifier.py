@@ -74,6 +74,8 @@ class AnchorState:
     last_db_flush_at: float = 0.0
     last_score_a: float = 0.0
     last_score_b: float = 0.0
+    berth_in_ts: float | None = None
+    berth_out_ts: float | None = None
 
 
 class SeamAnchorVerifier:
@@ -172,6 +174,8 @@ class SeamAnchorVerifier:
         ocr_history: list[tuple[str, float]],
         last_track: TrackedBoat,
         dominant_color_hsv: tuple[int, int, int] | None = None,
+        berth_in_ts: float | None = None,
+        berth_out_ts: float | None = None,
     ) -> bool:
         if not self._config.enabled:
             return False
@@ -233,6 +237,8 @@ class SeamAnchorVerifier:
             last_track=last_track.copy_public(),
             ocr_history=list(ocr_history),
             last_db_flush_at=now,
+            berth_in_ts=berth_in_ts,
+            berth_out_ts=berth_out_ts,
         )
 
         with self._lock:

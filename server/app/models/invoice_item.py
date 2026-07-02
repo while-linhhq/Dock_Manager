@@ -10,7 +10,7 @@ class InvoiceItem(Base):
     invoice_id = Column(Integer, ForeignKey('invoices.id', ondelete='CASCADE'), nullable=False)
     fee_config_id = Column(Integer, ForeignKey('fee_configs.id', ondelete='SET NULL'), nullable=True)
     description = Column(String(200), nullable=True)
-    quantity = Column(Numeric(10, 2), nullable=True)
+    quantity = Column(Numeric(12, 6), nullable=True)
     unit_price = Column(Numeric(12, 2), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
 

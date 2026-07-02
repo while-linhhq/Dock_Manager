@@ -29,10 +29,7 @@ from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
-from app.services.ai.ship_id_lock import (
-    tracks_open_for_recognition,
-    update_tracks_ship_id_stability,
-)
+from app.services.ai.ship_id_lock import is_track_identity_locked, tracks_open_for_recognition
 from app.services.ai.ship_id_catalog import ShipIdCatalog
 from app.services.ai.ocr_worker import OcrQueueItem, OcrWorkerThread
 from app.services.ai.training_snapshot_collector import (
@@ -83,6 +80,10 @@ class PerCameraPipelineConfig:
     boundary_lines: dict | None = None
     detection_settings: dict | None = None
     ship_id_lock_stable_sec: float = 60.0
+    visual_match_threshold: float = 0.55
+    visual_no_ocr_match_threshold: float = 0.55
+    visual_conflict_threshold: float = 0.96
+    ocr_confidence_threshold: float = 0.0
 
 
 class PerCameraPipeline(threading.Thread):
@@ -144,6 +145,10 @@ class PerCameraPipeline(threading.Thread):
             min_confirm_sec=config.track_min_confirm_sec,
             max_tentative_sec=config.track_max_tentative_sec,
             max_lost_sec=config.track_max_lost_sec,
+            visual_match_threshold=config.visual_match_threshold,
+            visual_no_ocr_match_threshold=config.visual_no_ocr_match_threshold,
+            visual_conflict_threshold=config.visual_conflict_threshold,
+            ocr_confidence_threshold=config.ocr_confidence_threshold,
         )
         self._boundary_lines_payload: dict | None = config.boundary_lines
         bcfg = BoundaryConfig.from_dict(self._boundary_lines_payload)
@@ -289,6 +294,14 @@ class PerCameraPipeline(threading.Thread):
             self._det_min_bbox_height,
         )
         tracked_boats = self._tracker.update(boxes_list, det_confs)
+        catalog_known = (
+            self._ship_id_catalog.is_known if self._ship_id_catalog is not None else None
+        )
+        tracked_boats = self._tracker.update_ship_id_stability(
+            lock_sec=float(self.config.ship_id_lock_stable_sec),
+            now=time.time(),
+            catalog_is_known=catalog_known,
+        )
 
         for track in tracked_boats:
             self._enrich_track(raw_frame, track)
@@ -339,16 +352,6 @@ class PerCameraPipeline(threading.Thread):
             for track in tracked_boats:
                 track.berth_zone_overlap = None
                 track.berth_zone_threshold = None
-
-        catalog_known = (
-            self._ship_id_catalog.is_known if self._ship_id_catalog is not None else None
-        )
-        update_tracks_ship_id_stability(
-            tracked_boats,
-            lock_sec=float(self.config.ship_id_lock_stable_sec),
-            now=time.time(),
-            catalog_is_known=catalog_known,
-        )
 
         annotated = raw_frame.copy()
         draw_berth_state_bbox_overlays(annotated, tracked_boats)
@@ -443,6 +446,12 @@ class PerCameraPipeline(threading.Thread):
     def _enrich_track(self, frame: np.ndarray, track: TrackedBoat) -> None:
         if track.state != TrackState.CONFIRMED:
             return
+        # Skip embedding/OCR cost for identity-locked tracks — identity is already final
+        if is_track_identity_locked(track):
+            track.global_id = self._reid_manager.get_global_id(
+                int(self.config.camera_id), str(track.track_id)
+            )
+            return
         height, width = frame.shape[:2]
         x1, y1, x2, y2 = clamp_box(track.box, width, height)
         crop = frame[y1:y2, x1:x2]
@@ -474,9 +483,17 @@ class PerCameraPipeline(threading.Thread):
             str(track.track_id),
         )
         if global_ship_id:
-            track.ship_id = global_ship_id
-            track.last_known_ship_id = global_ship_id
-            self._tracker.update_track_metadata(str(track.track_id), ship_id=global_ship_id)
+            normalized_global = str(global_ship_id).strip().upper()
+            current_ship_id = str(track.ship_id or '').strip().upper()
+            local_final = (
+                getattr(track, 'ship_id_decision_state', None) == 'final'
+                and current_ship_id
+                and normalized_global != current_ship_id
+            )
+            if not local_final:
+                track.ship_id = global_ship_id
+                track.last_known_ship_id = global_ship_id
+                self._tracker.update_track_metadata(str(track.track_id), ship_id=global_ship_id)
         track.global_id = self._reid_manager.get_global_id(
             int(self.config.camera_id), str(track.track_id)
         )
@@ -489,7 +506,12 @@ class PerCameraPipeline(threading.Thread):
             return
         self._last_ocr_ts = now
         confirmed = tracks_open_for_recognition(
-            [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+            [
+                track
+                for track in tracked_boats
+                if track.state == TrackState.CONFIRMED
+                and self._is_in_recognition_zone(track.track_id)
+            ]
         )
         if not confirmed:
             return
@@ -518,7 +540,12 @@ class PerCameraPipeline(threading.Thread):
         self._last_visual_ts = now
 
         confirmed = tracks_open_for_recognition(
-            [track for track in tracked_boats if track.state == TrackState.CONFIRMED]
+            [
+                track
+                for track in tracked_boats
+                if track.state == TrackState.CONFIRMED
+                and self._is_in_recognition_zone(track.track_id)
+            ]
         )
         if not confirmed:
             return
@@ -619,19 +646,9 @@ class PerCameraPipeline(threading.Thread):
             return
         if not self._is_in_recognition_zone(track_id):
             return
-        self._reid_manager.report_ocr_result(
-            int(self.config.camera_id),
-            str(track_id),
-            ship_id,
-            float(confidence),
-        )
-        global_ship_id = self._reid_manager.get_global_ship_id(
-            int(self.config.camera_id),
-            str(track_id),
-        )
-        if global_ship_id:
-            self._tracker.update_track_metadata(str(track_id), ship_id=global_ship_id)
-        else:
+        if emb_id and emb_conf > 0:
+            self._tracker.add_embedding_vote(str(track_id), emb_id, emb_conf)
+        if ship_id and source == 'ocr-hint':
             self._tracker.update_track_metadata(str(track_id), ship_id=ship_id)
 
     def _on_local_track_removed(

@@ -114,6 +114,10 @@ class CrossCameraReIdManager:
                         identity.embeddings.append(state.embedding)
                     if state.ocr_history:
                         identity.ocr_history = list(state.ocr_history)
+                    if state.berth_in_ts is not None:
+                        identity.berth_in_ts = state.berth_in_ts
+                    if state.berth_out_ts is not None:
+                        identity.berth_out_ts = state.berth_out_ts
                     self._identities[global_id] = identity
                 else:
                     identity.anchored = True
@@ -122,6 +126,10 @@ class CrossCameraReIdManager:
                     )
                     if state.last_track is not None:
                         identity.last_track = state.last_track
+                    if state.berth_in_ts is not None:
+                        identity.berth_in_ts = state.berth_in_ts if identity.berth_in_ts is None else min(identity.berth_in_ts, state.berth_in_ts)
+                    if state.berth_out_ts is not None:
+                        identity.berth_out_ts = state.berth_out_ts if identity.berth_out_ts is None else max(identity.berth_out_ts, state.berth_out_ts)
 
     def handle_anchor_release(self, global_id: str, last_seen_ts: float) -> None:
         """SeamAnchorVerifier callback: anchor departed, finalize identity now."""
@@ -298,6 +306,8 @@ class CrossCameraReIdManager:
                     ocr_history=identity.ocr_history,
                     last_track=identity.last_track,
                     dominant_color_hsv=getattr(track, 'dominant_color_hsv', None),
+                    berth_in_ts=identity.berth_in_ts,
+                    berth_out_ts=identity.berth_out_ts,
                 )
                 if anchored_ok:
                     identity.anchored = True
@@ -694,12 +704,17 @@ class CrossCameraReIdManager:
 
         # Last-chance merge (C1): before writing, absorb other inactive identities with same ship_id
         if identity.ship_id:
+            pre_merge_ship_id = identity.ship_id
             for other in list(self._identities.values()):
                 if other is identity or other.finalized:
                     continue
                 if other.ship_id == identity.ship_id and not other.active_tracks:
                     other.finalized = True  # prevent re-visit if loop snapshot still holds this ref
                     identity = self._merge_identities(identity, other)
+            # Prevent merged ocr_history from flipping ship_id away from the pre-merge value.
+            # _merge_identities calls _best_ship_id which may pick a different ID from combined history.
+            if pre_merge_ship_id and identity.ship_id != pre_merge_ship_id:
+                identity.ship_id = pre_merge_ship_id
 
         # Write IN/OUT events exactly once
         if not identity.events_written:

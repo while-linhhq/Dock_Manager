@@ -71,6 +71,8 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   clahe_tile_size: 'model',
   primary_zone_ratio: 'seam',
   edge_zone_ratio: 'seam',
+  detection_confidence_threshold: 'ocr',
+  ship_id_lock_stable_sec: 'ocr',
   enable_ocr: 'ocr',
   ship_id_require_catalog: 'ocr',
   ocr_interval_sec: 'ocr',
@@ -147,7 +149,8 @@ function getCategoryId(key: string): CategoryId {
 
 const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   port_name: 'Tên hiển thị của cảng.',
-  detection_confidence_threshold: 'Ngưỡng OCR confidence để tự động chấp nhận (auto-accept).',
+  detection_confidence_threshold: 'Ngưỡng tổng confidence OCR pool tối thiểu để kết quả OCR được chấp nhận là hợp lệ.',
+  ship_id_lock_stable_sec: 'Thời gian (giây) mã tàu phải ổn định liên tục trước khi bị khóa (lock). 0 = tắt lock.',
   invoice_tax_rate: 'Thuế mặc định cho hóa đơn (ví dụ 0.1 = 10%).',
   invoice_due_days: 'Số ngày đến hạn hóa đơn.',
 

@@ -13,7 +13,7 @@ import cv2
 
 from app.services.ai.frame_reader import open_rtsp
 from app.utils.ai.frame_quality import is_usable_bgr_frame
-from app.utils.ai.rtsp_capture import FfmpegNvdecCapture
+from app.utils.ai.rtsp_capture import FfmpegNvdecCapture, GStreamerNvdecCapture
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class MultiFrameReaderThread(threading.Thread):
 
             next_emit = time.monotonic()
             while not self._stop_event.is_set():
-                if isinstance(self._cap, FfmpegNvdecCapture):
+                if isinstance(self._cap, (FfmpegNvdecCapture, GStreamerNvdecCapture)):
                     ok, frame = self._cap.read()
                     frame = frame if ok and frame is not None else None
                 elif self._drain_rtsp_buffer:
@@ -155,17 +155,18 @@ def capture_snapshot(
     source: str | int,
     timeout_sec: float = 8.0,
     *,
-    warmup_frames: int = 25,
+    warmup_frames: int = 3,
 ) -> Any | None:
     cap = open_rtsp(source) if isinstance(source, str) else cv2.VideoCapture(source)
     try:
         if not cap.isOpened():
             return None
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         for _ in range(max(0, int(warmup_frames))):
-            cap.read()
+            ok, frame = cap.read()
+            if ok and frame is not None and is_usable_bgr_frame(frame):
+                return frame.copy()
 
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
