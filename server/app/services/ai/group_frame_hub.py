@@ -147,6 +147,8 @@ class GroupFrameHub:
         self._coordinator = threading.Thread(target=self._run_coordinator, daemon=True)
         self._last_aligned_batch: dict[int, TimedFrame] | None = None
         self._aligned_batch_lock = threading.Lock()
+        self._spread_samples: list[float] = []
+        self._spread_last_log = 0.0
         self._seam_anchor_queue: queue.Queue[dict[int, TimedFrame] | None] = queue.Queue(
             maxsize=1
         )
@@ -288,6 +290,32 @@ class GroupFrameHub:
                 _log.exception('GroupFrameHub track provider failed')
         return merged
 
+    def _log_batch_spread(self, batch: dict[int, TimedFrame]) -> None:
+        """Log per-batch capture-time spread (throttled ~2s) to size sync_tolerance_ms."""
+        if not batch:
+            return
+        timestamps = [item.captured_at for item in batch.values()]
+        spread_ms = (max(timestamps) - min(timestamps)) * 1000.0
+        now = time.monotonic()
+        self._spread_samples.append(spread_ms)
+        if now - self._spread_last_log < 2.0:
+            return
+        samples = self._spread_samples
+        self._spread_samples = []
+        self._spread_last_log = now
+        if not samples:
+            return
+        avg = sum(samples) / len(samples)
+        _log.info(
+            'frame sync spread: cams=%d batches=%d spread_ms avg=%.0f min=%.0f max=%.0f (tolerance=%.0fms)',
+            len(batch),
+            len(samples),
+            avg,
+            min(samples),
+            max(samples),
+            self._synchronizer._tolerance_sec * 1000.0,
+        )
+
     def _run_coordinator(self) -> None:
         next_emit = time.monotonic()
         try:
@@ -308,6 +336,8 @@ class GroupFrameHub:
                     batch = self._synchronizer.wait_aligned_batch(timeout_sec=short_wait)
                 if not batch:
                     continue
+
+                self._log_batch_spread(batch)
 
                 with self._aligned_batch_lock:
                     self._last_aligned_batch = {
