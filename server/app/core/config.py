@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     EDGE_ZONE_RATIO: float = 0.1
     CLAHE_CLIP_LIMIT: float = 3.0
     CLAHE_TILE_SIZE: int = 8
+    # Gray-world white balance before CLAHE (heaviest per-frame CPU step).
+    # Toggle off to test whether YOLO still detects well without it.
+    CLAHE_ENABLE_GRAY_WORLD: bool = True
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
     PREVIEW_MAX_WIDTH: int = 1280

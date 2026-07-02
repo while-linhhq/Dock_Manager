@@ -366,6 +366,10 @@ class PipelineService:
                 2,
                 self._to_int(cfg_map.get('clahe_tile_size', ''), int(settings.CLAHE_TILE_SIZE)),
             ),
+            'clahe_enable_gray_world': self._to_bool(
+                cfg_map.get('clahe_enable_gray_world', ''),
+                bool(settings.CLAHE_ENABLE_GRAY_WORLD),
+            ),
             'fused_frame_max_width': max(
                 320,
                 self._to_int(
@@ -1829,6 +1833,7 @@ class PipelineService:
                 track_max_lost_sec=runtime_cfg['track_max_lost_sec'],
                 clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
+                clahe_enable_gray_world=runtime_cfg['clahe_enable_gray_world'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
                 enable_visual_id=visual_enabled,
                 visual_interval_sec=runtime_cfg['visual_id_interval_sec'],

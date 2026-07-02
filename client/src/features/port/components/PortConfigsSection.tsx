@@ -69,6 +69,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   resize_scale: 'model',
   clahe_clip_limit: 'model',
   clahe_tile_size: 'model',
+  clahe_enable_gray_world: 'model',
   primary_zone_ratio: 'seam',
   edge_zone_ratio: 'seam',
   detection_confidence_threshold: 'ocr',
@@ -162,6 +163,7 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   resize_scale: 'Tỉ lệ resize frame cho overlay/preview (không ảnh hưởng YOLO imgsz).',
   clahe_clip_limit: 'Thông số CLAHE (giới hạn độ tương phản).',
   clahe_tile_size: 'Thông số CLAHE (kích thước tile).',
+  clahe_enable_gray_world: 'Bật cân bằng trắng gray-world trước CLAHE. Đây là bước xử lý ảnh NẶNG NHẤT chạy mỗi frame (kể cả khi không có tàu). Tắt để test xem YOLO còn detect tốt không — tắt giúp giảm tải CPU đáng kể. Restart pipeline sau khi đổi.',
 
   enable_ocr: 'Bật/tắt OCR toàn cục.',
   ocr_interval_sec: 'Khoảng thời gian (giây) giữa các lần OCR.',

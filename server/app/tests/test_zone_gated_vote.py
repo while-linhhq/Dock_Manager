@@ -28,6 +28,7 @@ def _make_pipeline() -> PerCameraPipeline:
         track_max_lost_sec=10.0,
         clahe_clip_limit=2.0,
         clahe_tile_size=8,
+        clahe_enable_gray_world=True,
         edge_zone_ratio=0.05,
     )
     pipeline = PerCameraPipeline.__new__(PerCameraPipeline)

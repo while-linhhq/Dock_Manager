@@ -70,6 +70,7 @@ class PerCameraPipelineConfig:
     track_max_lost_sec: float
     clahe_clip_limit: float
     clahe_tile_size: int
+    clahe_enable_gray_world: bool
     edge_zone_ratio: float
     enable_visual_id: bool = False
     visual_interval_sec: float = 1.0
@@ -161,6 +162,7 @@ class PerCameraPipeline(threading.Thread):
         self._clahe_config = ClahePreprocessConfig(
             clip_limit=config.clahe_clip_limit,
             tile_grid_size=config.clahe_tile_size,
+            enable_gray_world=config.clahe_enable_gray_world,
         )
         self._shared_ocr_queue = shared_ocr_queue
         self._ocr_queue: queue.Queue | None = None
