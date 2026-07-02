@@ -149,6 +149,15 @@ class ShipIdRecognizer:
         logger.info('ShipIdRecognizer initialized (device=%s)', 'gpu' if use_gpu else 'cpu')
         self.pattern = r"([A-Z50]{2})[-\s]?(\d{4})"
         self._rule_engine = rule_engine  # ShipIdRuleEngine | None
+        # CLAHE second pass only runs when the raw pass is empty or below this
+        # confidence. Skipping it on clear crops (the majority) roughly halves
+        # OCR CPU cost. Tune via env; set <=0 to always run both passes.
+        try:
+            self._second_pass_conf_threshold = float(
+                os.environ.get('OCR_SECOND_PASS_CONF_THRESHOLD', '0.85')
+            )
+        except ValueError:
+            self._second_pass_conf_threshold = 0.85
 
     def close(self) -> None:
         """No-op for in-process recognizer; subprocess client overrides."""
@@ -214,33 +223,44 @@ class ShipIdRecognizer:
                     })
         return found_ids
 
-    def recognize_bgr(self, img_bgr):
-        """
-        Nhận dạng mã tàu từ ảnh BGR (crop).
-        Chạy OCR trên cả ảnh gốc và ảnh đã tiền xử lý để tăng độ chính xác.
-        """
-        if img_bgr is None or img_bgr.size == 0:
-            return []
-
-        # 1. OCR trên ảnh gốc (cùng upscale tối thiểu như preprocess)
-        all_lines = run_ocr_lines(self.ocr, self._ensure_min_side_bgr(img_bgr))
-
-        # 2. OCR trên ảnh tiền xử lý
-        processed = self.preprocess(img_bgr)
-        processed_bgr = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
-        all_lines.extend(run_ocr_lines(self.ocr, processed_bgr))
-
-        ship_ids = self.extract_ship_id(all_lines)
-        
-        # Sắp xếp theo confidence và loại bỏ trùng lặp
+    @staticmethod
+    def _dedupe_by_confidence(ship_ids):
+        """Sắp xếp theo confidence, giữ bản có confidence cao nhất mỗi id."""
         if not ship_ids:
             return []
-
         ship_ids.sort(key=lambda x: x["confidence"], reverse=True)
         unique_ids = {}
         for item in ship_ids:
             sid = item["id"]
             if sid not in unique_ids or item["confidence"] > unique_ids[sid]["confidence"]:
                 unique_ids[sid] = item
-        
         return list(unique_ids.values())
+
+    def recognize_bgr(self, img_bgr):
+        """
+        Nhận dạng mã tàu từ ảnh BGR (crop).
+
+        Chạy OCR trên ảnh gốc trước. Chỉ chạy pass thứ 2 (CLAHE, nặng CPU) khi
+        pass đầu không ra mã hoặc confidence dưới ngưỡng — crop rõ (đa số) chỉ
+        tốn 1 lần OCR, giảm ~1/2 tải CPU của OCR.
+        """
+        if img_bgr is None or img_bgr.size == 0:
+            return []
+
+        # 1. OCR trên ảnh gốc (cùng upscale tối thiểu như preprocess)
+        first_lines = run_ocr_lines(self.ocr, self._ensure_min_side_bgr(img_bgr))
+        first_ids = self.extract_ship_id(first_lines)
+
+        # Early-exit khi pass đầu đã cho kết quả đủ tin cậy → bỏ pass CLAHE.
+        threshold = self._second_pass_conf_threshold
+        if threshold > 0 and first_ids:
+            best_conf = max(item["confidence"] for item in first_ids)
+            if best_conf >= threshold:
+                return self._dedupe_by_confidence(first_ids)
+
+        # 2. OCR trên ảnh tiền xử lý (CLAHE) — chỉ khi pass đầu yếu/không có.
+        processed = self.preprocess(img_bgr)
+        processed_bgr = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+        second_ids = self.extract_ship_id(run_ocr_lines(self.ocr, processed_bgr))
+
+        return self._dedupe_by_confidence(first_ids + second_ids)
