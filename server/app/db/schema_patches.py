@@ -866,6 +866,55 @@ def _ensure_rtsp_nvdec_port_configs() -> None:
         raise
 
 
+def _ensure_sync_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'sync_tolerance_ms': (
+            '1200',
+            'Max timestamp spread (ms) for multi-camera frame sync. Lower = tighter sync; higher = fewer dropped batches.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed sync port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(stmt, {'key': key, 'value': default_value, 'description': description})
+        _patch_done('ensured sync port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed sync port_configs: %s', err)
+        raise
+
+
 def _ensure_thread_tuning_port_configs() -> None:
     try:
         inspector = inspect(engine)
@@ -2072,6 +2121,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
+    _ensure_sync_port_configs()
     _ensure_thread_tuning_port_configs()
     _ensure_clahe_port_configs()
     _ensure_yolo_imgsz_port_config()
