@@ -163,3 +163,37 @@ def test_get_global_id_returns_gid_after_track_report() -> None:
     global_id = mgr.get_global_id(1, 'trk_gid')
     assert global_id is not None
     assert global_id.startswith('gid_')
+
+
+def test_finalized_identities_are_purged_after_retention() -> None:
+    """RAM leak guard: finalized identities + track maps must be evicted."""
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=1.0)
+    # Shrink retention so the test does not wait minutes.
+    mgr._finalized_retention_sec = 0.0
+
+    boat = _track('trk_purge', camera_id=1)
+    mgr.report_track_update(1, boat, embedding=_unit_embedding(11))
+    assert len(mgr._identities) == 1
+    assert len(mgr._track_to_global) == 1
+
+    # Remove the track and let it finalize (no active tracks, not anchored).
+    mgr.report_track_removed(1, boat)
+    # Force the expiry sweep well past the handoff window.
+    mgr._flush_expired_locked(time.time() + 10.0)
+
+    assert len(mgr._identities) == 0
+    assert len(mgr._track_to_global) == 0
+
+
+def test_ocr_history_is_capped() -> None:
+    """RAM leak guard: ocr_history must not grow without bound."""
+    from app.services.ai.cross_camera_reid import _MAX_OCR_HISTORY
+
+    mgr = CrossCameraReIdManager([1], visual_threshold=0.5, handoff_window_sec=60.0)
+    mgr.report_track_update(1, _track('trk_hist', camera_id=1), embedding=_unit_embedding(5))
+    for _ in range(_MAX_OCR_HISTORY + 50):
+        mgr.report_ocr_result(1, 'trk_hist', 'SG-6375', 0.9)
+
+    identity = mgr._identity_for_track((1, 'trk_hist'))
+    assert identity is not None
+    assert len(identity.ocr_history) <= _MAX_OCR_HISTORY

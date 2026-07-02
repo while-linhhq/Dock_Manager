@@ -21,8 +21,20 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+# Bound per-identity OCR vote history. Only the aggregate score matters for
+# _best_ship_id, so unbounded growth is pure RAM waste on long-lived anchors.
+_MAX_OCR_HISTORY = 200
 
 TrackKey = tuple[int, str]
+
+
+def _append_ocr_history(
+    history: list[tuple[str, float]],
+    entry: tuple[str, float],
+) -> None:
+    history.append(entry)
+    if len(history) > _MAX_OCR_HISTORY:
+        del history[: len(history) - _MAX_OCR_HISTORY]
 
 
 @dataclass
@@ -40,6 +52,7 @@ class GlobalIdentity:
     removed_tracks: set[TrackKey] = field(default_factory=set)
     last_track: TrackedBoat | None = None
     finalized: bool = False
+    finalized_ts: float = 0.0
     anchored: bool = False
     berth_in_ts: float | None = None
     berth_out_ts: float | None = None
@@ -83,6 +96,12 @@ class CrossCameraReIdManager:
         self._identities: dict[str, GlobalIdentity] = {}
         self._track_to_global: dict[TrackKey, str] = {}
         self._lock = threading.RLock()
+        # Retain finalized identities briefly for late merges, then purge to bound RAM.
+        self._finalized_retention_sec = max(
+            float(self._handoff_window_sec) * 2.0, 120.0
+        )
+        # Hard backstop: never let the identity table grow unbounded (RAM leak guard).
+        self._max_identities = 2000
 
     def set_is_track_identity_locked(
         self,
@@ -247,7 +266,7 @@ class CrossCameraReIdManager:
                 identity = self._create_empty_identity(camera_key, str(track_id))
                 self._track_to_global[track_key] = identity.global_id
 
-            identity.ocr_history.append((normalized_ship_id, float(confidence)))
+            _append_ocr_history(identity.ocr_history, (normalized_ship_id, float(confidence)))
             identity.ship_id = self._best_ship_id(identity)
             identity.ocr_confirmed_tracks.add(track_key)
 
@@ -275,7 +294,10 @@ class CrossCameraReIdManager:
             track_key = (camera_key, str(track.track_id))
             if ocr_history:
                 for ship_id, confidence in ocr_history:
-                    identity.ocr_history.append((str(ship_id).strip().upper(), float(confidence)))
+                    _append_ocr_history(
+                        identity.ocr_history,
+                        (str(ship_id).strip().upper(), float(confidence)),
+                    )
                 identity.ship_id = self._best_ship_id(identity)
                 identity.ocr_confirmed_tracks.add(track_key)
             identity.active_tracks.discard(track_key)
@@ -441,7 +463,10 @@ class CrossCameraReIdManager:
             identity.embeddings.append(normalize_embedding(embedding))
             identity.embeddings = identity.embeddings[-20:]
         if track.ship_id or track.last_known_ship_id:
-            identity.ocr_history.append((track.ship_id or track.last_known_ship_id or '', 1.0))
+            _append_ocr_history(
+                identity.ocr_history,
+                (track.ship_id or track.last_known_ship_id or '', 1.0),
+            )
             identity.ship_id = self._best_ship_id(identity)
 
     def _match_existing_identity(
@@ -501,6 +526,8 @@ class CrossCameraReIdManager:
         keep.embeddings.extend(other.embeddings)
         keep.embeddings = keep.embeddings[-20:]
         keep.ocr_history.extend(other.ocr_history)
+        if len(keep.ocr_history) > _MAX_OCR_HISTORY:
+            del keep.ocr_history[: len(keep.ocr_history) - _MAX_OCR_HISTORY]
         keep.ocr_confirmed_tracks |= other.ocr_confirmed_tracks
         keep.ship_id = self._best_ship_id(keep)
         keep.first_seen_ts = min(keep.first_seen_ts, other.first_seen_ts)
@@ -696,11 +723,70 @@ class CrossCameraReIdManager:
                 continue
             if now - identity.last_seen_ts >= self._handoff_window_sec:
                 self._finalize_identity_locked(identity)
+        self._purge_finalized_locked(now)
+
+    def _purge_finalized_locked(self, now: float) -> None:
+        """Evict finalized identities (and their track mappings) to bound RAM.
+
+        Finalized identities are kept for `_finalized_retention_sec` to allow
+        late same-ship merges, then dropped. Without this, `_identities` and
+        `_track_to_global` grow forever (one entry per vessel/track ever seen),
+        leaking memory until the host OOMs.
+        """
+        expired: list[str] = []
+        for global_id, identity in self._identities.items():
+            if not identity.finalized:
+                continue
+            if identity.active_tracks or identity.anchored:
+                continue
+            if now - identity.finalized_ts >= self._finalized_retention_sec:
+                expired.append(global_id)
+
+        # Backstop: if the table is still oversized, drop the oldest finalized
+        # identities regardless of retention window.
+        if len(self._identities) > self._max_identities:
+            finalized_by_age = sorted(
+                (
+                    (gid, ident)
+                    for gid, ident in self._identities.items()
+                    if ident.finalized
+                    and not ident.active_tracks
+                    and not ident.anchored
+                    and gid not in expired
+                ),
+                key=lambda item: item[1].finalized_ts,
+            )
+            overflow = len(self._identities) - self._max_identities
+            for gid, _ in finalized_by_age[:overflow]:
+                expired.append(gid)
+
+        if not expired:
+            return
+
+        expired_set = set(expired)
+        for global_id in expired_set:
+            self._identities.pop(global_id, None)
+        # Drop track→global mappings that point at purged identities.
+        stale_keys = [
+            track_key
+            for track_key, gid in self._track_to_global.items()
+            if gid in expired_set
+        ]
+        for track_key in stale_keys:
+            self._track_to_global.pop(track_key, None)
+        if expired_set:
+            _log.debug(
+                'reid: purged %d finalized identities (table=%d, map=%d)',
+                len(expired_set),
+                len(self._identities),
+                len(self._track_to_global),
+            )
 
     def _finalize_identity_locked(self, identity: GlobalIdentity) -> None:
         if identity.finalized:
             return
         identity.finalized = True
+        identity.finalized_ts = time.time()
 
         # Last-chance merge (C1): before writing, absorb other inactive identities with same ship_id
         if identity.ship_id:

@@ -661,6 +661,17 @@ class PerCameraPipeline(threading.Thread):
             track,
             ocr_history,
         )
+        # Evict this track's OCR/visual cache entry. Nothing sweeps the shared
+        # ocr_cache once a track is gone, so stale per-track entries (incl. the
+        # potentially large ``visual_top_k`` payload) accumulate and leak RAM.
+        track_id_str = str(track.track_id)
+        stale_keys = (
+            ocr_cache_key_track(track_id_str, int(self.config.camera_id)),
+            ocr_cache_key_track(track_id_str),
+        )
+        with self._ocr_lock:
+            for key in stale_keys:
+                self._ocr_cache.pop(key, None)
 
 
 def _edge_side(box: np.ndarray, width: int, edge_zone_ratio: float) -> str | None:
