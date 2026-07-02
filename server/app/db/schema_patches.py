@@ -866,6 +866,60 @@ def _ensure_rtsp_nvdec_port_configs() -> None:
         raise
 
 
+def _ensure_clahe_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'clahe_enable_gray_world': (
+            'true',
+            'Gray-world white balance before CLAHE (heaviest per-frame CPU step, '
+            'runs every frame even with no ship). Toggle off to test whether YOLO '
+            'still detects well without it and cut CPU load. Restart pipeline after change.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed clahe port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured clahe port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed clahe port_configs: %s', err)
+        raise
+
+
 def _ensure_fee_configs_berth_limit() -> None:
     try:
         inspector = inspect(engine)
@@ -1966,6 +2020,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
+    _ensure_clahe_port_configs()
     _ensure_yolo_imgsz_port_config()
     _migrate_port_config_frames_to_seconds()
     _ensure_bulk_payment_sessions()
