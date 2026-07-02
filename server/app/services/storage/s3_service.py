@@ -38,19 +38,39 @@ def parse_minio_uri(raw: str) -> Optional[MinioObjectRef]:
     return MinioObjectRef(bucket=bucket, object_key=key)
 
 
+import threading
+
+_s3_client = None
+_s3_client_lock = threading.Lock()
+
+
 def get_s3_client():
-    import boto3
+    """Return a process-wide cached boto3 S3 client.
 
-    region = str(getattr(settings, 'AWS_REGION', '') or 'us-east-1').strip()
-    access_key = str(getattr(settings, 'AWS_ACCESS_KEY_ID', '') or '').strip()
-    secret_key = str(getattr(settings, 'AWS_SECRET_ACCESS_KEY', '') or '').strip()
+    boto3.client() parses the botocore service model + builds a connection pool
+    and event system on every call; creating one per upload (hot path) churns
+    RAM and is slow. Cache one thread-safe client for the process lifetime.
+    botocore clients are thread-safe for concurrent calls.
+    """
+    global _s3_client
+    if _s3_client is not None:
+        return _s3_client
+    with _s3_client_lock:
+        if _s3_client is not None:
+            return _s3_client
+        import boto3
 
-    kwargs = {'region_name': region}
-    if access_key and secret_key:
-        kwargs['aws_access_key_id'] = access_key
-        kwargs['aws_secret_access_key'] = secret_key
+        region = str(getattr(settings, 'AWS_REGION', '') or 'us-east-1').strip()
+        access_key = str(getattr(settings, 'AWS_ACCESS_KEY_ID', '') or '').strip()
+        secret_key = str(getattr(settings, 'AWS_SECRET_ACCESS_KEY', '') or '').strip()
 
-    return boto3.client('s3', **kwargs)
+        kwargs = {'region_name': region}
+        if access_key and secret_key:
+            kwargs['aws_access_key_id'] = access_key
+            kwargs['aws_secret_access_key'] = secret_key
+
+        _s3_client = boto3.client('s3', **kwargs)
+        return _s3_client
 
 
 # Alias — callers that import get_minio_client still work
