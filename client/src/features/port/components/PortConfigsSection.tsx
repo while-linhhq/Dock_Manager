@@ -35,6 +35,7 @@ type CategoryId =
   | 'anchor'
   | 'bg'
   | 'fused'
+  | 'threads'
   | 'other';
 
 interface Category {
@@ -58,6 +59,7 @@ const CATEGORIES: Category[] = [
   { id: 'anchor', label: 'Anchor (định danh neo)', description: 'Resurrect IoU, embedding match, khoảng “grace”', color: 'text-amber-500 bg-amber-500/10 border-amber-500/20' },
   { id: 'bg', label: 'Tách nền (Background)', description: 'Các tham số MOG2: history/variance/threshold', color: 'text-teal-500 bg-teal-500/10 border-teal-500/20' },
   { id: 'fused', label: 'Frame Fused', description: 'Giới hạn kích thước frame tổng hợp multi-camera', color: 'text-indigo-500 bg-indigo-500/10 border-indigo-500/20' },
+  { id: 'threads', label: 'CPU Threads', description: 'Giới hạn thread cho torch/paddle/OpenCV để tránh CPU oversubscribe', color: 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20' },
   { id: 'other', label: 'Khác', description: 'Các cấu hình không thuộc nhóm trên', color: 'text-gray-400 bg-gray-500/10 border-gray-500/20' },
 ];
 
@@ -77,6 +79,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   enable_ocr: 'ocr',
   ship_id_require_catalog: 'ocr',
   ocr_interval_sec: 'ocr',
+  ocr_second_pass_conf_threshold: 'ocr',
   ocr_label_ttl_sec: 'ocr',
   ocr_audit_enable: 'ocr',
   ocr_audit_save_frames: 'ocr',
@@ -113,6 +116,13 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   track_reid_window_sec: 'track',
   track_reid_max_dist: 'track',
   sync_tolerance_ms: 'track',
+  thread_caps_enabled: 'threads',
+  thread_omp_threads: 'threads',
+  thread_torch_threads: 'threads',
+  thread_cv2_threads: 'threads',
+  thread_ocr_omp_threads: 'threads',
+  thread_ocr_cv2_threads: 'threads',
+  thread: 'threads',
   record_enable: 'record',
   record_max_duration_min: 'record',
   record_no_boat_gap_sec: 'record',
@@ -142,7 +152,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
 
 function getCategoryId(key: string): CategoryId {
   if (key in KEY_PREFIX_MAP) return KEY_PREFIX_MAP[key];
-  for (const prefix of ['anchor_', 'seam_', 'reid_', 'record_', 'track_', 'ocr_', 'bg_', 'fused_', 'visual_', 'redis_', 'qdrant_', 'training_snapshot_', 'enable_training_snapshot']) {
+  for (const prefix of ['anchor_', 'seam_', 'reid_', 'record_', 'track_', 'thread_', 'ocr_', 'bg_', 'fused_', 'visual_', 'redis_', 'qdrant_', 'training_snapshot_', 'enable_training_snapshot']) {
     if (key.startsWith(prefix)) return KEY_PREFIX_MAP[prefix.replace('_', '')] ?? 'other';
   }
   return 'other';
@@ -165,8 +175,16 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   clahe_tile_size: 'Thông số CLAHE (kích thước tile).',
   clahe_enable_gray_world: 'Bật cân bằng trắng gray-world trước CLAHE. Đây là bước xử lý ảnh NẶNG NHẤT chạy mỗi frame (kể cả khi không có tàu). Tắt để test xem YOLO còn detect tốt không — tắt giúp giảm tải CPU đáng kể. Restart pipeline sau khi đổi.',
 
+  thread_caps_enabled: 'Bật giới hạn thread CPU cho torch/paddle/OpenCV/OpenBLAS. Tắt = dùng mặc định thư viện, dễ oversubscribe. Restart server sau khi đổi.',
+  thread_omp_threads: 'Số thread OMP/MKL/OpenBLAS/NumExpr cho process chính. Khuyến nghị 4 trên máy 16 thread.',
+  thread_torch_threads: 'Số thread CPU của torch trong process chính. Khuyến nghị 4.',
+  thread_cv2_threads: 'Số thread OpenCV trong process chính. Khuyến nghị 2.',
+  thread_ocr_omp_threads: 'Số thread OMP/MKL/OpenBLAS/torch cho OCR subprocess. Khuyến nghị 3.',
+  thread_ocr_cv2_threads: 'Số thread OpenCV cho OCR subprocess. Khuyến nghị 2.',
+
   enable_ocr: 'Bật/tắt OCR toàn cục.',
   ocr_interval_sec: 'Khoảng thời gian (giây) giữa các lần OCR.',
+  ocr_second_pass_conf_threshold: 'Ngưỡng confidence để bỏ qua OCR pass 2 (CLAHE). 0.85 = nếu pass 1 đủ tự tin thì không chạy pass 2. <=0 = luôn chạy cả hai pass.',
   ocr_label_ttl_sec: 'Thời gian hiển thị nhãn OCR trên UI (giây).',
   ocr_audit_enable: 'Bật/tắt audit logging cho OCR.',
   ocr_audit_save_frames: 'Lưu frame đầy đủ phục vụ OCR audit.',

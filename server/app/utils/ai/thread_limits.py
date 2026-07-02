@@ -14,7 +14,8 @@ Two phases:
   Run AFTER those libs are imported (safe to call once the app is up).
 
 Override any value via env: DOCK_OMP_THREADS, DOCK_TORCH_THREADS, DOCK_CV2_THREADS.
-Set DOCK_THREAD_CAPS=0 to disable entirely (fall back to library defaults).
+If env is absent, values come from port_configs (thread_* keys). Set
+DOCK_THREAD_CAPS=0 or port_config thread_caps_enabled=false to disable entirely.
 """
 from __future__ import annotations
 
@@ -35,17 +36,36 @@ _DEFAULT_OCR_OMP_THREADS = 3
 _DEFAULT_OCR_CV2_THREADS = 2
 
 
+def _bool_from_raw(raw: str, default: bool) -> bool:
+    value = raw.strip().lower()
+    if value in ('1', 'true', 'yes', 'on'):
+        return True
+    if value in ('0', 'false', 'no', 'off'):
+        return False
+    return default
+
+
 def _caps_enabled() -> bool:
-    return os.environ.get('DOCK_THREAD_CAPS', '1').strip().lower() not in (
-        '0',
-        'false',
-        'no',
-        'off',
-    )
+    env = os.environ.get('DOCK_THREAD_CAPS')
+    if env is not None and env.strip():
+        return _bool_from_raw(env, True)
+    try:
+        from app.utils.port_config_runtime import get_port_bool
+
+        return get_port_bool('thread_caps_enabled', True)
+    except Exception:
+        return True
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, *, port_key: str | None = None) -> int:
     raw = os.environ.get(name, '').strip()
+    if not raw and port_key:
+        try:
+            from app.utils.port_config_runtime import get_port_config
+
+            raw = get_port_config(port_key, '').strip()
+        except Exception:
+            raw = ''
     if not raw:
         return default
     try:
@@ -65,7 +85,11 @@ def apply_thread_env_caps(*, ocr_subprocess: bool = False) -> dict[str, str]:
         return {}
 
     omp_default = _DEFAULT_OCR_OMP_THREADS if ocr_subprocess else _DEFAULT_OMP_THREADS
-    omp = _env_int('DOCK_OMP_THREADS', omp_default)
+    omp = _env_int(
+        'DOCK_OMP_THREADS',
+        omp_default,
+        port_key='thread_ocr_omp_threads' if ocr_subprocess else 'thread_omp_threads',
+    )
 
     caps = {
         'OMP_NUM_THREADS': str(omp),
@@ -91,8 +115,16 @@ def apply_runtime_thread_caps(*, ocr_subprocess: bool = False) -> None:
 
     torch_default = _DEFAULT_OCR_OMP_THREADS if ocr_subprocess else _DEFAULT_TORCH_THREADS
     cv2_default = _DEFAULT_OCR_CV2_THREADS if ocr_subprocess else _DEFAULT_CV2_THREADS
-    torch_threads = _env_int('DOCK_TORCH_THREADS', torch_default)
-    cv2_threads = _env_int('DOCK_CV2_THREADS', cv2_default)
+    torch_threads = _env_int(
+        'DOCK_TORCH_THREADS',
+        torch_default,
+        port_key='thread_ocr_omp_threads' if ocr_subprocess else 'thread_torch_threads',
+    )
+    cv2_threads = _env_int(
+        'DOCK_CV2_THREADS',
+        cv2_default,
+        port_key='thread_ocr_cv2_threads' if ocr_subprocess else 'thread_cv2_threads',
+    )
 
     try:
         import torch

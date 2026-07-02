@@ -153,10 +153,13 @@ class ShipIdRecognizer:
         # confidence. Skipping it on clear crops (the majority) roughly halves
         # OCR CPU cost. Tune via env; set <=0 to always run both passes.
         try:
-            self._second_pass_conf_threshold = float(
-                os.environ.get('OCR_SECOND_PASS_CONF_THRESHOLD', '0.85')
-            )
-        except ValueError:
+            raw_threshold = os.environ.get('OCR_SECOND_PASS_CONF_THRESHOLD')
+            if raw_threshold is None or not raw_threshold.strip():
+                from app.utils.port_config_runtime import get_port_config
+
+                raw_threshold = get_port_config('ocr_second_pass_conf_threshold', '0.85')
+            self._second_pass_conf_threshold = float(raw_threshold)
+        except (ImportError, ValueError):
             self._second_pass_conf_threshold = 0.85
 
     def close(self) -> None:

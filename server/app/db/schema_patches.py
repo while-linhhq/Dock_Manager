@@ -866,6 +866,58 @@ def _ensure_rtsp_nvdec_port_configs() -> None:
         raise
 
 
+def _ensure_thread_tuning_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'thread_caps_enabled': ('true', 'Enable CPU thread caps for torch/paddle/OpenCV/OpenBLAS to avoid oversubscription.'),
+        'thread_omp_threads': ('4', 'OMP/MKL/OpenBLAS/NumExpr threads for main process.'),
+        'thread_torch_threads': ('4', 'torch CPU threads for main process.'),
+        'thread_cv2_threads': ('2', 'OpenCV CPU threads for main process.'),
+        'thread_ocr_omp_threads': ('3', 'OMP/MKL/OpenBLAS/torch threads for OCR subprocess.'),
+        'thread_ocr_cv2_threads': ('2', 'OpenCV CPU threads for OCR subprocess.'),
+        'ocr_second_pass_conf_threshold': ('0.85', 'Run CLAHE OCR second pass only when first pass confidence is below this threshold. <=0 always runs both passes.'),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed thread tuning port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(stmt, {'key': key, 'value': default_value, 'description': description})
+        _patch_done('ensured thread tuning port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed thread tuning port_configs: %s', err)
+        raise
+
+
 def _ensure_clahe_port_configs() -> None:
     try:
         inspector = inspect(engine)
@@ -2020,6 +2072,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
+    _ensure_thread_tuning_port_configs()
     _ensure_clahe_port_configs()
     _ensure_yolo_imgsz_port_config()
     _migrate_port_config_frames_to_seconds()

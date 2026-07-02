@@ -1056,8 +1056,7 @@ def open_rtsp(rtsp_url: str) -> Any:
             cap.release()
             if attempt == 0:
                 time.sleep(0.5)
-        logger.warning('GStreamer NVDEC failed for %s — skip FFmpeg fallback to avoid CPU spike', rtsp_url)
-        return _ClosedCapture()
+        logger.warning('GStreamer NVDEC failed for %s — falling back to FFmpeg NVDEC/OpenCV', rtsp_url)
 
     # 2. FFmpeg NVDEC (decode GPU, convert CPU).
     ffmpeg_path = resolve_ffmpeg_path()
