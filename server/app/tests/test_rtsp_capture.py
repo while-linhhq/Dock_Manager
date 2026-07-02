@@ -44,9 +44,12 @@ def test_open_rtsp_fallback_when_nvdec_unavailable():
     rtsp_capture._nvdec_cache.clear()
     rtsp_capture._hwaccel_cache.clear()
     fake_cap = MagicMock()
-    with patch.object(rtsp_capture, 'nvdec_available', return_value=False):
-        with patch('app.utils.ai.rtsp_capture.cv2.VideoCapture', return_value=fake_cap) as mock_cv:
-            cap = rtsp_capture.open_rtsp('rtsp://cam/stream')
+    # Skip the GStreamer NVDEC branch (it returns _ClosedCapture on failure to
+    # avoid a CPU spike) so we exercise the FFmpeg-NVDEC → OpenCV fallback path.
+    with patch.object(rtsp_capture.GStreamerNvdecCapture, 'available', return_value=False):
+        with patch.object(rtsp_capture, 'nvdec_available', return_value=False):
+            with patch('app.utils.ai.rtsp_capture.cv2.VideoCapture', return_value=fake_cap) as mock_cv:
+                cap = rtsp_capture.open_rtsp('rtsp://cam/stream')
     assert cap is fake_cap
     mock_cv.assert_called_once()
 

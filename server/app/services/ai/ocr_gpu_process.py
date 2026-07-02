@@ -76,10 +76,20 @@ def _ocr_subprocess_main(
     if str(_SERVER_ROOT) not in sys.path:
         sys.path.insert(0, str(_SERVER_ROOT))
 
+    # Cap thread pools in the child too (spawn re-imports torch+paddle+cv2).
+    # Smaller budget than the main process so the two don't oversubscribe together.
+    from app.utils.ai.thread_limits import (
+        apply_runtime_thread_caps,
+        apply_thread_env_caps,
+    )
+
+    apply_thread_env_caps(ocr_subprocess=True)
+
     recognizer = None
     device = 'cpu'
     try:
         recognizer, device = _init_recognizer()
+        apply_runtime_thread_caps(ocr_subprocess=True)
         startup_q.put({'ok': True, 'device': device})
     except Exception as exc:
         logger.exception('OCR GPU subprocess init failed')

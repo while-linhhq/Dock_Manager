@@ -5,6 +5,12 @@ _server_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _server_root not in sys.path:
     sys.path.insert(0, _server_root)
 
+# Cap OMP/MKL/OpenBLAS thread pools BEFORE numpy/torch/cv2 are imported
+# (they read these env vars at import time). Stops CPU oversubscription.
+from app.utils.ai.thread_limits import apply_thread_env_caps
+
+apply_thread_env_caps()
+
 from app.utils.ai.gpu_bootstrap import init_cuda_library_path
 
 init_cuda_library_path('pre')
@@ -94,6 +100,11 @@ async def lifespan(app: FastAPI):
     from app.services.ai.ship_id_rule_engine import start_rule_engine_daemon
 
     start_rule_engine_daemon(interval_s=30)
+
+    # torch/cv2 are imported by now; cap their thread pools too.
+    from app.utils.ai.thread_limits import apply_runtime_thread_caps
+
+    apply_runtime_thread_caps()
 
     yield
 
