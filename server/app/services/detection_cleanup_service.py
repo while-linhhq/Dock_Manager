@@ -18,12 +18,12 @@ def _collect_detection_media_paths(detection: Detection) -> set[str]:
     paths: set[str] = set()
     for attr in ('audit_image_path', 'video_path'):
         raw = str(getattr(detection, attr, '') or '').strip()
-        if raw.startswith('minio://'):
+        if raw.startswith('minio://') or raw.startswith('s3://'):
             paths.add(raw)
 
     for media in getattr(detection, 'media', None) or []:
         raw = str(getattr(media, 'file_path', '') or '').strip()
-        if raw.startswith('minio://'):
+        if raw.startswith('minio://') or raw.startswith('s3://'):
             paths.add(raw)
     return paths
 

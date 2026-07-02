@@ -5,7 +5,7 @@ import re
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from app.services.storage.minio_service import (
+from app.services.storage.s3_service import (
     get_object_size,
     guess_content_type,
     open_object_stream,

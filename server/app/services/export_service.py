@@ -15,7 +15,7 @@ from app.repositories.fee_config_repository import fee_config_repo
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.port_log_repository import port_log_repo
 from app.repositories.export_log_repository import export_log_repo
-from app.services.storage.minio_service import get_object_bytes, parse_minio_uri, presign_get
+from app.services.storage.s3_service import get_object_bytes, parse_minio_uri, presign_get
 from app.utils.fee_billing_unit import fee_billing_unit_label
 
 EXPORTS_DIR = Path('exports')

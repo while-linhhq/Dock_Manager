@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     MINIO_SECURE: bool = False
     MINIO_MEDIA_PREFIX: str = ""  # optional prefix inside bucket, e.g. "prod"
     MINIO_UPLOAD_ON_DETECT: bool = True
+
+    # AWS S3 (replaces MinIO in production)
+    AWS_REGION: str = "us-east-1"
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
     
     # Model settings
     MODEL_PATH: str = "app/yolo11n.pt"

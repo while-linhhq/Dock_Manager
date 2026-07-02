@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from app.services.storage.minio_service import parse_minio_uri, remove_object
+from app.services.storage.s3_service import parse_minio_uri, remove_object
 
 _log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def wipe_minio_prefix(relative_prefix: str) -> dict[str, int]:
     Returns scanned/removed counts (best-effort).
     """
     from app.core.config import settings
-    from app.services.storage.minio_service import get_minio_client
+    from app.services.storage.s3_service import get_minio_client
 
     bucket = str(getattr(settings, 'MINIO_BUCKET', '') or '').strip()
     if not bucket:
@@ -62,21 +62,25 @@ def wipe_minio_prefix(relative_prefix: str) -> dict[str, int]:
     scanned = 0
     removed = 0
     try:
-        for obj in client.list_objects(bucket, prefix=prefix, recursive=True):
-            scanned += 1
-            try:
-                client.remove_object(bucket, obj.object_name)
-                removed += 1
-            except Exception:
-                _log.warning(
-                    'Could not remove MinIO object bucket=%s key=%s',
-                    bucket,
-                    obj.object_name,
-                    exc_info=True,
-                )
+        paginator = client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+        for page in pages:
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                scanned += 1
+                try:
+                    client.delete_object(Bucket=bucket, Key=key)
+                    removed += 1
+                except Exception:
+                    _log.warning(
+                        'Could not remove S3 object bucket=%s key=%s',
+                        bucket,
+                        key,
+                        exc_info=True,
+                    )
     except Exception:
         _log.warning(
-            'MinIO prefix sweep failed bucket=%s prefix=%s',
+            'S3 prefix sweep failed bucket=%s prefix=%s',
             bucket,
             prefix,
             exc_info=True,

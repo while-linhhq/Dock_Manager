@@ -20,7 +20,7 @@ from app.repositories.port_config_repository import port_config_repo
 from app.schemas import VesselCreate, DetectionCreate, PortLogCreate
 from app.core.config import settings
 from app.services.storage.minio_layout import final_image_key, final_video_key, staging_video_key
-from app.services.storage.minio_service import (
+from app.services.storage.s3_service import (
     copy_object_same_bucket,
     parse_minio_uri,
     put_bytes,
@@ -109,7 +109,7 @@ def _upload_file_to_minio(*, local_path: str, object_key: str) -> str:
         object_key=object_key,
         content_type=_guess_content_type(p),
     )
-    return f'minio://{bucket}/{object_key}'
+    return f's3://{bucket}/{object_key}'
 
 
 def _upload_bytes_to_minio(*, data: bytes, object_key: str, content_type: str) -> str:
@@ -120,7 +120,7 @@ def _upload_bytes_to_minio(*, data: bytes, object_key: str, content_type: str) -
         object_key=object_key,
         content_type=content_type,
     )
-    return f'minio://{bucket}/{object_key}'
+    return f's3://{bucket}/{object_key}'
 
 
 class PipelineService:
@@ -863,7 +863,7 @@ class PipelineService:
                     dest_key=dest_key,
                 )
                 _log.info('Copied finalized video → %s', dest_key)
-                return f'minio://{ref.bucket}/{dest_key}'
+                return f's3://{ref.bucket}/{dest_key}'
             except Exception:
                 _log.exception('Failed to copy finalized video to detection layout')
                 return src_uri
@@ -879,7 +879,7 @@ class PipelineService:
                 ref.bucket,
                 dest_key,
             )
-            return f'minio://{ref.bucket}/{dest_key}'
+            return f's3://{ref.bucket}/{dest_key}'
         except RuntimeError as exc:
             if 'Cloudflare 524' in str(exc):
                 _log.warning(

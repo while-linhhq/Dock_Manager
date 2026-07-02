@@ -8,7 +8,7 @@ from typing import Any
 from app.core.config import settings
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.storage.media_cleanup import remove_minio_uri
-from app.services.storage.minio_service import parse_minio_uri
+from app.services.storage.s3_service import parse_minio_uri
 
 _log = logging.getLogger(__name__)
 

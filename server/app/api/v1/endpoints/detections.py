@@ -12,7 +12,7 @@ from app.schemas.detection_media import DetectionMediaRead
 from app.services.detection_cleanup_service import purge_detection_resources
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
-from app.services.storage.minio_service import presign_get, parse_minio_uri
+from app.services.storage.s3_service import presign_get, parse_minio_uri
 from app.services.berth_limit_service import compute_detection_over_berth_limit
 
 router = APIRouter()

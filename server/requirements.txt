@@ -40,6 +40,7 @@ scipy==1.15.0
 matplotlib>=3.8.0
 pandas>=2.0.0
 minio
+boto3>=1.35.0
 imageio-ffmpeg
 redis>=5.0.0
 qdrant-client>=1.18.0

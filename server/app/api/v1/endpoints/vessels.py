@@ -27,7 +27,7 @@ from app.services.vessel_visual_reference_service import (
     local_preview_path,
 )
 from app.services.storage.minio_layout import visual_reference_preview_key
-from app.services.storage.minio_service import (
+from app.services.storage.s3_service import (
     get_object_bytes,
     parse_minio_uri,
     presign_get,
@@ -119,7 +119,7 @@ def _upload_visual_preview(
             object_key=object_key,
             content_type='image/jpeg',
         )
-        return f'minio://{bucket}/{object_key}'
+        return f's3://{bucket}/{object_key}'
     except Exception:
         _log.warning(
             'MinIO preview upload failed, using local storage ship_id=%s point_id=%s',
@@ -153,7 +153,7 @@ def _resolve_preview_url(
     uri = str(preview_uri or '').strip()
     if uri.startswith(_LOCAL_PREVIEW_URI_PREFIX):
         return _preview_api_path(vessel_id, point_id)
-    if uri.startswith('minio://'):
+    if uri.startswith('minio://') or uri.startswith('s3://'):
         try:
             url = presign_get(uri, ttl_seconds=600)
             if url:
@@ -485,7 +485,7 @@ def get_vessel_visual_reference_preview(
             if str(point.get('id')) != str(point_id):
                 continue
             preview_uri = str((point.get('payload') or {}).get('preview_uri') or '')
-            if preview_uri.startswith('minio://'):
+            if preview_uri.startswith('minio://') or preview_uri.startswith('s3://'):
                 data = get_object_bytes(preview_uri)
                 if data:
                     return Response(content=data, media_type='image/jpeg')

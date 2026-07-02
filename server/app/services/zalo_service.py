@@ -136,10 +136,10 @@ def _zalo_can_fetch_url(url: str) -> bool:
 
 
 def _minio_object_ready(minio_path: Optional[str]) -> bool:
-    from app.services.storage.minio_service import get_object_size
+    from app.services.storage.s3_service import get_object_size
 
     path = str(minio_path or '').strip()
-    if not path.startswith('minio://'):
+    if not path.startswith('minio://') and not path.startswith('s3://'):
         return False
     return get_object_size(path) is not None
 
