@@ -119,15 +119,24 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload, streamKey = 
 
     const updateFps = () => {
       const now = performance.now();
-      if (now - fpsWindowStartedAt < 1000) {
+      const elapsedSec = (now - fpsWindowStartedAt) / 1000;
+      if (elapsedSec <= 0) {
         return;
       }
-      setReceivedFps(receivedCount);
-      setRenderFps(renderedCount);
+      // Normalize by the real window duration so counts are true frames/sec,
+      // not raw counts stamped onto a window that is longer than 1s (which
+      // inflates the number, e.g. 5fps reading as 7). Round to 1 decimal.
+      setReceivedFps(Math.round((receivedCount / elapsedSec) * 10) / 10);
+      setRenderFps(Math.round((renderedCount / elapsedSec) * 10) / 10);
       receivedCount = 0;
       renderedCount = 0;
       fpsWindowStartedAt = now;
     };
+
+    // Tick on a fixed 1s cadence independent of frame arrival, so the window
+    // closes on time even when frames are sparse (prevents the count from
+    // accumulating past the intended 1s boundary).
+    const fpsTimer = window.setInterval(updateFps, 1000);
 
     const sendPayload = () => {
       if (socket?.readyState === WebSocket.OPEN) {
@@ -168,7 +177,6 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload, streamKey = 
         if (animationFrame == null) {
           animationFrame = window.requestAnimationFrame(flushFrame);
         }
-        updateFps();
       };
 
       socket.onclose = () => {
@@ -193,6 +201,7 @@ export function useFusedPreviewStream(payload: FusedPreviewPayload, streamKey = 
 
     return () => {
       closed = true;
+      window.clearInterval(fpsTimer);
       if (retryTimer != null) {
         window.clearTimeout(retryTimer);
       }
