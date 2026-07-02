@@ -55,6 +55,7 @@ class QdrantVectorStore:
                 host=self._host,
                 port=self._port,
                 api_key=self._api_key,
+                https=False,
                 timeout=timeout,
                 check_compatibility=False,
             )

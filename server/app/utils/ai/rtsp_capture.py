@@ -649,11 +649,32 @@ class GStreamerNvdecCapture:
 
     @classmethod
     def _conda_lib_dir(cls) -> str | None:
+        """Locate the lib dir whose gstreamer-1.0/ contains the nvcodec plugin.
+
+        The gst-launch binary may be the system one (/usr/bin) while the nvcodec
+        plugin ships inside the active conda env. Prefer sys.prefix/lib, then the
+        gst-launch sibling lib, and pick the first dir that actually has
+        libgstnvcodec.so.
+        """
+        import sys
+
+        candidates: list[Path] = []
+        env_lib = Path(sys.prefix) / 'lib'
+        candidates.append(env_lib)
         gst = shutil.which(cls._GST_BIN)
-        if not gst:
-            return None
-        candidate = Path(gst).resolve().parents[1] / 'lib'
-        return str(candidate) if candidate.is_dir() else None
+        if gst:
+            candidates.append(Path(gst).resolve().parents[1] / 'lib')
+
+        # Prefer a lib dir that actually contains the nvcodec plugin.
+        for candidate in candidates:
+            plugin = candidate / 'gstreamer-1.0' / 'libgstnvcodec.so'
+            if plugin.is_file():
+                return str(candidate)
+        # Fallback: first existing lib dir (preserves prior behaviour).
+        for candidate in candidates:
+            if candidate.is_dir():
+                return str(candidate)
+        return None
 
     @classmethod
     def _env_with_conda_lib(cls) -> dict:
