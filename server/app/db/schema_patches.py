@@ -509,11 +509,11 @@ def _ensure_visual_stack_port_configs() -> None:
             'Enable visual vessel identification (manual enrollment + vector search).',
         ),
         'visual_id_interval_sec': (
-            '1.0',
+            '3',
             'Seconds between visual-id attempts for confirmed tracks.',
         ),
         'ship_id_lock_stable_sec': (
-            '60',
+            '0',
             'Seconds final ship_id must remain stable before OCR/visual recognition stops (0 = off).',
         ),
         'ship_id_require_catalog': (
@@ -526,11 +526,11 @@ def _ensure_visual_stack_port_configs() -> None:
             'Minimum crop area (pixels) to run visual embedding extraction.',
         ),
         'visual_match_threshold': (
-            '0.55',
+            '0.93',
             'Minimum aggregated visual similarity when OCR result is present (Qdrant filter + conflict override).',
         ),
         'visual_no_ocr_match_threshold': (
-            '0.55',
+            '0.85',
             'Minimum aggregated visual similarity to accept ship ID when OCR has no result.',
         ),
         'visual_top_k': (
@@ -633,11 +633,11 @@ def _ensure_visual_stack_port_configs() -> None:
 
 _DINOV2_PORT_CONFIG_VALUES: dict[str, tuple[str, str]] = {
     'visual_match_threshold': (
-        '0.55',
+        '0.93',
         'Minimum aggregated visual similarity when OCR result is present (Qdrant filter + conflict override).',
     ),
     'visual_no_ocr_match_threshold': (
-        '0.55',
+        '0.85',
         'Minimum aggregated visual similarity to accept ship ID when OCR has no result.',
     ),
     'visual_conflict_threshold': (
@@ -677,6 +677,135 @@ _LEGACY_VISUAL_BACKBONES = frozenset(
     }
 )
 _LEGACY_QDRANT_COLLECTIONS = frozenset({'vessel_visual_embeddings'})
+
+
+def _ensure_reid_overlap_merge_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'reid_visual_threshold': (
+            '0.9',
+            'Ngưỡng cosine embedding để match track vào identity cùng/kề camera. '
+            'Nâng lên (~0.9) nếu tàu khác biển bị gộp nhầm chung 1 global id.',
+        ),
+        'reid_handoff_window_sec': (
+            '30',
+            'Cửa sổ (giây) giữ identity chưa anchor còn khả dụng để match lại sau khi mất track.',
+        ),
+        'reid_overlap_merge_enabled': (
+            'true',
+            'Bật merge khi tàu thấy đồng thời trên 2 camera kề (overlap FOV).',
+        ),
+        'reid_edge_zone_ratio': (
+            '0.2',
+            'Bề rộng vùng overlap (tỉ lệ width) để xét merge cross-camera.',
+        ),
+        'reid_embedding_weight': (
+            '0.6',
+            'Trọng số embedding trong fusion score merge.',
+        ),
+        'reid_color_weight': (
+            '0.25',
+            'Trọng số HSV similarity trong fusion score merge.',
+        ),
+        'reid_size_weight': (
+            '0.15',
+            'Trọng số tỉ lệ kích thước box trong fusion score merge.',
+        ),
+        'reid_accept_threshold': (
+            '0.8',
+            'Ngưỡng tổng score mềm để chấp nhận merge.',
+        ),
+        'reid_min_margin': (
+            '0.1',
+            'Chênh score tối thiểu so với candidate #2 (chống nhầm).',
+        ),
+        'reid_directional_handoff_enabled': (
+            'true',
+            'Bật handoff tuần tự khi tàu rời cam này sang cam kề (không cần OCR).',
+        ),
+        'reid_directional_max_transit_sec': (
+            '20',
+            'Thời gian tối đa (giây) tàu di chuyển giữa 2 cam kề để coi là handoff hợp lệ.',
+        ),
+        'reid_directional_min_transit_sec': (
+            '-5',
+            'Dung sai âm (giây): xuất hiện sớm hơn = concurrent (để overlap merge xử lý).',
+        ),
+        'reid_directional_min_velocity_px': (
+            '5',
+            'Vận tốc ngang tối thiểu (px/giây) để xác định hướng di chuyển rõ ràng.',
+        ),
+        'reid_directional_edge_zone_ratio': (
+            '0.2',
+            'Bề rộng vùng biên (tỉ lệ width) tàu phải xuất hiện ở cam nhận.',
+        ),
+        'reid_directional_embedding_weight': (
+            '0.5',
+            'Trọng số embedding trong score handoff hướng.',
+        ),
+        'reid_directional_direction_weight': (
+            '0.3',
+            'Trọng số khớp hướng di chuyển trong score handoff.',
+        ),
+        'reid_directional_time_weight': (
+            '0.2',
+            'Trọng số hợp lý thời gian trong score handoff.',
+        ),
+        'reid_directional_accept_threshold': (
+            '0.8',
+            'Ngưỡng tổng score để chấp nhận handoff hướng.',
+        ),
+        'reid_directional_embedding_floor': (
+            '0.45',
+            'Sàn embedding cosine: dưới ngưỡng này không merge dù hướng/thời gian khớp.',
+        ),
+        'reid_reverse_motion_guard_enabled': (
+            'true',
+            'Chặn tạo IN giả khi tàu lùi ra chạm lại vùng cam trước (đã có OUT).',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed reid overlap merge port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured reid overlap merge port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed reid overlap merge port_configs: %s', err)
+        raise
 
 
 def _migrate_visual_stack_dinov2_port_configs() -> None:
@@ -747,7 +876,7 @@ def _ensure_training_snapshot_port_configs() -> None:
             'Enable saving full-quality vessel crops for model training.',
         ),
         'training_snapshot_interval_sec': (
-            '5.0',
+            '4',
             'Seconds between training snapshot saves per camera.',
         ),
         'training_snapshot_base_dir': (
@@ -755,7 +884,7 @@ def _ensure_training_snapshot_port_configs() -> None:
             'Directory under server/ for training data: ship_id crops, others/, and yolo/images+labels.',
         ),
         'training_snapshot_jpeg_quality': (
-            '95',
+            '100',
             'JPEG quality (50-100) for training crops and YOLO full frames.',
         ),
     }
@@ -817,11 +946,11 @@ def _ensure_rtsp_nvdec_port_configs() -> None:
 
     defaults = {
         'rtsp_nvdec_enabled': (
-            'false',
+            'true',
             'Hardware-decode RTSP via FFmpeg NVDEC (needs CUDA-enabled ffmpeg).',
         ),
         'ffmpeg_path': (
-            '',
+            'vendor/ffmpeg',
             'Optional path to ffmpeg with NVDEC; empty uses PATH then bundled imageio-ffmpeg.',
         ),
         'rtsp_transport': (
@@ -877,7 +1006,7 @@ def _ensure_sync_port_configs() -> None:
 
     defaults = {
         'sync_tolerance_ms': (
-            '1200',
+            '300',
             'Max timestamp spread (ms) for multi-camera frame sync. Lower = tighter sync; higher = fewer dropped batches.',
         ),
     }
@@ -931,7 +1060,7 @@ def _ensure_thread_tuning_port_configs() -> None:
         'thread_cv2_threads': ('2', 'OpenCV CPU threads for main process.'),
         'thread_ocr_omp_threads': ('3', 'OMP/MKL/OpenBLAS/torch threads for OCR subprocess.'),
         'thread_ocr_cv2_threads': ('2', 'OpenCV CPU threads for OCR subprocess.'),
-        'ocr_second_pass_conf_threshold': ('0.85', 'Run CLAHE OCR second pass only when first pass confidence is below this threshold. <=0 always runs both passes.'),
+        'ocr_second_pass_conf_threshold': ('0.9', 'Run CLAHE OCR second pass only when first pass confidence is below this threshold. <=0 always runs both passes.'),
     }
 
     dialect = engine.dialect.name
@@ -978,7 +1107,7 @@ def _ensure_clahe_port_configs() -> None:
 
     defaults = {
         'clahe_enable_gray_world': (
-            'true',
+            'false',
             'Gray-world white balance before CLAHE (heaviest per-frame CPU step, '
             'runs every frame even with no ship). Toggle off to test whether YOLO '
             'still detects well without it and cut CPU load. Restart pipeline after change.',
@@ -1454,7 +1583,7 @@ def _ensure_yolo_imgsz_port_config() -> None:
 
     defaults = {
         'yolo_imgsz': (
-            '640',
+            '960',
             'YOLO inference input size (letterbox, e.g. 640 or 960). Match fine-tune imgsz.',
         ),
     }
@@ -2118,6 +2247,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_anchored_identities()
     _ensure_sepay_port_configs()
     _ensure_visual_stack_port_configs()
+    _ensure_reid_overlap_merge_port_configs()
     _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()

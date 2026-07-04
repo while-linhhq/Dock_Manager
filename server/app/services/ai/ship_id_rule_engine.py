@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PATTERN = re.compile(r'([A-Z50]{2})[-\s]?(\d{4})')
 
+# Numeric suffix of a ship ID split from prefix, e.g. 'TT-0000' -> '0000'.
+_SUFFIX_RE = re.compile(r'-(\d+)$')
+
+
+def _is_degenerate_number(candidate_id: str) -> bool:
+    """True when the numeric suffix is all zeros (e.g. TT-0000, NC-00000).
+
+    OCR on hull texture/shadow frequently hallucinates an all-zero number at
+    high confidence. A real registration number is never all zeros, so reject
+    it at the source before it can vote / auto-create a vessel.
+    """
+    match = _SUFFIX_RE.search(candidate_id)
+    if not match:
+        return False
+    digits = match.group(1)
+    return set(digits) == {'0'}
+
 
 class ShipIdRuleEngine:
     def __init__(self) -> None:
@@ -34,10 +51,16 @@ class ShipIdRuleEngine:
         or the original ID unchanged.
         """
         normalized = candidate_id.strip().upper()
+        if _is_degenerate_number(normalized):
+            return None
         with self._lock:
             if normalized in self._blacklist:
                 return None
-            return self._convert_map.get(normalized, normalized)
+            corrected = self._convert_map.get(normalized, normalized)
+        # A convert-map target must also survive the degenerate check.
+        if _is_degenerate_number(corrected):
+            return None
+        return corrected
 
     def extract_ship_ids(self, text: str) -> list[dict]:
         """
