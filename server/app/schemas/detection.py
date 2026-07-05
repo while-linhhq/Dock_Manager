@@ -38,6 +38,10 @@ class DetectionRead(DetectionBase):
     audit_image_url: Optional[str] = None
     video_url: Optional[str] = None
     is_over_berth_limit: bool = False
+    berth_in_camera_id: Optional[int] = None
+    berth_in_camera_name: Optional[str] = None
+    berth_out_camera_id: Optional[int] = None
+    berth_out_camera_name: Optional[str] = None
 
     model_config = {'from_attributes': True}
 

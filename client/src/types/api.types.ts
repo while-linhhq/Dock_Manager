@@ -56,6 +56,8 @@ export type DetectionRead = {
   track_id?: string | null;
   start_time?: string | null;
   end_time?: string | null;
+  berth_in_time?: string | null;
+  berth_out_time?: string | null;
   video_path?: string | null;
   video_url?: string | null;
   audit_image_path?: string | null;
@@ -66,6 +68,10 @@ export type DetectionRead = {
   is_over_berth_limit?: boolean;
   ocr_results?: Array<Record<string, unknown>> | null;
   vessel?: VesselRead;
+  berth_in_camera_id?: number | null;
+  berth_in_camera_name?: string | null;
+  berth_out_camera_id?: number | null;
+  berth_out_camera_name?: string | null;
 }
 
 export type DetectionMediaRead = {

@@ -139,7 +139,7 @@ class PerCameraPipeline(threading.Thread):
             max_tentative_misses=1,
             max_lost_frames=1,
             iou_threshold=config.track_iou_threshold,
-            reid_window_sec=0.0,
+            reid_window_sec=config.track_reid_window_sec,
             reid_max_centroid_dist=config.track_reid_max_dist,
             on_track_removed=self._on_local_track_removed,
             camera_id=config.camera_id,
@@ -480,6 +480,28 @@ class PerCameraPipeline(threading.Thread):
             embedding=embedding,
             frame_shape=(height, width),
         )
+        try:
+            reid_diag = self._reid_manager.diagnose_track(
+                int(self.config.camera_id),
+                track,
+                embedding,
+                now,
+            )
+            ck = ocr_cache_key_track(str(track.track_id), int(self.config.camera_id))
+            with self._ocr_lock:
+                cached = self._ocr_cache.get(ck)
+                entry = cached if isinstance(cached, dict) else {}
+                entry['reid_diag'] = reid_diag
+                entry['time'] = time.time()
+                self._ocr_cache[ck] = entry
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                'reid diagnose_track failed for camera_id=%s track_id=%s',
+                self.config.camera_id,
+                track.track_id,
+            )
         global_ship_id = self._reid_manager.get_global_ship_id(
             int(self.config.camera_id),
             str(track.track_id),

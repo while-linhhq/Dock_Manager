@@ -12,6 +12,11 @@ import numpy as np
 
 from app.services.ai.boat_tracker import TrackedBoat
 from app.services.ai.embedding_extractor import cosine_similarity, normalize_embedding
+from app.services.ai.handoff_matcher import OverlapMergeConfig, OverlapMergeMatcher
+from app.services.ai.directional_handoff import (
+    DirectionalHandoffConfig,
+    DirectionalHandoffMatcher,
+)
 from app.services.ship_id_utils import is_unknown_ship_id, normalize_ship_id
 
 if TYPE_CHECKING:
@@ -56,7 +61,11 @@ class GlobalIdentity:
     anchored: bool = False
     berth_in_ts: float | None = None
     berth_out_ts: float | None = None
+    berth_in_camera_id: int | None = None
+    berth_out_camera_id: int | None = None
     events_written: bool = False
+    dominant_hsv_history: list[tuple[int, int, int]] = field(default_factory=list)
+    vx_history: list[float] = field(default_factory=list)
 
 
 class CrossCameraReIdManager:
@@ -80,6 +89,9 @@ class CrossCameraReIdManager:
         seam_anchor_verifier: 'SeamAnchorVerifier | None' = None,
         ship_id_catalog: 'ShipIdCatalog | None' = None,
         is_track_identity_locked: Callable[[int, str], bool] | None = None,
+        overlap_merge_config: 'OverlapMergeConfig | None' = None,
+        directional_handoff_config: 'DirectionalHandoffConfig | None' = None,
+        reverse_motion_guard_enabled: bool = True,
     ) -> None:
         self._camera_order = [int(camera_id) for camera_id in camera_order]
         self._camera_index = {
@@ -102,6 +114,32 @@ class CrossCameraReIdManager:
         )
         # Hard backstop: never let the identity table grow unbounded (RAM leak guard).
         self._max_identities = 2000
+        self._frame_width_by_camera: dict[int, float] = {}
+        self._layout_x_by_camera: dict[int, float] = {}
+        self._reverse_motion_guard_enabled = bool(reverse_motion_guard_enabled)
+        self._overlap_matcher = OverlapMergeMatcher(
+            overlap_merge_config or OverlapMergeConfig(),
+            is_adjacent=self._cameras_are_adjacent_pair,
+            frame_width_for=lambda cam: self._frame_width_by_camera.get(int(cam), 0.0),
+        )
+        self._directional_matcher = DirectionalHandoffMatcher(
+            directional_handoff_config or DirectionalHandoffConfig(),
+            is_adjacent=self._cameras_are_adjacent_pair,
+            frame_width_for=lambda cam: self._frame_width_by_camera.get(int(cam), 0.0),
+            layout_x_for=lambda cam: self._layout_x_by_camera.get(int(cam)),
+        )
+
+    def set_camera_layout(self, layout_x_by_camera: dict[int, float]) -> None:
+        """Record per-camera horizontal layout position (from camera-group members).
+
+        Used by the directional handoff matcher to know which camera sits to the
+        left/right of which, so a valid sequential handoff requires the source
+        track's velocity to point toward the shared border.
+        """
+        with self._lock:
+            self._layout_x_by_camera = {
+                int(cam): float(x) for cam, x in (layout_x_by_camera or {}).items()
+            }
 
     def set_is_track_identity_locked(
         self,
@@ -189,6 +227,8 @@ class CrossCameraReIdManager:
             now = time.time()
             self._flush_expired_locked(now)
             camera_key = int(camera_id)
+            if frame_shape is not None and len(frame_shape) >= 2:
+                self._frame_width_by_camera[camera_key] = float(frame_shape[1])
             track_key = (camera_key, str(track.track_id))
             global_id = self._track_to_global.get(track_key)
             identity = self._identities.get(global_id) if global_id else None
@@ -198,6 +238,8 @@ class CrossCameraReIdManager:
                     camera_key,
                     track.box,
                     embedding,
+                    dominant_hsv=getattr(track, 'dominant_color_hsv', None),
+                    ship_id=track.ship_id or track.last_known_ship_id,
                 )
                 if resurrected_id is not None:
                     identity = self._identities.get(resurrected_id)
@@ -351,19 +393,39 @@ class CrossCameraReIdManager:
                 identity = self._create_empty_identity(int(camera_id), str(track_id))
                 self._track_to_global[key] = identity.global_id
             if direction == 'in':
+                # Reverse-motion guard: the boat already departed this identity
+                # (berth_out_ts set) and is now backing out, clipping a previous
+                # camera's zone. This is NOT a new arrival — do not re-open the
+                # berth window or fabricate an OUT→IN cycle. Same boat, same
+                # identity, no new crossing event.
+                if (
+                    self._reverse_motion_guard_enabled
+                    and identity.berth_out_ts is not None
+                ):
+                    _log.info(
+                        'reid: skip IN crossing for %s on cam=%s — reverse re-touch '
+                        'after departure (berth_out_ts already set)',
+                        identity.global_id,
+                        camera_id,
+                    )
+                    return
                 if identity.berth_in_ts is None:
                     identity.berth_in_ts = ts
+                    identity.berth_in_camera_id = int(camera_id)
                 elif ts < identity.berth_in_ts:
                     identity.berth_in_ts = ts
+                    identity.berth_in_camera_id = int(camera_id)
             elif direction == 'out':
                 if identity.berth_in_ts is not None and identity.berth_out_ts is None:
                     identity.berth_out_ts = ts
+                    identity.berth_out_camera_id = int(camera_id)
                 elif (
                     identity.berth_in_ts is not None
                     and identity.berth_out_ts is not None
                     and ts > identity.berth_out_ts
                 ):
                     identity.berth_out_ts = ts
+                    identity.berth_out_camera_id = int(camera_id)
 
     def get_global_ship_id(self, camera_id: int, track_id: str) -> str | None:
         with self._lock:
@@ -379,6 +441,73 @@ class CrossCameraReIdManager:
         """Return the gid_* identifier for this (camera_id, track_id) pair, or None."""
         with self._lock:
             return self._track_to_global.get((int(camera_id), str(track_id)))
+
+    def diagnose_track(
+        self,
+        camera_id: int,
+        track: TrackedBoat,
+        embedding: np.ndarray | None,
+        now: float,
+    ) -> dict:
+        """Debug overlay: live ReID comparison values vs configured thresholds.
+
+        Returns per-signal dicts of the *current* computed score against the
+        configured accept threshold, so the operator can tune config while
+        watching the preview. Diagnostic only — never mutates identity state.
+        """
+        with self._lock:
+            track_key = (int(camera_id), str(track.track_id))
+            own = self._identity_for_track(track_key)
+            own_gid = own.global_id if own is not None else None
+
+            visual_best = 0.0
+            visual_target: GlobalIdentity | None = None
+            if embedding is not None:
+                for identity in self._identities.values():
+                    if identity.global_id == own_gid:
+                        continue
+                    if identity.finalized:
+                        continue
+                    if not self._is_camera_candidate(int(camera_id), identity):
+                        continue
+                    score = self._identity_similarity(identity, embedding)
+                    if score > visual_best:
+                        visual_best = score
+                        visual_target = identity
+
+            others = [
+                idn for idn in self._identities.values() if idn.global_id != own_gid
+            ]
+            try:
+                overlap = self._overlap_matcher.diagnose(others, track, now)
+            except Exception:
+                overlap = None
+            try:
+                directional = self._directional_matcher.diagnose(others, track, now)
+            except Exception:
+                directional = None
+
+            seam = None
+            if self._seam_anchor_verifier is not None and own_gid is not None:
+                try:
+                    seam = self._seam_anchor_verifier.diagnose(own_gid)
+                except Exception:
+                    seam = None
+
+            return {
+                'own_gid': own_gid,
+                'visual': {
+                    'score': float(visual_best),
+                    'threshold': float(self._visual_threshold),
+                    'target_gid': visual_target.global_id if visual_target else None,
+                    'target_ship_id': (
+                        visual_target.ship_id if visual_target else None
+                    ),
+                },
+                'overlap': overlap,
+                'directional': directional,
+                'seam': seam,
+            }
 
     def resolve_lookup_track_ids(self, track_id: str) -> list[str]:
         """
@@ -462,6 +591,14 @@ class CrossCameraReIdManager:
         if embedding is not None:
             identity.embeddings.append(normalize_embedding(embedding))
             identity.embeddings = identity.embeddings[-20:]
+        hsv = getattr(track, 'dominant_color_hsv', None)
+        if hsv is not None:
+            identity.dominant_hsv_history.append(tuple(int(v) for v in hsv))
+            identity.dominant_hsv_history = identity.dominant_hsv_history[-20:]
+        vel = getattr(track, 'velocity', None)
+        if vel is not None:
+            identity.vx_history.append(float(vel[0]))
+            identity.vx_history = identity.vx_history[-10:]
         if track.ship_id or track.last_known_ship_id:
             _append_ocr_history(
                 identity.ocr_history,
@@ -488,6 +625,14 @@ class CrossCameraReIdManager:
         if embedding is None:
             return None
 
+        # Ship-id conflict guard for the embedding-only path: a track carrying a
+        # valid OCR ship_id must never be merged into an identity that already
+        # holds a *different* valid ship_id, no matter how high the cosine score.
+        # Without this, embedding noise (distinct boats reach ~0.86+) merges two
+        # different vessels into one global id and one detection is lost.
+        incoming_sid = normalize_ship_id(ship_id) if ship_id else ''
+        incoming_known = bool(incoming_sid) and not is_unknown_ship_id(incoming_sid)
+
         best_identity: GlobalIdentity | None = None
         best_score = 0.0
         for identity in self._identities.values():
@@ -499,6 +644,14 @@ class CrossCameraReIdManager:
                 continue
             if not self._is_camera_candidate(camera_id, identity):
                 continue
+            if incoming_known:
+                identity_sid = normalize_ship_id(identity.ship_id or '')
+                if (
+                    identity_sid
+                    and not is_unknown_ship_id(identity_sid)
+                    and identity_sid != incoming_sid
+                ):
+                    continue
             score = self._identity_similarity(identity, embedding)
             if score > best_score:
                 best_score = score
@@ -506,7 +659,71 @@ class CrossCameraReIdManager:
 
         if best_identity is not None and best_score >= self._visual_threshold:
             return best_identity
+
+        # Ship-id conflict guard also applies to the directional/overlap fallback
+        # matchers below. Those matchers score on motion/time/embedding only and
+        # have NO ship_id check, so without pre-filtering, a track carrying a
+        # valid plate B could still be merged into a plate-A identity — the exact
+        # "2 tàu OCR ra 2 mã khác nhau nhưng bị gộp 1 gid" over-merge. Drop any
+        # identity holding a different valid plate from the candidate list handed
+        # to both fallbacks.
+        fallback_candidates = list(self._identities.values())
+        if incoming_known:
+            fallback_candidates = [
+                identity
+                for identity in fallback_candidates
+                if not self._identity_ship_id_conflicts(identity, incoming_sid)
+            ]
+
+        # Step 3.5: directional sequential handoff — boat left an adjacent camera
+        # heading toward the shared border and reappears here after a plausible
+        # transit gap. Covers OCR-less handoff that overlap merge (concurrent-only)
+        # cannot. Reverse re-touch (boat backing out) is rejected by the direction
+        # gate because its velocity points away from the border.
+        try:
+            directional_gid = self._directional_matcher.best_match(
+                fallback_candidates,
+                track,
+                now,
+            )
+        except Exception:
+            _log.exception('reid: directional handoff matcher failed')
+            directional_gid = None
+        if directional_gid is not None:
+            return self._identities.get(directional_gid)
+
+        # Step 4: overlap merge (weak fusion signal) — boat seen concurrently on
+        # an adjacent overlapping-FOV camera, no strong embedding / OCR.
+        try:
+            overlap_gid = self._overlap_matcher.best_match(
+                fallback_candidates,
+                track,
+                now,
+            )
+        except Exception:
+            _log.exception('reid: overlap merge matcher failed')
+            overlap_gid = None
+        if overlap_gid is not None:
+            return self._identities.get(overlap_gid)
+
         return None
+
+    def _identity_ship_id_conflicts(
+        self,
+        identity: GlobalIdentity,
+        incoming_sid: str,
+    ) -> bool:
+        """True when the identity holds a *different* valid plate than incoming.
+
+        Used to keep the directional / overlap fallback matchers from merging a
+        track carrying plate B into an identity already confirmed as plate A.
+        """
+        if not incoming_sid or is_unknown_ship_id(incoming_sid):
+            return False
+        identity_sid = normalize_ship_id(identity.ship_id or '')
+        if not identity_sid or is_unknown_ship_id(identity_sid):
+            return False
+        return identity_sid != incoming_sid
 
     def _is_camera_candidate(self, camera_id: int, identity: GlobalIdentity) -> bool:
         candidate_cameras = {int(camera_id), *self.adjacent_camera_ids(camera_id)}
@@ -536,17 +753,15 @@ class CrossCameraReIdManager:
         keep.removed_tracks |= other.removed_tracks
         keep.last_track = other.last_track or keep.last_track
         if other.berth_in_ts is not None:
-            keep.berth_in_ts = (
-                other.berth_in_ts
-                if keep.berth_in_ts is None
-                else min(keep.berth_in_ts, other.berth_in_ts)
-            )
+            # Giữ camera đi kèm mốc berth_in sớm nhất (tàu IN ở camera nào).
+            if keep.berth_in_ts is None or other.berth_in_ts < keep.berth_in_ts:
+                keep.berth_in_ts = other.berth_in_ts
+                keep.berth_in_camera_id = other.berth_in_camera_id
         if other.berth_out_ts is not None:
-            keep.berth_out_ts = (
-                other.berth_out_ts
-                if keep.berth_out_ts is None
-                else max(keep.berth_out_ts, other.berth_out_ts)
-            )
+            # Giữ camera đi kèm mốc berth_out muộn nhất (tàu OUT ở camera nào).
+            if keep.berth_out_ts is None or other.berth_out_ts > keep.berth_out_ts:
+                keep.berth_out_ts = other.berth_out_ts
+                keep.berth_out_camera_id = other.berth_out_camera_id
         if keep.primary_camera_id is None:
             keep.primary_camera_id = other.primary_camera_id
         for camera_id, track_id in other.camera_tracks.items():
@@ -562,6 +777,28 @@ class CrossCameraReIdManager:
         if idx_a is None or idx_b is None:
             return False
         return abs(idx_a - idx_b) == 1
+
+    def _may_last_chance_merge(
+        self,
+        left: GlobalIdentity,
+        right: GlobalIdentity,
+    ) -> bool:
+        """Only collapse same-ship inactive identities when they are camera-handoff candidates.
+
+        Multiple boats in one camera can share OCR/ship_id. Merging those inactive
+        identities drops one persisted detection, so same-camera identities must stay separate.
+        """
+        left_cameras = {int(cam) for cam in left.camera_tracks}
+        right_cameras = {int(cam) for cam in right.camera_tracks}
+        if not left_cameras or not right_cameras:
+            return False
+        if left_cameras & right_cameras:
+            return False
+        return any(
+            self._cameras_are_adjacent_pair(left_cam, right_cam)
+            for left_cam in left_cameras
+            for right_cam in right_cameras
+        )
 
     def _allows_ship_id_attach(self, identity: GlobalIdentity, camera_id: int) -> bool:
         """Allow same ship_id on adjacent cameras (seam) but not two tracks on one camera."""
@@ -794,7 +1031,11 @@ class CrossCameraReIdManager:
             for other in list(self._identities.values()):
                 if other is identity or other.finalized:
                     continue
-                if other.ship_id == identity.ship_id and not other.active_tracks:
+                if (
+                    other.ship_id == identity.ship_id
+                    and not other.active_tracks
+                    and self._may_last_chance_merge(identity, other)
+                ):
                     other.finalized = True  # prevent re-visit if loop snapshot still holds this ref
                     identity = self._merge_identities(identity, other)
             # Prevent merged ocr_history from flipping ship_id away from the pre-merge value.
@@ -815,6 +1056,8 @@ class CrossCameraReIdManager:
         track.last_known_ship_id = track.ship_id
         track.berth_in_ts = identity.berth_in_ts
         track.berth_out_ts = identity.berth_out_ts
+        track.berth_in_camera_id = identity.berth_in_camera_id
+        track.berth_out_camera_id = identity.berth_out_camera_id
         history = list(identity.ocr_history)
         self._on_global_track_removed(track, history)
 
@@ -830,12 +1073,12 @@ class CrossCameraReIdManager:
                     identity.berth_in_ts,
                 )
 
-        camera_id = identity.primary_camera_id or next(iter(identity.camera_tracks), 0)
+        fallback_camera = identity.primary_camera_id or next(iter(identity.camera_tracks), 0)
         track_id = identity.global_id
 
         if identity.berth_in_ts is not None:
             record_boundary_crossing_event(
-                camera_id=int(camera_id),
+                camera_id=int(identity.berth_in_camera_id or fallback_camera),
                 track_id=str(track_id),
                 direction='in',
                 crossed_at_ts=float(identity.berth_in_ts),
@@ -843,7 +1086,7 @@ class CrossCameraReIdManager:
             )
         if identity.berth_out_ts is not None:
             record_boundary_crossing_event(
-                camera_id=int(camera_id),
+                camera_id=int(identity.berth_out_camera_id or fallback_camera),
                 track_id=str(track_id),
                 direction='out',
                 crossed_at_ts=float(identity.berth_out_ts),

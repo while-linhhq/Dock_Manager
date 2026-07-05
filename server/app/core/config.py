@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "secret"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # MinIO (Object Storage) for detection media — API :9100, Console UI :9101 (docker-compose)
     MINIO_ENDPOINT: str = "127.0.0.1:9100"
@@ -34,6 +35,9 @@ class Settings(BaseSettings):
     TRACK_MAX_TENTATIVE_SEC: float = 0.5
     TRACK_MAX_LOST_SEC: float = 4.0
     TRACK_IOU_THRESHOLD: float = 0.3
+    # Bỏ qua track có thời gian neo đậu (berth_out-berth_in, fallback dwell
+    # last_seen-first_seen) nhỏ hơn ngưỡng này (giây). 0 = tắt lọc.
+    TRACK_MIN_BERTH_DURATION_SEC: float = 0.0
     
     # Re-ID & Dedup logic
     TRACK_REID_WINDOW_SEC: float = 120.0
@@ -43,6 +47,26 @@ class Settings(BaseSettings):
     REID_HANDOFF_WINDOW_SEC: float = 30.0
     PRIMARY_ZONE_RATIO: float = 0.8
     EDGE_ZONE_RATIO: float = 0.1
+    # Concurrent overlap merge (cross-camera Re-ID Phần 2)
+    REID_OVERLAP_MERGE_ENABLED: bool = True
+    REID_EDGE_ZONE_RATIO: float = 0.15
+    REID_EMBEDDING_WEIGHT: float = 0.6
+    REID_COLOR_WEIGHT: float = 0.25
+    REID_SIZE_WEIGHT: float = 0.15
+    REID_ACCEPT_THRESHOLD: float = 0.6
+    REID_MIN_MARGIN: float = 0.12
+    # Directional sequential handoff (cross-camera Re-ID, OCR-less)
+    REID_DIRECTIONAL_HANDOFF_ENABLED: bool = True
+    REID_DIRECTIONAL_MAX_TRANSIT_SEC: float = 20.0
+    REID_DIRECTIONAL_MIN_TRANSIT_SEC: float = -3.0
+    REID_DIRECTIONAL_MIN_VELOCITY_PX: float = 5.0
+    REID_DIRECTIONAL_EDGE_ZONE_RATIO: float = 0.2
+    REID_DIRECTIONAL_EMBEDDING_WEIGHT: float = 0.5
+    REID_DIRECTIONAL_DIRECTION_WEIGHT: float = 0.3
+    REID_DIRECTIONAL_TIME_WEIGHT: float = 0.2
+    REID_DIRECTIONAL_ACCEPT_THRESHOLD: float = 0.6
+    REID_DIRECTIONAL_EMBEDDING_FLOOR: float = 0.45
+    REID_REVERSE_MOTION_GUARD_ENABLED: bool = True
     CLAHE_CLIP_LIMIT: float = 3.0
     CLAHE_TILE_SIZE: int = 8
     # Gray-world white balance before CLAHE (heaviest per-frame CPU step).
@@ -51,7 +75,7 @@ class Settings(BaseSettings):
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
     PREVIEW_MAX_WIDTH: int = 1280
-    PREVIEW_MAX_HEIGHT: int = 540
+    PREVIEW_MAX_HEIGHT: int = 720
 
     # OCR / Paddle configuration
     OCR_INTERVAL_SEC: float = 0.5

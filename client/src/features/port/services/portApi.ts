@@ -123,4 +123,7 @@ export const portApi = {
   stopPipeline: async (): Promise<{ message: string }> => {
     return httpClient.post('/pipeline/stop');
   },
+  shutdownServer: async (): Promise<{ message: string; orphan_ocr_killed: number[] }> => {
+    return httpClient.post('/pipeline/shutdown-server');
+  },
 };

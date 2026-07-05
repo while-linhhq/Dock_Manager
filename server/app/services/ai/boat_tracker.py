@@ -80,6 +80,8 @@ class TrackedBoat:
     ever_confirmed: bool = False
     berth_in_ts: float | None = None
     berth_out_ts: float | None = None
+    berth_in_camera_id: int | None = None
+    berth_out_camera_id: int | None = None
     berth_zone_overlap: float | None = None
     berth_zone_threshold: float | None = None
     ship_id_stable_candidate: str | None = None
@@ -113,6 +115,8 @@ class TrackedBoat:
             ever_confirmed=self.ever_confirmed,
             berth_in_ts=self.berth_in_ts,
             berth_out_ts=self.berth_out_ts,
+            berth_in_camera_id=self.berth_in_camera_id,
+            berth_out_camera_id=self.berth_out_camera_id,
             berth_zone_overlap=self.berth_zone_overlap,
             berth_zone_threshold=self.berth_zone_threshold,
             ship_id_stable_candidate=self.ship_id_stable_candidate,
@@ -472,7 +476,10 @@ class BoatTracker:
                 self._ship_id_evidence.pop(tid, None)
                 if not tb.ever_confirmed:
                     continue
-                if self.reid_window_sec > 0:
+                # Track đã có tín hiệu OUT khỏi vùng neo đậu (berth_out_ts) là kết
+                # thúc chắc chắn — flush NGAY, không ngâm re-id window. Chỉ track
+                # mất track khi CHƯA OUT mới chờ cửa sổ re-id để nối lại.
+                if self.reid_window_sec > 0 and tb.berth_out_ts is None:
                     vote_snap = _vote_id_from_hist(hist)
                     self._pending_removed.append(
                         PendingRemoved(

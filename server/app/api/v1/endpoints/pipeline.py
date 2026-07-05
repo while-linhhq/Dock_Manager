@@ -61,6 +61,74 @@ async def stop_pipeline():
     await asyncio.to_thread(pipeline_service.stop)
     return {"message": "Pipeline stopped"}
 
+def _kill_orphan_ocr_workers() -> list[int]:
+    """Kill lingering ``ocr-gpu-worker`` child processes holding VRAM.
+
+    The pipeline stop path closes the OCR subprocess cleanly, but a crashed or
+    force-restarted process can leave orphans reparented to init that keep
+    1.5-3GB of CUDA context each. Reap them explicitly on server shutdown so a
+    subsequent start does not hit CUBLAS_ALLOC_FAILED.
+    """
+    import psutil
+
+    killed: list[int] = []
+    me = psutil.Process()
+    for proc in psutil.process_iter(['name', 'cmdline']):
+        try:
+            if proc.pid == me.pid:
+                continue
+            name = proc.info.get('name') or ''
+            cmdline = ' '.join(proc.info.get('cmdline') or [])
+            if 'ocr-gpu-worker' in name or 'ocr-gpu-worker' in cmdline:
+                proc.terminate()
+                killed.append(proc.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if killed:
+        gone, alive = psutil.wait_procs(
+            [psutil.Process(pid) for pid in killed if psutil.pid_exists(pid)],
+            timeout=3.0,
+        )
+        for proc in alive:
+            try:
+                proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    return killed
+
+
+@router.post("/shutdown-server")
+async def shutdown_server(_=Depends(get_current_user)):
+    """Ngắt toàn bộ server: dừng pipeline, kill orphan OCR, thoát tiến trình.
+
+    Trả response trước rồi gửi SIGTERM cho chính tiến trình uvicorn để lifespan
+    shutdown chạy đủ (đóng pipeline, sepay, DB) thay vì kill cứng.
+    """
+    import os
+    import signal
+    import threading
+
+    if pipeline_service.is_running:
+        try:
+            await asyncio.to_thread(pipeline_service.stop)
+        except Exception:
+            pass
+
+    killed = await asyncio.to_thread(_kill_orphan_ocr_workers)
+
+    def _terminate_self() -> None:
+        import time
+
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_terminate_self, daemon=True).start()
+    return {
+        "message": "Server đang tắt",
+        "orphan_ocr_killed": killed,
+    }
+
+
 @router.get("/status")
 async def get_status():
     gpu = pipeline_service.gpu_status

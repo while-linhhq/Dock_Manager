@@ -18,8 +18,18 @@ _encoded_frame_seq = 0
 _jpeg: bytes | None = None
 # Default encode cadence (~30 FPS cap) until set_target_fps runs after pipeline start.
 _min_interval_sec = 1.0 / 30.0
-_jpeg_quality = 58
-_max_width = 960
+_jpeg_quality = 85
+_max_width = 1280
+
+
+def set_jpeg_quality(quality: int) -> None:
+    global _jpeg_quality
+    try:
+        q = int(quality)
+    except Exception:
+        return
+    if 1 <= q <= 100:
+        _jpeg_quality = q
 
 
 def set_target_fps(fps: float) -> None:

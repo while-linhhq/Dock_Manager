@@ -75,11 +75,19 @@ def _env_int(name: str, default: int, *, port_key: str | None = None) -> int:
         return default
 
 
-def apply_thread_env_caps(*, ocr_subprocess: bool = False) -> dict[str, str]:
+def apply_thread_env_caps(
+    *, ocr_subprocess: bool = False, force: bool = False
+) -> dict[str, str]:
     """Set OMP/MKL/OpenBLAS/NUMEXPR thread env vars.
 
     Call at the very top of a process entrypoint, before importing numpy/torch/
     cv2/paddle. Returns the env keys that were set (for logging).
+
+    ``force=True`` overwrites values already present in the environment. Use it
+    in a spawned child (e.g. the OCR subprocess) which inherits the parent's
+    ``OMP_NUM_THREADS`` — without force the child keeps the parent's larger cap
+    instead of its own smaller budget. Operator intent is still honoured because
+    the value comes from DOCK_* env / port_configs read in ``_env_int``.
     """
     if not _caps_enabled():
         return {}
@@ -99,9 +107,10 @@ def apply_thread_env_caps(*, ocr_subprocess: bool = False) -> dict[str, str]:
         'VECLIB_MAXIMUM_THREADS': str(omp),
     }
     # Only set if not already provided by the operator, so external overrides win.
+    # In a forced child, overwrite inherited parent values (see docstring).
     applied: dict[str, str] = {}
     for key, value in caps.items():
-        if os.environ.get(key, '').strip():
+        if not force and os.environ.get(key, '').strip():
             continue
         os.environ[key] = value
         applied[key] = value

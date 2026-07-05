@@ -34,6 +34,8 @@ from app.utils.ai.gpu_bootstrap import init_cuda_library_path
 from app.services.ai.background_model import BackgroundModelConfig, BackgroundModelRegistry
 from app.services.ai.boat_tracker import BoatTracker, TrackState
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
+from app.services.ai.handoff_matcher import OverlapMergeConfig
+from app.services.ai.directional_handoff import DirectionalHandoffConfig
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.group_frame_hub import GroupFrameHub
@@ -173,7 +175,14 @@ class PipelineService:
     @staticmethod
     def _configure_dashboard_preview(runtime_cfg: dict[str, Any]) -> None:
         pipeline_preview.set_target_fps(float(runtime_cfg['record_fps']))
-        pipeline_preview.set_max_width(int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)))
+        # Preserve group-camera fused canvas detail. The dashboard renderer already
+        # fits the image to the visible panel, so server-side downscale should not
+        # make wide group previews smaller than the configured fused width.
+        preview_max_width = max(
+            int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)),
+            int(runtime_cfg.get('fused_frame_max_width', 0) or 0),
+        )
+        pipeline_preview.set_max_width(preview_max_width)
 
     def _init_visual_stack(self, runtime_cfg: dict[str, Any]) -> None:
         self._runtime_cache = RuntimeCacheRedis(
@@ -338,6 +347,7 @@ class PipelineService:
                 0,
                 self._to_int(cfg_map.get('sync_tolerance_ms', ''), 1200),
             ),
+            'sync_camera_offsets_ms': cfg_map.get('sync_camera_offsets_ms', '') or '',
             'reid_embedding_model_path': _s(
                 'reid_embedding_model_path',
                 settings.REID_EMBEDDING_MODEL_PATH,
@@ -357,6 +367,78 @@ class PipelineService:
             'edge_zone_ratio': self._to_float(
                 cfg_map.get('edge_zone_ratio', ''),
                 float(settings.EDGE_ZONE_RATIO),
+            ),
+            'reid_overlap_merge_enabled': self._to_bool(
+                cfg_map.get('reid_overlap_merge_enabled', ''),
+                bool(settings.REID_OVERLAP_MERGE_ENABLED),
+            ),
+            'reid_edge_zone_ratio': self._to_float(
+                cfg_map.get('reid_edge_zone_ratio', ''),
+                float(settings.REID_EDGE_ZONE_RATIO),
+            ),
+            'reid_embedding_weight': self._to_float(
+                cfg_map.get('reid_embedding_weight', ''),
+                float(settings.REID_EMBEDDING_WEIGHT),
+            ),
+            'reid_color_weight': self._to_float(
+                cfg_map.get('reid_color_weight', ''),
+                float(settings.REID_COLOR_WEIGHT),
+            ),
+            'reid_size_weight': self._to_float(
+                cfg_map.get('reid_size_weight', ''),
+                float(settings.REID_SIZE_WEIGHT),
+            ),
+            'reid_accept_threshold': self._to_float(
+                cfg_map.get('reid_accept_threshold', ''),
+                float(settings.REID_ACCEPT_THRESHOLD),
+            ),
+            'reid_min_margin': self._to_float(
+                cfg_map.get('reid_min_margin', ''),
+                float(settings.REID_MIN_MARGIN),
+            ),
+            'reid_directional_handoff_enabled': self._to_bool(
+                cfg_map.get('reid_directional_handoff_enabled', ''),
+                bool(settings.REID_DIRECTIONAL_HANDOFF_ENABLED),
+            ),
+            'reid_directional_max_transit_sec': self._to_float(
+                cfg_map.get('reid_directional_max_transit_sec', ''),
+                float(settings.REID_DIRECTIONAL_MAX_TRANSIT_SEC),
+            ),
+            'reid_directional_min_transit_sec': self._to_float(
+                cfg_map.get('reid_directional_min_transit_sec', ''),
+                float(settings.REID_DIRECTIONAL_MIN_TRANSIT_SEC),
+            ),
+            'reid_directional_min_velocity_px': self._to_float(
+                cfg_map.get('reid_directional_min_velocity_px', ''),
+                float(settings.REID_DIRECTIONAL_MIN_VELOCITY_PX),
+            ),
+            'reid_directional_edge_zone_ratio': self._to_float(
+                cfg_map.get('reid_directional_edge_zone_ratio', ''),
+                float(settings.REID_DIRECTIONAL_EDGE_ZONE_RATIO),
+            ),
+            'reid_directional_embedding_weight': self._to_float(
+                cfg_map.get('reid_directional_embedding_weight', ''),
+                float(settings.REID_DIRECTIONAL_EMBEDDING_WEIGHT),
+            ),
+            'reid_directional_direction_weight': self._to_float(
+                cfg_map.get('reid_directional_direction_weight', ''),
+                float(settings.REID_DIRECTIONAL_DIRECTION_WEIGHT),
+            ),
+            'reid_directional_time_weight': self._to_float(
+                cfg_map.get('reid_directional_time_weight', ''),
+                float(settings.REID_DIRECTIONAL_TIME_WEIGHT),
+            ),
+            'reid_directional_accept_threshold': self._to_float(
+                cfg_map.get('reid_directional_accept_threshold', ''),
+                float(settings.REID_DIRECTIONAL_ACCEPT_THRESHOLD),
+            ),
+            'reid_directional_embedding_floor': self._to_float(
+                cfg_map.get('reid_directional_embedding_floor', ''),
+                float(settings.REID_DIRECTIONAL_EMBEDDING_FLOOR),
+            ),
+            'reid_reverse_motion_guard_enabled': self._to_bool(
+                cfg_map.get('reid_reverse_motion_guard_enabled', ''),
+                bool(settings.REID_REVERSE_MOTION_GUARD_ENABLED),
             ),
             'clahe_clip_limit': self._to_float(
                 cfg_map.get('clahe_clip_limit', ''),
@@ -1170,10 +1252,45 @@ class PipelineService:
                 if getattr(tb, 'berth_out_ts', None)
                 else None
             )
+            min_berth_sec = self._min_berth_duration_sec(db)
+            if min_berth_sec > 0:
+                # Yêu cầu có thời lượng neo đậu thực sự: phải đủ cả berth_in và
+                # berth_out. Track không có thời lượng neo đậu (thiếu IN/OUT) coi
+                # như không đạt ngưỡng → bỏ qua, kể cả UNKNOWN.
+                if berth_in_dt is None or berth_out_dt is None:
+                    _log.info(
+                        'Skip persist track=%s ship=%s: no berth duration (in=%s out=%s), '
+                        'min_berth=%.1fs',
+                        tb.track_id,
+                        ship_id,
+                        berth_in_dt,
+                        berth_out_dt,
+                        min_berth_sec,
+                    )
+                    return
+                dwell_sec = (berth_out_dt - berth_in_dt).total_seconds()
+                if dwell_sec < min_berth_sec:
+                    _log.info(
+                        'Skip persist track=%s ship=%s: berth dwell=%.1fs < min_berth=%.1fs',
+                        tb.track_id,
+                        ship_id,
+                        dwell_sec,
+                        min_berth_sec,
+                    )
+                    return
             cam_id = int(getattr(tb, 'camera_id', 0) or 0)
-            if self._camera_has_boundary(cam_id) and berth_in_dt is None:
+            has_known_ship_id = not is_unknown_ship_id(ship_id)
+            has_ocr_evidence = any(
+                not is_unknown_ship_id(str(candidate or '').strip().upper())
+                for candidate, _confidence in (hist or [])
+            )
+            if (
+                self._camera_has_boundary(cam_id)
+                and berth_in_dt is None
+                and not (has_known_ship_id or has_ocr_evidence)
+            ):
                 _log.debug(
-                    'Skip persist track=%s camera=%s: no valid berth IN in zone',
+                    'Skip persist track=%s camera=%s: no valid berth IN and no OCR identity',
                     tb.track_id,
                     cam_id,
                 )
@@ -1408,6 +1525,15 @@ class PipelineService:
             raise
 
         if det_id_for_invoice is not None:
+            try:
+                from app.services.detection_merge_service import absorb_contained
+
+                det_id_for_invoice = absorb_contained(db, det_id_for_invoice)
+            except Exception:
+                _log.exception(
+                    'detection_merge failed for detection_id=%s',
+                    det_id_for_invoice,
+                )
             try:
                 from app.services.detection_invoice_service import ensure_ai_invoice_for_detection
 
@@ -1663,7 +1789,41 @@ class PipelineService:
             edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
             on_global_track_removed=combined_on_removed,
             ship_id_catalog=self._ship_id_catalog,
+            overlap_merge_config=OverlapMergeConfig(
+                enabled=bool(runtime_cfg['reid_overlap_merge_enabled']),
+                edge_zone_ratio=float(runtime_cfg['reid_edge_zone_ratio']),
+                embedding_weight=float(runtime_cfg['reid_embedding_weight']),
+                color_weight=float(runtime_cfg['reid_color_weight']),
+                size_weight=float(runtime_cfg['reid_size_weight']),
+                accept_threshold=float(runtime_cfg['reid_accept_threshold']),
+                min_margin=float(runtime_cfg['reid_min_margin']),
+            ),
+            directional_handoff_config=DirectionalHandoffConfig(
+                enabled=bool(runtime_cfg['reid_directional_handoff_enabled']),
+                max_transit_sec=float(runtime_cfg['reid_directional_max_transit_sec']),
+                min_transit_sec=float(runtime_cfg['reid_directional_min_transit_sec']),
+                min_velocity_px=float(runtime_cfg['reid_directional_min_velocity_px']),
+                edge_zone_ratio=float(runtime_cfg['reid_directional_edge_zone_ratio']),
+                embedding_weight=float(runtime_cfg['reid_directional_embedding_weight']),
+                direction_weight=float(runtime_cfg['reid_directional_direction_weight']),
+                time_weight=float(runtime_cfg['reid_directional_time_weight']),
+                accept_threshold=float(runtime_cfg['reid_directional_accept_threshold']),
+                embedding_floor=float(runtime_cfg['reid_directional_embedding_floor']),
+            ),
+            reverse_motion_guard_enabled=bool(
+                runtime_cfg['reid_reverse_motion_guard_enabled']
+            ),
         )
+        # Feed camera layout geometry (layout_x per camera) so the directional
+        # handoff matcher knows which camera sits left/right of which.
+        try:
+            layout_x_by_camera = {
+                int(member.camera_id): float(getattr(member, 'layout_x', 0) or 0)
+                for member in ordered_members
+            }
+            self._reid_manager.set_camera_layout(layout_x_by_camera)
+        except Exception:
+            _log.exception('reid: failed to set camera layout geometry')
         embedding_extractor = EmbeddingExtractor(
             model_path=runtime_cfg['reid_embedding_model_path'] or None,
             device=runtime_cfg['device'],
@@ -2231,6 +2391,19 @@ class PipelineService:
         )
         tracker.flush_shutdown_logs()
         return results
+
+    def _min_berth_duration_sec(self, db: Session) -> float:
+        """Min neo-đậu dwell (giây) để track được lưu detection. Đọc live từ
+        port_configs (key track_min_berth_duration_sec), fallback settings."""
+        try:
+            row = port_config_repo.get_by_key(db, 'track_min_berth_duration_sec')
+            raw = str(row.value) if row is not None and row.value is not None else ''
+        except Exception:
+            raw = ''
+        return self._to_float(
+            raw,
+            float(getattr(settings, 'TRACK_MIN_BERTH_DURATION_SEC', 0.0)),
+        )
 
     def _camera_has_boundary(self, camera_id: int) -> bool:
         """True when camera has active boundary config with a valid berth_zone polygon."""

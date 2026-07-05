@@ -28,6 +28,7 @@ class DetectionRepository:
         event_date: Optional[date] = None,
     ) -> List[Detection]:
         q = db.query(Detection).options(joinedload(Detection.vessel))
+        q = q.filter(Detection.deleted_at.is_(None))
         if vessel_id is not None:
             q = q.filter(Detection.vessel_id == vessel_id)
         if ship_id:
@@ -102,6 +103,8 @@ class DetectionRepository:
 
         earliest = berth_in - timedelta(hours=window_hours)
         latest = berth_out + timedelta(hours=window_hours)
+        # Candidate phải có berth_in; berth_out có thể NULL (track mất giữa
+        # chừng) — absorb_contained dùng end_time fallback cho duration.
         return (
             db.query(Detection)
             .options(joinedload(Detection.invoices))
@@ -111,9 +114,8 @@ class DetectionRepository:
                 Detection.deleted_at.is_(None),
                 Detection.is_accepted.isnot(True),
                 Detection.berth_in_time.isnot(None),
-                Detection.berth_out_time.isnot(None),
                 Detection.berth_in_time >= earliest,
-                Detection.berth_out_time <= latest,
+                Detection.berth_in_time <= latest,
             )
             .all()
         )

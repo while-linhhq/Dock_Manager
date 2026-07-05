@@ -995,6 +995,60 @@ def _ensure_rtsp_nvdec_port_configs() -> None:
         raise
 
 
+def _ensure_min_berth_duration_port_config() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'track_min_berth_duration_sec': (
+            '10',
+            'Bo qua track/detection co thoi gian neo dau (berth_out-berth_in, '
+            'fallback dwell last_seen-first_seen) nho hon nguong nay (giay), ke ca '
+            'UNKNOWN. 0 = tat loc.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed min berth duration port_config manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured min berth duration port_config key')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed min berth duration port_config: %s', err)
+        raise
+
+
 def _ensure_sync_port_configs() -> None:
     try:
         inspector = inspect(engine)
@@ -1008,6 +1062,10 @@ def _ensure_sync_port_configs() -> None:
         'sync_tolerance_ms': (
             '300',
             'Max timestamp spread (ms) for multi-camera frame sync. Lower = tighter sync; higher = fewer dropped batches.',
+        ),
+        'sync_camera_offsets_ms': (
+            '',
+            'Per-camera latency offsets for frame sync, JSON map or comma list (e.g. {"201":0,"301":4500}). Positive value means that camera content is delayed by that many ms.',
         ),
     }
 
@@ -1041,6 +1099,59 @@ def _ensure_sync_port_configs() -> None:
         _patch_done('ensured sync port_configs keys')
     except Exception as err:
         logger.error('schema_patches: failed to seed sync port_configs: %s', err)
+        raise
+
+
+def _ensure_fused_frame_max_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'fused_frame_max_width': (
+            '1600',
+            'Max width (px) of the fused multi-camera canvas used for YOLO, recording and dashboard preview. Higher = sharper preview/record but more CPU + WS/video bandwidth.',
+        ),
+        'fused_frame_max_height': (
+            '1440',
+            'Max height (px) of the fused multi-camera canvas. Paired with fused_frame_max_width; canvas is scaled to fit within both.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed fused frame max port_configs manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(stmt, {'key': key, 'value': default_value, 'description': description})
+        _patch_done('ensured fused frame max port_configs keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed fused frame max port_configs: %s', err)
         raise
 
 
@@ -2251,7 +2362,9 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _migrate_visual_stack_dinov2_port_configs()
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
+    _ensure_min_berth_duration_port_config()
     _ensure_sync_port_configs()
+    _ensure_fused_frame_max_port_configs()
     _ensure_thread_tuning_port_configs()
     _ensure_clahe_port_configs()
     _ensure_yolo_imgsz_port_config()

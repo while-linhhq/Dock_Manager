@@ -4,7 +4,11 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { usePortStore } from '../store/portStore';
 import type { CameraCreate, PortConfigCreate, PortConfigRead } from '../services/portApi';
-import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
+import {
+  getDetectionDisplayTimeIso,
+  getDetectionShipLabel,
+  getDetectionSortTs,
+} from '../../../utils/detection-display';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
 import { cameraSchema, configSchema } from '../port-schemas';
@@ -64,6 +68,7 @@ export const PortView: React.FC = () => {
     deleteDetection,
     startPipeline,
     stopPipeline,
+    shutdownServer,
   } = usePortStore();
   const { vessels: filterVessels, vesselTypes: filterVesselTypes } = useFilterOptions();
 
@@ -94,7 +99,7 @@ export const PortView: React.FC = () => {
   }, [activeTab, fetchDetections, fetchConfigs]);
 
   const filteredDetections = useMemo(() => {
-    return detections.filter((det) => {
+    const matched = detections.filter((det) => {
       const label = getDetectionShipLabel(det);
       const iso = getDetectionDisplayTimeIso(det);
       if (
@@ -136,6 +141,7 @@ export const PortView: React.FC = () => {
       }
       return true;
     });
+    return matched.sort((a, b) => getDetectionSortTs(b) - getDetectionSortTs(a));
   }, [
     detections,
     detQ,
@@ -228,6 +234,27 @@ export const PortView: React.FC = () => {
     await deleteConfig(key);
   };
 
+  const handleShutdownServer = async () => {
+    if (
+      !window.confirm(
+        'Ngắt server sẽ dừng pipeline, kill process OCR và tắt tiến trình backend. ' +
+          'Phải khởi động lại server thủ công. Xác nhận?',
+      )
+    ) {
+      return;
+    }
+    try {
+      const killed = await shutdownServer();
+      window.alert(
+        `Server đang tắt. Đã kill ${killed.length} orphan OCR process` +
+          (killed.length ? ` (PID: ${killed.join(', ')}).` : '.'),
+      );
+    } catch (err) {
+      console.error(err);
+      window.alert('Ngắt server thất bại. Xem console để biết chi tiết.');
+    }
+  };
+
   const handleDeleteDetection = async (id: string) => {
     if (!window.confirm('Xác nhận xóa bản ghi nhận diện này?')) {
       return;
@@ -302,6 +329,7 @@ export const PortView: React.FC = () => {
           onToggleConfig={(key, value, description) =>
             upsertConfig(key, { value, description })
           }
+          onShutdownServer={handleShutdownServer}
         />
       )}
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Power, Trash2 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import type { PortConfigRead } from '../services/portApi';
@@ -115,6 +115,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   track_iou_threshold: 'track',
   track_reid_window_sec: 'track',
   track_reid_max_dist: 'track',
+  track_min_berth_duration_sec: 'track',
   sync_tolerance_ms: 'track',
   thread_caps_enabled: 'threads',
   thread_omp_threads: 'threads',
@@ -130,6 +131,24 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   reid_embedding_model_path: 'reid',
   reid_visual_threshold: 'reid',
   reid_handoff_window_sec: 'reid',
+  reid_overlap_merge_enabled: 'reid',
+  reid_edge_zone_ratio: 'reid',
+  reid_embedding_weight: 'reid',
+  reid_color_weight: 'reid',
+  reid_size_weight: 'reid',
+  reid_accept_threshold: 'reid',
+  reid_min_margin: 'reid',
+  reid_directional_handoff_enabled: 'reid',
+  reid_directional_max_transit_sec: 'reid',
+  reid_directional_min_transit_sec: 'reid',
+  reid_directional_min_velocity_px: 'reid',
+  reid_directional_edge_zone_ratio: 'reid',
+  reid_directional_embedding_weight: 'reid',
+  reid_directional_direction_weight: 'reid',
+  reid_directional_time_weight: 'reid',
+  reid_directional_accept_threshold: 'reid',
+  reid_directional_embedding_floor: 'reid',
+  reid_reverse_motion_guard_enabled: 'reid',
   seam_anchor_enabled: 'seam',
   seam_roi_width_ratio: 'seam',
   seam_proximity_px: 'seam',
@@ -228,6 +247,8 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   track_iou_threshold: 'Ngưỡng IoU để ghép detections vào cùng track.',
   track_reid_window_sec: 'Cửa sổ thời gian (giây) để Re-ID.',
   track_reid_max_dist: 'Khoảng cách tối đa dùng cho Re-ID không gian.',
+  track_min_berth_duration_sec:
+    'Thời gian neo đậu tối thiểu (giây) để track được tính là detection, kể cả UNKNOWN. Dùng berth_out−berth_in, fallback dwell (last_seen−first_seen). Track ngắn hơn ngưỡng bị bỏ qua hoàn toàn (không lưu, không gửi Zalo). 0 = tắt lọc.',
   sync_tolerance_ms:
     'Sai số tối đa giữa các camera trong cùng batch (ms). Tăng nếu RTSP chậm; giảm nếu cần khớp chặt hơn.',
 
@@ -239,6 +260,24 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   reid_embedding_model_path: 'Đường dẫn model dùng để tạo embedding Re-ID.',
   reid_visual_threshold: 'Ngưỡng hiển thị/quality cho embedding Re-ID.',
   reid_handoff_window_sec: 'Cửa sổ handoff (giây) khi chuyển track/Re-ID.',
+  reid_overlap_merge_enabled: 'Bật merge khi tàu thấy đồng thời trên 2 camera kề (overlap FOV).',
+  reid_edge_zone_ratio: 'Bề rộng vùng overlap (tỉ lệ width) để xét merge cross-camera.',
+  reid_embedding_weight: 'Trọng số embedding trong fusion score merge.',
+  reid_color_weight: 'Trọng số HSV similarity trong fusion score merge.',
+  reid_size_weight: 'Trọng số tỉ lệ kích thước box trong fusion score merge.',
+  reid_accept_threshold: 'Ngưỡng tổng score mềm để chấp nhận merge.',
+  reid_min_margin: 'Chênh score tối thiểu so với candidate #2 (chống nhầm).',
+  reid_directional_handoff_enabled: 'Bật handoff tuần tự khi tàu rời cam này sang cam kề (không cần OCR).',
+  reid_directional_max_transit_sec: 'Thời gian tối đa (giây) tàu di chuyển giữa 2 cam kề để coi là handoff hợp lệ.',
+  reid_directional_min_transit_sec: 'Dung sai âm (giây): xuất hiện sớm hơn = concurrent (để overlap merge xử lý).',
+  reid_directional_min_velocity_px: 'Vận tốc ngang tối thiểu (px/giây) để xác định hướng di chuyển rõ ràng.',
+  reid_directional_edge_zone_ratio: 'Bề rộng vùng biên (tỉ lệ width) tàu phải xuất hiện ở cam nhận.',
+  reid_directional_embedding_weight: 'Trọng số embedding trong score handoff hướng.',
+  reid_directional_direction_weight: 'Trọng số khớp hướng di chuyển trong score handoff.',
+  reid_directional_time_weight: 'Trọng số hợp lý thời gian trong score handoff.',
+  reid_directional_accept_threshold: 'Ngưỡng tổng score để chấp nhận handoff hướng.',
+  reid_directional_embedding_floor: 'Sàn embedding cosine: dưới ngưỡng này không merge dù hướng/thời gian khớp.',
+  reid_reverse_motion_guard_enabled: 'Chặn tạo IN giả khi tàu lùi ra chạm lại vùng cam trước (đã có OUT).',
 
   seam_anchor_enabled: 'Bật seam anchor để giữ ID khi tàu neo ở ranh giới 2 camera.',
   seam_roi_width_ratio: 'Tỉ lệ bề rộng vùng ROI cho seam (theo width camera kề).',
@@ -278,6 +317,7 @@ export type PortConfigsSectionProps = {
   onEditConfig: (cfg: PortConfigRead) => void;
   onDeleteConfig: (key: string) => void;
   onToggleConfig: (key: string, value: string, description: string) => void;
+  onShutdownServer: () => void;
 };
 
 /** Recognize boolean-valued configs so they render as a toggle, not free text. */
@@ -298,6 +338,7 @@ export const PortConfigsSection: React.FC<PortConfigsSectionProps> = ({
   onEditConfig,
   onDeleteConfig,
   onToggleConfig,
+  onShutdownServer,
 }) => {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<CategoryId>>(new Set());
 
@@ -321,6 +362,12 @@ export const PortConfigsSection: React.FC<PortConfigsSectionProps> = ({
       const catId = getCategoryId(cfg.key);
       if (!map.has(catId)) map.set(catId, []);
       map.get(catId)!.push(cfg);
+    }
+    // Stable ordering by key so a row keeps its position after an update.
+    // Without this, the server may return configs in a different order after
+    // each save (by id/updated_at), making the edited row jump around.
+    for (const items of map.values()) {
+      items.sort((a, b) => a.key.localeCompare(b.key));
     }
     return map;
   }, [visibleConfigs]);
@@ -489,6 +536,25 @@ export const PortConfigsSection: React.FC<PortConfigsSectionProps> = ({
           })}
         </div>
       )}
+
+      <div className="bg-white dark:bg-[#121214] border border-red-200 dark:border-red-500/20 rounded-2xl shadow-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold text-red-600 dark:text-red-400 uppercase tracking-widest">
+            Ngắt Server
+          </p>
+          <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-0.5">
+            Dừng pipeline, kill orphan OCR đang giữ VRAM, rồi tắt tiến trình server. Cần khởi động lại thủ công.
+          </p>
+        </div>
+        <Button
+          type="button"
+          onClick={onShutdownServer}
+          className="bg-red-600 hover:bg-red-700 text-white shrink-0"
+        >
+          <Power className="w-4 h-4 mr-2" />
+          Ngắt Server
+        </Button>
+      </div>
     </div>
   );
 };

@@ -14,6 +14,8 @@ from app.db.session import SessionLocal
 from app.repositories.port_config_repository import port_config_repo
 from app.services.ai.boat_tracker import BoatTracker, TrackState
 from app.services.ai.ship_id_rule_engine import get_rule_engine
+from app.services.ai.frame_fusion import FrameFuser, FusionConfig, FusionMember
+from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.vector_store_qdrant import QdrantVectorStore
 from app.services.ai.visual_embedding_extractor import VisualEmbeddingExtractor
 from app.utils.ai.overlay import draw_ship_detection_overlay
@@ -330,6 +332,182 @@ def run_detection_lab(
                     close_fn()
             except Exception:
                 logger.exception('AI Lab failed to close OCR recognizer')
+
+
+
+def _fusion_member_from_group_member(member) -> FusionMember:
+    return FusionMember(
+        camera_id=int(member.camera_id),
+        role=str(getattr(member, 'role', 'tile') or 'tile'),
+        priority=int(getattr(member, 'priority', 0) or 0),
+        layout_x=int(getattr(member, 'layout_x', 0) or 0),
+        layout_y=int(getattr(member, 'layout_y', 0) or 0),
+        layout_w=getattr(member, 'layout_w', None),
+        layout_h=getattr(member, 'layout_h', None),
+        layout_rotation=float(getattr(member, 'layout_rotation', 0) or 0),
+        crop_top=int(getattr(member, 'crop_top', 0) or 0),
+        crop_bottom=int(getattr(member, 'crop_bottom', 0) or 0),
+        crop_left=int(getattr(member, 'crop_left', 0) or 0),
+        crop_right=int(getattr(member, 'crop_right', 0) or 0),
+        enabled=bool(getattr(member, 'enabled', True)),
+    )
+
+
+def _build_group_fuser(group) -> FrameFuser | None:
+    if group is None:
+        return None
+    members = [
+        _fusion_member_from_group_member(member)
+        for member in getattr(group, 'members', [])
+        if bool(getattr(member, 'enabled', True))
+    ]
+    if not members:
+        return None
+    return FrameFuser(
+        FusionConfig(
+            fusion_mode=str(getattr(group, 'fusion_mode', 'layout') or 'layout'),
+            canvas_width=int(getattr(group, 'canvas_width', 1920) or 1920),
+            canvas_height=int(getattr(group, 'canvas_height', 1080) or 1080),
+            members=members,
+        )
+    )
+
+
+def run_group_camera_lab(
+    sources: list[dict[str, Any]],
+    *,
+    frame_stride: int = 8,
+    max_output_frames: int = 48,
+    enable_ocr: bool = True,
+    group=None,
+) -> dict[str, Any]:
+    """Run offline multi-camera test from synchronized video uploads."""
+    if len(sources) < 2:
+        raise ValueError('Group Cam Test requires at least 2 video files')
+
+    model_path, device, conf, imgsz = _resolve_lab_yolo_params()
+    detector, _ = load_yolo_detector(model_path, device, float(conf), imgsz=imgsz)
+
+    recognizer = None
+    ocr_device: str | None = None
+    if enable_ocr and settings.ENABLE_OCR:
+        recognizer = create_ship_id_recognizer(rule_engine=get_rule_engine())
+        ocr_device = str(getattr(recognizer, 'device', 'in-process'))
+
+    stride = max(1, int(frame_stride))
+    max_frames = max(1, min(int(max_output_frames), 120))
+    caps: dict[int, cv2.VideoCapture] = {}
+    trackers: dict[int, BoatTracker] = {}
+    metadata: list[dict[str, Any]] = []
+    fuser = _build_group_fuser(group)
+
+    try:
+        for source in sources:
+            camera_id = int(source['camera_id'])
+            cap = cv2.VideoCapture(str(source['path']))
+            if not cap.isOpened():
+                raise ValueError(f'Could not open video for camera {camera_id}: {source.get("filename") or source["path"]}')
+            caps[camera_id] = cap
+            trackers[camera_id] = BoatTracker(
+                min_hits=1,
+                max_tentative_misses=2,
+                max_lost_frames=3,
+                iou_threshold=settings.TRACK_IOU_THRESHOLD,
+                reid_window_sec=settings.TRACK_REID_WINDOW_SEC,
+                reid_max_centroid_dist=settings.TRACK_REID_MAX_DIST,
+                min_confirm_sec=float(settings.TRACK_MIN_CONFIRM_SEC),
+                max_tentative_sec=float(settings.TRACK_MAX_TENTATIVE_SEC),
+                max_lost_sec=float(settings.TRACK_MAX_LOST_SEC),
+            )
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            metadata.append({
+                'camera_id': camera_id,
+                'filename': str(source.get('filename') or Path(str(source['path'])).name),
+                'total_frames': total_frames,
+                'fps': round(fps, 3),
+            })
+
+        frames_out: list[dict[str, Any]] = []
+        frame_index = 0
+        processed = 0
+        while processed < max_frames:
+            batch: dict[int, np.ndarray] = {}
+            exhausted = False
+            for camera_id, cap in caps.items():
+                ret, frame = cap.read()
+                if not ret:
+                    exhausted = True
+                    break
+                batch[camera_id] = frame
+            if exhausted:
+                break
+
+            current_index = frame_index
+            frame_index += 1
+            if current_index % stride != 0:
+                continue
+
+            cameras_out: list[dict[str, Any]] = []
+            timed_frames: dict[int, TimedFrame] = {}
+            for source in sources:
+                camera_id = int(source['camera_id'])
+                frame = batch.get(camera_id)
+                if frame is None:
+                    continue
+                cap = caps[camera_id]
+                fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+                overlay, boats = _process_frame(
+                    frame,
+                    detector=detector,
+                    tracker=trackers[camera_id],
+                    fps_est=fps,
+                    recognizer=recognizer,
+                )
+                time_sec = current_index / fps if fps > 0 else 0.0
+                timed_frames[camera_id] = TimedFrame(camera_id=camera_id, frame=overlay, captured_at=time_sec)
+                cameras_out.append({
+                    'camera_id': camera_id,
+                    'filename': str(source.get('filename') or Path(str(source['path'])).name),
+                    'jpeg_base64': _encode_jpeg_base64(overlay),
+                    'boats': boats,
+                })
+
+            fused_preview = _encode_jpeg_base64(fuser.fuse(timed_frames)) if fuser is not None and timed_frames else None
+            time_sec = min((item.captured_at for item in timed_frames.values()), default=0.0)
+            frames_out.append({
+                'frame_index': current_index,
+                'time_sec': round(float(time_sec), 3),
+                'fused_jpeg_base64': fused_preview,
+                'cameras': cameras_out,
+            })
+            processed += 1
+
+        for tracker in trackers.values():
+            tracker.flush_shutdown_logs()
+
+        return {
+            'media_type': 'group_video',
+            'group_id': int(getattr(group, 'id', 0) or 0) if group is not None else None,
+            'group_name': str(getattr(group, 'name', '') or '') if group is not None else None,
+            'camera_count': len(caps),
+            'videos': metadata,
+            'sampled_frames': len(frames_out),
+            'frame_stride': stride,
+            'ocr_enabled': bool(recognizer),
+            'ocr_device': ocr_device,
+            'frames': frames_out,
+        }
+    finally:
+        for cap in caps.values():
+            cap.release()
+        if recognizer is not None:
+            try:
+                close_fn = getattr(recognizer, 'close', None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                logger.exception('AI Lab group test failed to close OCR recognizer')
 
 
 def decode_upload_bgr(content: bytes) -> np.ndarray:
