@@ -17,6 +17,7 @@ __pycache__/
 # Logs
 *.log
 logs/
+!client/src/features/logs/
 
 # Playwright MCP local snapshots
 .playwright-mcp/
