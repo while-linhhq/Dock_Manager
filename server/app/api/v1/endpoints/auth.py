@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.schemas.user import UserCreate, UserRead
 from app.services.auth_service import auth_service
@@ -10,17 +10,22 @@ from app.services.auth_service import auth_service
 router = APIRouter()
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
 @router.post('/login')
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     return auth_service.login(db, form_data.username, form_data.password)
 
+
 @router.post('/refresh')
-def refresh(_=Depends(get_current_user)):
+def refresh(data: RefreshRequest, db: Session = Depends(get_db)):
     """
-    Sliding-session refresh: client calls this before token expires to get a new access token.
-    Requires a still-valid access token.
+    Exchange a valid refresh token for a fresh access+refresh token pair.
+    Does NOT require a still-valid access token, so an idle session survives.
     """
-    return auth_service.refresh_access_token(current_user=_)
+    return auth_service.refresh_access_token(db, data.refresh_token)
 
 
 @router.post('/register', response_model=UserRead, status_code=201)

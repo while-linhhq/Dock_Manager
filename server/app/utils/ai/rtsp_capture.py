@@ -313,8 +313,16 @@ def _build_nvdec_cmd(
         'error',
         '-rtsp_transport',
         rtsp_transport,
+        '-rtbufsize',
+        '1M',
+        '-probesize',
+        '32',
+        '-analyzeduration',
+        '0',
         '-fflags',
-        '+genpts+discardcorrupt',
+        'nobuffer+genpts+discardcorrupt',
+        '-avioflags',
+        'direct',
         '-flags',
         'low_delay',
         '-hwaccel',
@@ -800,7 +808,12 @@ class GStreamerNvdecCapture:
                 ('h265', 'rtph265depay', 'nvh265dec'),
                 ('h264', 'rtph264depay', 'nvh264dec'),
             ]:
-                rtspsrc_args = [f'location={loc}', f'protocols={rtsp_transport}', 'latency=100']
+                rtspsrc_args = [
+                    f'location={loc}',
+                    f'protocols={rtsp_transport}',
+                    'latency=50',
+                    'drop-on-latency=true',
+                ]
                 if u:
                     rtspsrc_args.insert(0, f'user-id={u}')
                 if p:
@@ -888,21 +901,25 @@ class GStreamerNvdecCapture:
         rtspsrc_args = [
             f'location={location}',
             f'protocols={self._rtsp_transport}',
-            'latency=100',
+            'latency=50',
+            'drop-on-latency=true',
         ]
         if user:
             rtspsrc_args.insert(0, f'user-id={user}')
         if password:
             rtspsrc_args.insert(0, f'user-pw={password}')
-        cmd = [gst, '-q', 'rtspsrc', *rtspsrc_args,
-               '!', depay,
-               '!', f'{codec}parse',
-               '!', decoder,
-               '!', 'cudaconvertscale',
-               '!', f'video/x-raw(memory:CUDAMemory),format=BGR,width={width},height={height}',
-               '!', 'cudadownload',
-               '!', f'video/x-raw,format=BGR,width={width},height={height}',
-               '!', 'fdsink', 'fd=1',
+        cmd = [
+            gst, '-q', 'rtspsrc', *rtspsrc_args,
+            '!', depay,
+            '!', f'{codec}parse',
+            '!', 'queue', 'max-size-buffers=1', 'max-size-time=0', 'max-size-bytes=0', 'leaky=downstream',
+            '!', decoder,
+            '!', 'cudaconvertscale',
+            '!', f'video/x-raw(memory:CUDAMemory),format=BGR,width={width},height={height}',
+            '!', 'cudadownload',
+            '!', f'video/x-raw,format=BGR,width={width},height={height}',
+            '!', 'queue', 'max-size-buffers=1', 'max-size-time=0', 'max-size-bytes=0', 'leaky=downstream',
+            '!', 'fdsink', 'fd=1', 'sync=false',
         ]
         logger.debug('GStreamer cmd: %s', ' '.join(cmd))
 

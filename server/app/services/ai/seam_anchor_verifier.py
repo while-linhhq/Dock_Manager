@@ -31,6 +31,7 @@ from app.services.ai.embedding_extractor import (
     cosine_similarity,
     normalize_embedding,
 )
+from app.services.ship_id_utils import is_unknown_ship_id, normalize_ship_id
 from app.services.ai.motion_classifier import MOTION_STATIC
 
 _log = logging.getLogger(__name__)
@@ -158,6 +159,41 @@ class SeamAnchorVerifier:
         with self._lock:
             state = self._anchors.get(str(global_id))
             return self._copy_state(state) if state else None
+
+    def diagnose(self, global_id: str | None) -> dict[str, Any] | None:
+        """Debug overlay: live anchor occupancy vs bg threshold for one identity.
+
+        Returns None when this identity is not currently anchored. Diagnostic
+        only — never mutates anchor state. `score_a`/`score_b` are the latest
+        foreground ratios on the two seam ROIs; `occupied` mirrors the renewal
+        rule (either ROI over threshold). `grace_left` counts down the departed
+        grace once both ROIs go quiet, so the operator can watch a release.
+        """
+        if not global_id or not self._config.enabled:
+            return None
+        with self._lock:
+            state = self._anchors.get(str(global_id))
+            if state is None:
+                return None
+            thr = float(self._config.bg_subtract_threshold)
+            occupied = state.last_score_a > thr or state.last_score_b > thr
+            grace_left: float | None = None
+            if state.miss_started_at is not None:
+                elapsed = time.time() - float(state.miss_started_at)
+                grace_left = max(
+                    0.0, float(self._config.departed_grace_sec) - elapsed
+                )
+            return {
+                'ship_id': state.ship_id,
+                'cam_a_id': int(state.cam_a_id),
+                'cam_b_id': None if state.cam_b_id is None else int(state.cam_b_id),
+                'score_a': float(state.last_score_a),
+                'score_b': float(state.last_score_b),
+                'threshold': thr,
+                'occupied': bool(occupied),
+                'grace_left': grace_left,
+                'emb_threshold': float(self._config.embedding_sim_threshold),
+            }
 
     def try_anchor(
         self,
@@ -352,6 +388,9 @@ class SeamAnchorVerifier:
         camera_id: int,
         bbox: np.ndarray,
         embedding: np.ndarray | None = None,
+        *,
+        dominant_hsv: tuple[int, int, int] | None = None,
+        ship_id: str | None = None,
     ) -> str | None:
         if not self._config.enabled:
             return None
@@ -378,9 +417,48 @@ class SeamAnchorVerifier:
         if best_id is None or best_iou < self._config.iou_resurrect_threshold:
             return None
 
+        with self._lock:
+            anchor = self._anchors.get(best_id)
+
+        # E5 gate 1: reject if incoming OCR ship_id conflicts with anchor ship_id
+        if anchor is not None and anchor.ship_id:
+            incoming = normalize_ship_id(ship_id) if ship_id else ''
+            anchor_sid = normalize_ship_id(anchor.ship_id)
+            if (
+                incoming
+                and not is_unknown_ship_id(incoming)
+                and anchor_sid
+                and not is_unknown_ship_id(anchor_sid)
+                and incoming != anchor_sid
+            ):
+                _log.info(
+                    'seam_anchor: skip resurrect %s — ship_id conflict incoming=%s anchor=%s',
+                    best_id,
+                    incoming,
+                    anchor_sid,
+                )
+                return None
+
+        # E5 gate 2: reject if dominant color mismatches beyond hue tolerance
+        if (
+            anchor is not None
+            and anchor.dominant_color_hsv is not None
+            and dominant_hsv is not None
+        ):
+            if not hsv_matches(
+                anchor.dominant_color_hsv,
+                tuple(int(v) for v in dominant_hsv),
+                tolerance_h=self._config.color_hsv_tolerance_h,
+            ):
+                _log.info(
+                    'seam_anchor: skip resurrect %s — color mismatch anchor=%s incoming=%s',
+                    best_id,
+                    anchor.dominant_color_hsv,
+                    tuple(int(v) for v in dominant_hsv),
+                )
+                return None
+
         if self._config.embedding_match_enabled and embedding is not None:
-            with self._lock:
-                anchor = self._anchors.get(best_id)
             if anchor is not None and anchor.embedding is not None:
                 sim = cosine_similarity(anchor.embedding, embedding)
                 if sim < self._config.embedding_sim_threshold:

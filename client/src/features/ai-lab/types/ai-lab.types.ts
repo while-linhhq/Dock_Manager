@@ -82,3 +82,38 @@ export type LabVisualSearchResponse = {
   source: string;
   confidence: number;
 };
+
+
+export type LabGroupCameraFrame = {
+  camera_id: number;
+  filename: string;
+  jpeg_base64: string;
+  boats: LabBoatDetection[];
+};
+
+export type LabGroupFrame = {
+  frame_index: number;
+  time_sec: number;
+  fused_jpeg_base64?: string | null;
+  cameras: LabGroupCameraFrame[];
+};
+
+export type LabGroupVideo = {
+  camera_id: number;
+  filename: string;
+  total_frames: number;
+  fps: number;
+};
+
+export type LabGroupCamResponse = {
+  media_type: 'group_video';
+  group_id?: number | null;
+  group_name?: string | null;
+  camera_count: number;
+  videos: LabGroupVideo[];
+  sampled_frames: number;
+  frame_stride: number;
+  ocr_enabled?: boolean;
+  ocr_device?: string | null;
+  frames: LabGroupFrame[];
+};

@@ -1,11 +1,12 @@
 """Post-hoc detection merge service.
 
 After the pipeline creates a detection, call absorb_contained() to find any
-older detections of the same vessel whose berth window is fully contained
-within the new one, absorb them (soft-delete their UNPAID invoices and
-themselves), and return the winner's id.
+older detections of the same vessel whose berth/time window overlaps or is
+contained within the new one, absorb them (soft-delete their UNPAID invoices
+and themselves), and return the winner's id.
 
-The winner is always the detection with the longest berth window duration.
+The winner is always the detection with the longest effective duration
+(berth_out − berth_in, fallback end_time − berth_in).
 """
 from __future__ import annotations
 
@@ -19,13 +20,37 @@ from app.repositories.detection_repository import detection_repo
 _log = logging.getLogger(__name__)
 
 
+def _effective_end(det) -> datetime | None:
+    """berth_out_time nếu có, fallback end_time (track mất giữa chừng).
+    Normalize sang tz-aware UTC để tránh lỗi subtract naive/aware."""
+    raw = det.berth_out_time or det.end_time
+    if raw is None:
+        return None
+    if raw.tzinfo is None:
+        return raw.replace(tzinfo=timezone.utc)
+    return raw
+
+
+def _effective_duration(det) -> float:
+    """Thời lượng tính bằng giây. Trả 0 nếu thiếu mốc."""
+    start = det.berth_in_time
+    end = _effective_end(det)
+    if start is None or end is None:
+        return 0.0
+    return max(0.0, (end - start).total_seconds())
+
+
 def absorb_contained(db: Session, detection_id: int) -> int:
-    """Absorb detections of the same vessel whose berth window is fully
-    contained within the new detection's berth window.
+    """Absorb detections of the same vessel whose berth/time window overlaps
+    or is contained within the new detection's window.
+
+    Candidate chỉ cần có berth_in_time (berth_out_time có thể NULL — dùng
+    end_time fallback). Detection đã accepted (is_accepted=True) được repo
+    query loại ở tầng DB.
 
     Returns:
         The winner's detection id (may differ from detection_id if an older
-        detection turns out to have a longer berth window).
+        detection turns out to have a longer effective window).
     """
     new_det = detection_repo.get(db, detection_id)
     if new_det is None:
@@ -43,18 +68,13 @@ def absorb_contained(db: Session, detection_id: int) -> int:
         exclude_id=new_det.id,
     )
 
-    pool = [new_det] + [c for c in candidates if c.berth_in_time and c.berth_out_time]
+    # Candidate phải có berth_in; berth_out có thể NULL (fallback end_time).
+    pool = [new_det] + [c for c in candidates if c.berth_in_time is not None]
 
-    def _duration(d):
-        return (d.berth_out_time - d.berth_in_time).total_seconds()
-
-    winner = max(pool, key=_duration)
+    winner = max(pool, key=_effective_duration)
 
     now = datetime.now(timezone.utc)
 
-    # Stage all mutations first, then commit once — avoids partial-commit
-    # orphans when there are multiple losers, and prevents DetachedInstanceError
-    # from mid-loop commits expiring SQLAlchemy attributes.
     for det in pool:
         if det.id == winner.id:
             continue
@@ -66,9 +86,11 @@ def absorb_contained(db: Session, detection_id: int) -> int:
         detection_repo.soft_delete(db, det.id)
 
         _log.info(
-            'detection_merge: absorbed detection %s into winner %s',
+            'detection_merge: absorbed detection %s (dur=%.1fs) into winner %s (dur=%.1fs)',
             det.id,
+            _effective_duration(det),
             winner.id,
+            _effective_duration(winner),
         )
 
     db.commit()

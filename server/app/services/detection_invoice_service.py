@@ -57,17 +57,22 @@ def _find_duplicate_ai_invoice_for_visit(
     )
 
 
+def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Chuẩn hóa datetime về tz-aware UTC. Naive được coi là UTC."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _berthing_hours(start: Optional[datetime], end: Optional[datetime]) -> Decimal:
     """Thời gian neo theo giờ thực, không làm tròn lên 0.01h."""
     if start is None and end is None:
         return Decimal('0')
     if start is None or end is None:
         return Decimal('0')
-    s, e = start, end
-    if s.tzinfo is None:
-        s = s.replace(tzinfo=timezone.utc)
-    if e.tzinfo is None:
-        e = e.replace(tzinfo=timezone.utc)
+    s, e = _as_utc(start), _as_utc(end)
     secs = (e - s).total_seconds()
     if secs <= 0:
         return Decimal('0')
@@ -86,6 +91,10 @@ def resolve_berth_window(
     không giao với detection window, trả về (None, None) để tạo invoice
     tối thiểu (0.01h), không tính tiền neo đậu từ camera khác.
     """
+    start = _as_utc(start)
+    end = _as_utc(end)
+    berth_in = _as_utc(berth_in)
+    berth_out = _as_utc(berth_out)
     if berth_in is not None and berth_out is not None:
         # Đủ cả hai mốc: dùng trực tiếp — đây là thời gian thực tàu đậu
         s, e = berth_in, berth_out

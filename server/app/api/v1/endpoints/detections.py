@@ -14,6 +14,7 @@ from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.services.storage.s3_service import presign_get, parse_minio_uri
 from app.services.berth_limit_service import compute_detection_over_berth_limit
+from app.services.detection_camera_service import resolve_camera_in_out
 
 router = APIRouter()
 
@@ -30,17 +31,33 @@ def _with_presigned_detection_paths(obj):
     return obj
 
 
+def _camera_update(obj, camera_map: Optional[dict]) -> dict:
+    if not camera_map:
+        return {}
+    entry = camera_map.get(str(obj.track_id or ''))
+    if not entry:
+        return {}
+    return {
+        'berth_in_camera_id': entry.get('in_camera_id'),
+        'berth_in_camera_name': entry.get('in_camera_name'),
+        'berth_out_camera_id': entry.get('out_camera_id'),
+        'berth_out_camera_name': entry.get('out_camera_name'),
+    }
+
+
 def _detection_to_read(
     db: Session,
     obj,
     *,
     include_over_berth_limit: bool = True,
     include_presigned_paths: bool = True,
+    camera_map: Optional[dict] = None,
 ) -> DetectionRead:
     row = _with_presigned_detection_paths(obj) if include_presigned_paths else obj
     payload = DetectionRead.model_validate(row)
-    over = compute_detection_over_berth_limit(db, obj) if include_over_berth_limit else False
-    return payload.model_copy(update={'is_over_berth_limit': over})
+    update = {'is_over_berth_limit': compute_detection_over_berth_limit(db, obj) if include_over_berth_limit else False}
+    update.update(_camera_update(obj, camera_map))
+    return payload.model_copy(update=update)
 
 
 @router.post('/', response_model=DetectionRead, status_code=201)
@@ -80,12 +97,14 @@ def list_detections(
         ship_id=ship_id,
         event_date=event_date,
     )
+    camera_map = resolve_camera_in_out(db, [str(r.track_id or '') for r in rows])
     return [
         _detection_to_read(
             db,
             row,
             include_over_berth_limit=include_over_berth_limit,
             include_presigned_paths=include_presigned_paths,
+            camera_map=camera_map,
         )
         for row in rows
     ]
@@ -96,7 +115,8 @@ def get_detection(detection_id: int, db: Session = Depends(get_db), _=Depends(ge
     obj = detection_repo.get(db, detection_id)
     if not obj:
         raise HTTPException(status_code=404, detail='Detection not found')
-    return _detection_to_read(db, obj)
+    camera_map = resolve_camera_in_out(db, [str(obj.track_id or '')])
+    return _detection_to_read(db, obj, camera_map=camera_map)
 
 
 @router.post('/{detection_id}/verify', response_model=DetectionRead)

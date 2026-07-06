@@ -74,7 +74,7 @@ def _ship_detection_query(
     ship_id: Optional[str],
 ):
     normalized_ship = _normalize_ship_id(ship_id)
-    q = db.query(Detection)
+    q = db.query(Detection).filter(Detection.deleted_at.is_(None))
     if normalized_ship:
         q = q.join(Vessel, Detection.vessel_id == Vessel.id).filter(
             func.upper(func.trim(Vessel.ship_id)) == normalized_ship,

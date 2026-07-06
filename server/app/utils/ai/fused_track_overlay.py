@@ -18,6 +18,7 @@ from app.utils.ai.overlay import (
     emb_overlay_line,
     final_overlay_line,
     ocr_overlay_line,
+    reid_overlay_lines,
     resolve_berth_visual_state,
     tint_bbox_overlay,
 )
@@ -228,6 +229,8 @@ def draw_fused_track_overlay(
                     0.40,
                 )
             )
+            for reid_text, reid_color in reid_overlay_lines(cache_entry):
+                panel_lines.append((reid_text, reid_color, 0.36))
 
             panel_bottom = min(canvas_h - 4, y1 - 4) if y1 > 72 else min(canvas_h - 4, y2 + 72)
             _draw_text_with_bg(fused, panel_lines, x1, panel_bottom)

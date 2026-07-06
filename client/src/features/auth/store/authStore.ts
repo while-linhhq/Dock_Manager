@@ -31,8 +31,9 @@ export const useAuthStore = create<AuthState>((set) => ({
       formData.append('username', email);
       formData.append('password', password);
 
-      const { access_token } = await authApi.login(formData);
+      const { access_token, refresh_token } = await authApi.login(formData);
       authStorage.setToken(access_token);
+      authStorage.setRefreshToken(refresh_token);
 
       const user = await authApi.getMe();
       set({ user, isAuthenticated: true, isLoading: false, authBootstrapped: true });
@@ -42,7 +43,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
   logout: () => {
-    authStorage.removeToken();
+    authStorage.clear();
     set({ user: null, isAuthenticated: false, authBootstrapped: true, isLoading: false });
   },
   checkAuth: async () => {
@@ -57,7 +58,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const user = await authApi.getMe();
       set({ user, isAuthenticated: true, isLoading: false, authBootstrapped: true });
     } catch (err) {
-      authStorage.removeToken();
+      authStorage.clear();
       set({
         user: null,
         isAuthenticated: false,

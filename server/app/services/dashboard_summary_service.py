@@ -96,6 +96,7 @@ def _detection_review_counts(
     base_filters = (
         Detection.created_at >= start_utc,
         Detection.created_at < end_utc,
+        Detection.deleted_at.is_(None),
     )
     accepted = int(
         db.query(func.count(Detection.id))
@@ -132,6 +133,7 @@ def _detection_volume_series(
         .filter(
             Detection.created_at >= start_utc,
             Detection.created_at < end_utc,
+            Detection.deleted_at.is_(None),
         )
         .all()
         if r[0] is not None
@@ -251,6 +253,7 @@ def _top_ships(
         .filter(
             Detection.created_at >= start_utc,
             Detection.created_at < end_utc,
+            Detection.deleted_at.is_(None),
         )
         .group_by(ship_key)
         .order_by(func.count(Detection.id).desc())

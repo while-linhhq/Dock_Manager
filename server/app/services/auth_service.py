@@ -1,7 +1,14 @@
 from fastapi import HTTPException, status
+from jose import JWTError
 from sqlalchemy.orm import Session
 
-from app.utils.security import hash_password, verify_password, create_access_token
+from app.utils.security import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+)
 from app.repositories.user_repository import user_repo
 from app.models.user import User
 
@@ -23,12 +30,39 @@ class AuthService:
             )
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Inactive user')
-        token = create_access_token(subject=user.id)
-        return {'access_token': token, 'token_type': 'bearer'}
+        return {
+            'access_token': create_access_token(subject=user.id),
+            'refresh_token': create_refresh_token(subject=user.id),
+            'token_type': 'bearer',
+        }
 
-    def refresh_access_token(self, *, current_user: User) -> dict:
-        token = create_access_token(subject=current_user.id)
-        return {'access_token': token, 'token_type': 'bearer'}
+    def refresh_access_token(self, db: Session, refresh_token: str) -> dict:
+        """Validate a refresh token (no access token required) and mint a new pair."""
+        credentials_exception = HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Could not validate refresh token',
+            headers={'WWW-Authenticate': 'Bearer'},
+        )
+        try:
+            payload = decode_token(refresh_token)
+        except JWTError:
+            raise credentials_exception
+        if payload.get('type') != 'refresh':
+            raise credentials_exception
+        user_id = payload.get('sub')
+        if user_id is None:
+            raise credentials_exception
+        try:
+            user = user_repo.get(db, int(user_id))
+        except (TypeError, ValueError):
+            raise credentials_exception
+        if user is None or not user.is_active:
+            raise credentials_exception
+        return {
+            'access_token': create_access_token(subject=user.id),
+            'refresh_token': create_refresh_token(subject=user.id),
+            'token_type': 'bearer',
+        }
 
 
 auth_service = AuthService()

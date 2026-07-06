@@ -34,6 +34,8 @@ from app.utils.ai.gpu_bootstrap import init_cuda_library_path
 from app.services.ai.background_model import BackgroundModelConfig, BackgroundModelRegistry
 from app.services.ai.boat_tracker import BoatTracker, TrackState
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
+from app.services.ai.handoff_matcher import OverlapMergeConfig
+from app.services.ai.directional_handoff import DirectionalHandoffConfig
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
 from app.services.ai.group_frame_hub import GroupFrameHub
@@ -173,7 +175,14 @@ class PipelineService:
     @staticmethod
     def _configure_dashboard_preview(runtime_cfg: dict[str, Any]) -> None:
         pipeline_preview.set_target_fps(float(runtime_cfg['record_fps']))
-        pipeline_preview.set_max_width(int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)))
+        # Preserve group-camera fused canvas detail. The dashboard renderer already
+        # fits the image to the visible panel, so server-side downscale should not
+        # make wide group previews smaller than the configured fused width.
+        preview_max_width = max(
+            int(getattr(settings, 'PREVIEW_MAX_WIDTH', 1280)),
+            int(runtime_cfg.get('fused_frame_max_width', 0) or 0),
+        )
+        pipeline_preview.set_max_width(preview_max_width)
 
     def _init_visual_stack(self, runtime_cfg: dict[str, Any]) -> None:
         self._runtime_cache = RuntimeCacheRedis(
@@ -338,6 +347,7 @@ class PipelineService:
                 0,
                 self._to_int(cfg_map.get('sync_tolerance_ms', ''), 1200),
             ),
+            'sync_camera_offsets_ms': cfg_map.get('sync_camera_offsets_ms', '') or '',
             'reid_embedding_model_path': _s(
                 'reid_embedding_model_path',
                 settings.REID_EMBEDDING_MODEL_PATH,
@@ -357,6 +367,78 @@ class PipelineService:
             'edge_zone_ratio': self._to_float(
                 cfg_map.get('edge_zone_ratio', ''),
                 float(settings.EDGE_ZONE_RATIO),
+            ),
+            'reid_overlap_merge_enabled': self._to_bool(
+                cfg_map.get('reid_overlap_merge_enabled', ''),
+                bool(settings.REID_OVERLAP_MERGE_ENABLED),
+            ),
+            'reid_edge_zone_ratio': self._to_float(
+                cfg_map.get('reid_edge_zone_ratio', ''),
+                float(settings.REID_EDGE_ZONE_RATIO),
+            ),
+            'reid_embedding_weight': self._to_float(
+                cfg_map.get('reid_embedding_weight', ''),
+                float(settings.REID_EMBEDDING_WEIGHT),
+            ),
+            'reid_color_weight': self._to_float(
+                cfg_map.get('reid_color_weight', ''),
+                float(settings.REID_COLOR_WEIGHT),
+            ),
+            'reid_size_weight': self._to_float(
+                cfg_map.get('reid_size_weight', ''),
+                float(settings.REID_SIZE_WEIGHT),
+            ),
+            'reid_accept_threshold': self._to_float(
+                cfg_map.get('reid_accept_threshold', ''),
+                float(settings.REID_ACCEPT_THRESHOLD),
+            ),
+            'reid_min_margin': self._to_float(
+                cfg_map.get('reid_min_margin', ''),
+                float(settings.REID_MIN_MARGIN),
+            ),
+            'reid_directional_handoff_enabled': self._to_bool(
+                cfg_map.get('reid_directional_handoff_enabled', ''),
+                bool(settings.REID_DIRECTIONAL_HANDOFF_ENABLED),
+            ),
+            'reid_directional_max_transit_sec': self._to_float(
+                cfg_map.get('reid_directional_max_transit_sec', ''),
+                float(settings.REID_DIRECTIONAL_MAX_TRANSIT_SEC),
+            ),
+            'reid_directional_min_transit_sec': self._to_float(
+                cfg_map.get('reid_directional_min_transit_sec', ''),
+                float(settings.REID_DIRECTIONAL_MIN_TRANSIT_SEC),
+            ),
+            'reid_directional_min_velocity_px': self._to_float(
+                cfg_map.get('reid_directional_min_velocity_px', ''),
+                float(settings.REID_DIRECTIONAL_MIN_VELOCITY_PX),
+            ),
+            'reid_directional_edge_zone_ratio': self._to_float(
+                cfg_map.get('reid_directional_edge_zone_ratio', ''),
+                float(settings.REID_DIRECTIONAL_EDGE_ZONE_RATIO),
+            ),
+            'reid_directional_embedding_weight': self._to_float(
+                cfg_map.get('reid_directional_embedding_weight', ''),
+                float(settings.REID_DIRECTIONAL_EMBEDDING_WEIGHT),
+            ),
+            'reid_directional_direction_weight': self._to_float(
+                cfg_map.get('reid_directional_direction_weight', ''),
+                float(settings.REID_DIRECTIONAL_DIRECTION_WEIGHT),
+            ),
+            'reid_directional_time_weight': self._to_float(
+                cfg_map.get('reid_directional_time_weight', ''),
+                float(settings.REID_DIRECTIONAL_TIME_WEIGHT),
+            ),
+            'reid_directional_accept_threshold': self._to_float(
+                cfg_map.get('reid_directional_accept_threshold', ''),
+                float(settings.REID_DIRECTIONAL_ACCEPT_THRESHOLD),
+            ),
+            'reid_directional_embedding_floor': self._to_float(
+                cfg_map.get('reid_directional_embedding_floor', ''),
+                float(settings.REID_DIRECTIONAL_EMBEDDING_FLOOR),
+            ),
+            'reid_reverse_motion_guard_enabled': self._to_bool(
+                cfg_map.get('reid_reverse_motion_guard_enabled', ''),
+                bool(settings.REID_REVERSE_MOTION_GUARD_ENABLED),
             ),
             'clahe_clip_limit': self._to_float(
                 cfg_map.get('clahe_clip_limit', ''),
@@ -749,13 +831,13 @@ class PipelineService:
         frame = job.frame
         if frame is None or getattr(frame, 'size', 0) == 0:
             return
+        ts = time.time()
         for t in job.tracks:
             if getattr(t, 'state', None) != TrackState.CONFIRMED:
                 continue
             tid = str(t.track_id)
-            conf = float(t.conf)
             if job.update_fused:
-                self._media_collector.update_fused_detection(tid, conf, frame)
+                self._media_collector.update_latest_fused(tid, frame, ts)
                 continue
             cam = int(
                 job.camera_id
@@ -763,7 +845,7 @@ class PipelineService:
                 else getattr(t, 'camera_id', None) or 0
             )
             if cam > 0:
-                self._media_collector.update_single_detection(tid, conf, cam, frame)
+                self._media_collector.update_latest_single(tid, cam, frame, ts)
 
     def _enqueue_media_sample(
         self,
@@ -827,18 +909,54 @@ class PipelineService:
         ship_id: str,
         camera_id: int | None,
     ) -> None:
+        # Comparison images are now captured at berth IN/OUT crossings
+        # (see _recording_boundary_media_sample), not on OCR best-shot.
+        # Retained as a no-op so the OCR worker callback contract is unchanged.
+        return
+
+    def _recording_boundary_media_sample(
+        self,
+        camera_id: int,
+        overlay: Any,
+        tracks: list[Any],
+        crossings: list[tuple[str, str]],
+    ) -> None:
+        """Capture single + fused overlay at each berth IN/OUT crossing.
+
+        `overlay` is the single-camera overlay frame for this camera at the
+        crossing instant; the fused counterpart is the latest fused overlay
+        mirrored into _latest_fused_bgr (same instant, within one frame).
+        """
+        if overlay is None or getattr(overlay, 'size', 0) == 0:
+            return
+        confirmed_ids = {
+            str(t.track_id)
+            for t in tracks
+            if getattr(t, 'state', None) == TrackState.CONFIRMED
+        }
+        # Always refresh latest-frame fallback for confirmed tracks on this camera.
+        ts = time.time()
         fused = None
         with self._latest_fused_lock:
             if self._latest_fused_bgr is not None:
                 fused = self._latest_fused_bgr.copy()
-        self._media_collector.update_ocr(
-            track_id,
-            ocr_conf,
-            ship_id,
-            frame,
-            fused if fused is not None else frame,
-            camera_id,
-        )
+        for tid in confirmed_ids:
+            self._media_collector.update_latest_single(tid, int(camera_id), overlay, ts)
+            if fused is not None:
+                self._media_collector.update_latest_fused(tid, fused, ts)
+        if not crossings:
+            return
+        single_copy = overlay.copy()
+        for track_id, direction in crossings:
+            if str(track_id) not in confirmed_ids:
+                continue
+            self._media_collector.set_boundary_overlay(
+                str(track_id),
+                direction,
+                int(camera_id),
+                single_copy,
+                fused,
+            )
 
     def _promote_staging_video(
         self,
@@ -1170,10 +1288,45 @@ class PipelineService:
                 if getattr(tb, 'berth_out_ts', None)
                 else None
             )
+            min_berth_sec = self._min_berth_duration_sec(db)
+            if min_berth_sec > 0:
+                # Yêu cầu có thời lượng neo đậu thực sự: phải đủ cả berth_in và
+                # berth_out. Track không có thời lượng neo đậu (thiếu IN/OUT) coi
+                # như không đạt ngưỡng → bỏ qua, kể cả UNKNOWN.
+                if berth_in_dt is None or berth_out_dt is None:
+                    _log.info(
+                        'Skip persist track=%s ship=%s: no berth duration (in=%s out=%s), '
+                        'min_berth=%.1fs',
+                        tb.track_id,
+                        ship_id,
+                        berth_in_dt,
+                        berth_out_dt,
+                        min_berth_sec,
+                    )
+                    return
+                dwell_sec = (berth_out_dt - berth_in_dt).total_seconds()
+                if dwell_sec < min_berth_sec:
+                    _log.info(
+                        'Skip persist track=%s ship=%s: berth dwell=%.1fs < min_berth=%.1fs',
+                        tb.track_id,
+                        ship_id,
+                        dwell_sec,
+                        min_berth_sec,
+                    )
+                    return
             cam_id = int(getattr(tb, 'camera_id', 0) or 0)
-            if self._camera_has_boundary(cam_id) and berth_in_dt is None:
+            has_known_ship_id = not is_unknown_ship_id(ship_id)
+            has_ocr_evidence = any(
+                not is_unknown_ship_id(str(candidate or '').strip().upper())
+                for candidate, _confidence in (hist or [])
+            )
+            if (
+                self._camera_has_boundary(cam_id)
+                and berth_in_dt is None
+                and not (has_known_ship_id or has_ocr_evidence)
+            ):
                 _log.debug(
-                    'Skip persist track=%s camera=%s: no valid berth IN in zone',
+                    'Skip persist track=%s camera=%s: no valid berth IN and no OCR identity',
                     tb.track_id,
                     cam_id,
                 )
@@ -1262,13 +1415,27 @@ class PipelineService:
             audit_uri: str | None = None
             single_image_uri: str | None = None
             if snap is not None:
-                cam_det = snap.single_best_camera_id if snap.single_best_camera_id is not None else 0
-                cam_ocr = snap.single_best_ocr_camera_id if snap.single_best_ocr_camera_id is not None else 0
+                from app.services.ai.track_media_collector import encode_jpeg_bgr
+
+                # OUT fallback: a track that never emitted a clean OUT crossing
+                # (e.g. still moored at finalize) uses the latest overlay frame of
+                # the detection as its OUT image. No best-shot fallback.
+                single_out_jpeg = snap.single_overlay_out_jpeg
+                single_out_cam = snap.single_overlay_out_camera_id
+                if single_out_jpeg is None and snap.single_latest_frame is not None:
+                    single_out_jpeg = encode_jpeg_bgr(snap.single_latest_frame)
+                    single_out_cam = snap.single_latest_camera_id
+                fused_out_jpeg = snap.fused_overlay_out_jpeg
+                if fused_out_jpeg is None and snap.fused_latest_frame is not None:
+                    fused_out_jpeg = encode_jpeg_bgr(snap.fused_latest_frame)
+
+                cam_in = snap.single_overlay_in_camera_id if snap.single_overlay_in_camera_id is not None else 0
+                cam_out = single_out_cam if single_out_cam is not None else 0
                 uploads: list[tuple[bytes | None, str]] = [
-                    (snap.fused_best_detection_jpeg, f'fused_best_detection_{safe_t}.jpg'),
-                    (snap.fused_best_ocr_jpeg, f'fused_best_ocr_{safe_t}.jpg'),
-                    (snap.single_best_detection_jpeg, f'single_best_detection_{cam_det}_{safe_t}.jpg'),
-                    (snap.single_best_ocr_jpeg, f'single_best_ocr_{cam_ocr}_{safe_t}.jpg'),
+                    (snap.single_overlay_in_jpeg, f'single_overlay_in_{cam_in}_{safe_t}.jpg'),
+                    (single_out_jpeg, f'single_overlay_out_{cam_out}_{safe_t}.jpg'),
+                    (snap.fused_overlay_in_jpeg, f'fused_overlay_in_{safe_t}.jpg'),
+                    (fused_out_jpeg, f'fused_overlay_out_{safe_t}.jpg'),
                 ]
                 for jpeg_bytes, fname in uploads:
                     if not jpeg_bytes:
@@ -1287,7 +1454,7 @@ class PipelineService:
                     )
                     if audit_uri is None:
                         audit_uri = uri
-                    if fname.startswith('single_best_detection_'):
+                    if fname.startswith('single_overlay_in_'):
                         single_image_uri = uri
                     detection_media_repo.create(
                         db,
@@ -1408,6 +1575,15 @@ class PipelineService:
             raise
 
         if det_id_for_invoice is not None:
+            try:
+                from app.services.detection_merge_service import absorb_contained
+
+                det_id_for_invoice = absorb_contained(db, det_id_for_invoice)
+            except Exception:
+                _log.exception(
+                    'detection_merge failed for detection_id=%s',
+                    det_id_for_invoice,
+                )
             try:
                 from app.services.detection_invoice_service import ensure_ai_invoice_for_detection
 
@@ -1663,7 +1839,41 @@ class PipelineService:
             edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
             on_global_track_removed=combined_on_removed,
             ship_id_catalog=self._ship_id_catalog,
+            overlap_merge_config=OverlapMergeConfig(
+                enabled=bool(runtime_cfg['reid_overlap_merge_enabled']),
+                edge_zone_ratio=float(runtime_cfg['reid_edge_zone_ratio']),
+                embedding_weight=float(runtime_cfg['reid_embedding_weight']),
+                color_weight=float(runtime_cfg['reid_color_weight']),
+                size_weight=float(runtime_cfg['reid_size_weight']),
+                accept_threshold=float(runtime_cfg['reid_accept_threshold']),
+                min_margin=float(runtime_cfg['reid_min_margin']),
+            ),
+            directional_handoff_config=DirectionalHandoffConfig(
+                enabled=bool(runtime_cfg['reid_directional_handoff_enabled']),
+                max_transit_sec=float(runtime_cfg['reid_directional_max_transit_sec']),
+                min_transit_sec=float(runtime_cfg['reid_directional_min_transit_sec']),
+                min_velocity_px=float(runtime_cfg['reid_directional_min_velocity_px']),
+                edge_zone_ratio=float(runtime_cfg['reid_directional_edge_zone_ratio']),
+                embedding_weight=float(runtime_cfg['reid_directional_embedding_weight']),
+                direction_weight=float(runtime_cfg['reid_directional_direction_weight']),
+                time_weight=float(runtime_cfg['reid_directional_time_weight']),
+                accept_threshold=float(runtime_cfg['reid_directional_accept_threshold']),
+                embedding_floor=float(runtime_cfg['reid_directional_embedding_floor']),
+            ),
+            reverse_motion_guard_enabled=bool(
+                runtime_cfg['reid_reverse_motion_guard_enabled']
+            ),
         )
+        # Feed camera layout geometry (layout_x per camera) so the directional
+        # handoff matcher knows which camera sits left/right of which.
+        try:
+            layout_x_by_camera = {
+                int(member.camera_id): float(getattr(member, 'layout_x', 0) or 0)
+                for member in ordered_members
+            }
+            self._reid_manager.set_camera_layout(layout_x_by_camera)
+        except Exception:
+            _log.exception('reid: failed to set camera layout geometry')
         embedding_extractor = EmbeddingExtractor(
             model_path=runtime_cfg['reid_embedding_model_path'] or None,
             device=runtime_cfg['device'],
@@ -1863,6 +2073,7 @@ class PipelineService:
                     runs_base=str(self._runtime_media_base / 'detect'),
                     on_image_captured=self._upload_captured_image,
                     on_overlay_media_sample=self._recording_single_media_sample,
+                    on_boundary_media_sample=self._recording_boundary_media_sample,
                     input_frame_queue=self._group_frame_hub.queue_for_camera(camera_id),
                     shared_ocr_queue=self._ocr_queue if ocr_active else None,
                     shared_visual_queue=self._visual_queue if visual_enabled else None,
@@ -2231,6 +2442,19 @@ class PipelineService:
         )
         tracker.flush_shutdown_logs()
         return results
+
+    def _min_berth_duration_sec(self, db: Session) -> float:
+        """Min neo-đậu dwell (giây) để track được lưu detection. Đọc live từ
+        port_configs (key track_min_berth_duration_sec), fallback settings."""
+        try:
+            row = port_config_repo.get_by_key(db, 'track_min_berth_duration_sec')
+            raw = str(row.value) if row is not None and row.value is not None else ''
+        except Exception:
+            raw = ''
+        return self._to_float(
+            raw,
+            float(getattr(settings, 'TRACK_MIN_BERTH_DURATION_SEC', 0.0)),
+        )
 
     def _camera_has_boundary(self, camera_id: int) -> bool:
         """True when camera has active boundary config with a valid berth_zone polygon."""

@@ -1,11 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { CheckCircle2, Eye, Loader2, RefreshCw, Trash2, X, XCircle } from 'lucide-react';
+import { CheckCircle2, Loader2, RefreshCw, Trash2, X, XCircle } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
-import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
+import {
+  formatBerthDuration,
+  getBerthDurationRange,
+  getDetectionDisplayTimeIso,
+  getDetectionShipLabel,
+} from '../../../utils/detection-display';
 import type { DetectionMediaRead, DetectionRead, VesselRead, VesselTypeRead } from '../../../types/api.types';
 import { portApi } from '../services/portApi';
 import {
@@ -98,20 +103,6 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
     }
     return '';
   }, []);
-
-  const resolveImageUrl = (det: DetectionRead): string | null => {
-    const raw = (det.audit_image_url || det.audit_image_path || '').trim();
-    if (!raw) {
-      return null;
-    }
-    if (raw.startsWith('http://') || raw.startsWith('https://')) {
-      return raw;
-    }
-    if (raw.startsWith('/runs/')) {
-      return mediaOrigin ? `${mediaOrigin}${raw}` : raw;
-    }
-    return null;
-  };
 
   const resolveMediaUrl = (filePath: string): string | null => {
     const raw = (filePath || '').trim();
@@ -268,10 +259,10 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
             <thead>
               <tr className={dt.headRow}>
                 <th className={dt.pad}>Thời Gian</th>
-                <th className={dt.pad}>ID Nhận Diện</th>
+                <th className={dt.pad}>Thời Lượng Neo Đậu</th>
                 <th className={dt.pad}>Mã Tàu</th>
                 <th className={dt.pad}>Độ Tin Cậy</th>
-                <th className={dt.pad}>Ảnh Xác Minh</th>
+                <th className={dt.pad}>Camera IN / OUT</th>
                 <th className={dt.pad}>Trạng Thái</th>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
               </tr>
@@ -296,10 +287,21 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                       })()}
                     </td>
                     <td
-                      className={cn(dt.pad, dt.mono, 'text-gray-600 dark:text-gray-300 max-w-[12rem]')}
+                      className={cn(dt.pad, dt.mono, 'text-gray-600 dark:text-gray-300')}
                       title={det.track_id ?? undefined}
                     >
-                      <span className="block truncate">{det.track_id?.trim() || '—'}</span>
+                      <span className="block font-semibold">{formatBerthDuration(det)}</span>
+                      {(() => {
+                        const range = getBerthDurationRange(det);
+                        if (!range) {
+                          return null;
+                        }
+                        return (
+                          <span className="block text-[10px] text-gray-400 dark:text-gray-500 normal-case">
+                            ({range.source}: {range.from} → {range.to})
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className={cn(dt.pad, dt.body, 'font-bold uppercase')}>
                       <div className="flex flex-wrap items-center gap-2">
@@ -310,23 +312,17 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                     <td className={cn(dt.pad, dt.mono, 'text-blue-600 dark:text-blue-400')}>
                       {(((det.confidence ?? 0) as number) * 100).toFixed(1)}%
                     </td>
-                    <td className={dt.pad}>
-                      {(() => {
-                        const imageUrl = resolveImageUrl(det);
-                        if (!imageUrl) {
-                          return <span className={cn(dt.meta, 'normal-case')}>Chưa có ảnh</span>;
-                        }
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImageUrl(imageUrl)}
-                            className="inline-flex items-center gap-2 rounded-lg border border-blue-500/20 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-blue-600 hover:bg-blue-500/10 dark:text-blue-400"
-                          >
-                            <Eye className="h-3.5 w-3.5" />
-                            Xem ảnh
-                          </button>
-                        );
-                      })()}
+                    <td className={cn(dt.pad, 'normal-case')}>
+                      <div className="flex flex-col gap-0.5 text-[11px]">
+                        <span className="text-gray-600 dark:text-gray-300">
+                          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">IN:</span>{' '}
+                          {det.berth_in_camera_name ?? '—'}
+                        </span>
+                        <span className="text-gray-600 dark:text-gray-300">
+                          <span className="text-red-500 dark:text-red-400 font-semibold">OUT:</span>{' '}
+                          {det.berth_out_camera_name ?? '—'}
+                        </span>
+                      </div>
                     </td>
                     <td className={dt.pad}>
                       <span

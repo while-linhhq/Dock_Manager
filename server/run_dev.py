@@ -44,7 +44,8 @@ def _env_flag(name: str, default: str = '1') -> bool:
 
 
 def _resolve_autostart_group_id(base_url: str) -> int | None:
-    """Group cố định từ env, else group active mới nhất (get_all order id desc)."""
+    """Thứ tự ưu tiên: env AUTOSTART_GROUP_ID > port_configs.autostart_group_id
+    > group active mới nhất (get_all order id desc)."""
     fixed = os.environ.get('AUTOSTART_GROUP_ID', '').strip()
     if fixed:
         try:
@@ -54,8 +55,40 @@ def _resolve_autostart_group_id(base_url: str) -> int | None:
     try:
         from app.db.session import SessionLocal
         from app.repositories.camera_group_repository import camera_group_repo
+        from app.repositories.port_config_repository import port_config_repo
 
         with SessionLocal() as db:
+            # DB-configured default group (đặt qua port_configs, chỉnh được trên UI).
+            try:
+                cfg_rows = port_config_repo.get_all(db)
+                cfg_map = {row.key: row.value for row in cfg_rows}
+                raw_default = (cfg_map.get('autostart_group_id', '') or '').strip()
+                if raw_default:
+                    configured_id = int(raw_default)
+                    group = camera_group_repo.get(db, configured_id)
+                    if group is not None and bool(group.is_active):
+                        enabled = [
+                            m for m in group.members
+                            if bool(m.enabled) and getattr(m, 'camera', None) is not None
+                        ]
+                        if enabled:
+                            logger.info(
+                                'autostart: dùng group mặc định từ port_configs=%s (%s)',
+                                configured_id, group.name,
+                            )
+                            return int(group.id)
+                        logger.warning(
+                            'autostart: group mặc định %s không có camera enabled — fallback',
+                            configured_id,
+                        )
+                    else:
+                        logger.warning(
+                            'autostart: group mặc định %s không tồn tại/không active — fallback',
+                            raw_default,
+                        )
+            except Exception as cfg_err:
+                logger.warning('autostart: đọc autostart_group_id lỗi (%s) — fallback', cfg_err)
+
             groups = camera_group_repo.get_all(db, active_only=True)
         for group in groups:
             enabled = [

@@ -28,6 +28,7 @@ interface PortState {
   deleteDetection: (id: string) => Promise<void>;
   startPipeline: (data: PipelineStartRequest) => Promise<void>;
   stopPipeline: () => Promise<void>;
+  shutdownServer: () => Promise<number[]>;
 }
 
 export const usePortStore = create<PortState>((set, get) => ({
@@ -160,6 +161,18 @@ export const usePortStore = create<PortState>((set, get) => ({
       set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to stop pipeline', isLoading: false });
+      throw err;
+    }
+  },
+  shutdownServer: async () => {
+    set({ isLoading: true, error: null });
+    try {
+      const res = await portApi.shutdownServer();
+      window.dispatchEvent(new CustomEvent('pipeline-status-changed'));
+      set({ isLoading: false });
+      return res.orphan_ocr_killed ?? [];
+    } catch (err: any) {
+      set({ error: err.message || 'Failed to shutdown server', isLoading: false });
       throw err;
     }
   },

@@ -49,23 +49,30 @@ async function refreshAccessToken(): Promise<string | null> {
     return refreshPromise;
   }
   refreshPromise = (async () => {
-    const token = authStorage.getToken();
-    if (!token) {
+    const refreshToken = authStorage.getRefreshToken();
+    if (!refreshToken) {
       return null;
     }
     const resp = await fetch(`${BASE_URL}/auth/refresh`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({ refresh_token: refreshToken }),
     });
     if (!resp.ok) {
       return null;
     }
-    const data = (await resp.json()) as { access_token?: string };
+    const data = (await resp.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+    };
     const next = typeof data.access_token === 'string' ? data.access_token : null;
     if (next) {
       authStorage.setToken(next);
+    }
+    if (typeof data.refresh_token === 'string') {
+      authStorage.setRefreshToken(data.refresh_token);
     }
     return next;
   })()
@@ -120,7 +127,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
           return request<T>(endpoint, options, false);
         }
       }
-      authStorage.removeToken();
+      authStorage.clear();
       window.location.href = '/login';
       throw new ApiError(401, 'Unauthorized');
     }
@@ -180,7 +187,7 @@ async function requestBlob(endpoint: string, options: RequestInit = {}, retry = 
         return requestBlob(endpoint, options, false);
       }
     }
-    authStorage.removeToken();
+    authStorage.clear();
     window.location.href = '/login';
     throw new ApiError(401, 'Unauthorized');
   }

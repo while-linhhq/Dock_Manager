@@ -17,6 +17,7 @@ import {
   LogOut,
   Ship,
   User,
+  ScrollText,
   Sun,
   Moon,
   Menu,
@@ -40,6 +41,7 @@ const navItems: Array<{ key: MenuKey; path: string; label: string; icon: LucideI
   { key: 'ai_lab', path: PATHS.AI_LAB, label: 'AI Lab', icon: FlaskConical },
   { key: 'backup', path: PATHS.BACKUP, label: 'Sao Lưu / Lịch Sử', icon: Database },
   { key: 'users', path: PATHS.USERS, label: 'Quản Lý User', icon: User },
+  { key: 'logs', path: PATHS.LOGS, label: 'Xem Logs', icon: ScrollText },
 ];
 
 export const MainLayout: React.FC = () => {

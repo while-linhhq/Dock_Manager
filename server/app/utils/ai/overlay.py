@@ -129,6 +129,125 @@ def emb_overlay_line(entry: dict | None) -> str:
     return f'EMB: {emb_id} ({conf_pct:.1f}%)'
 
 
+def _reid_pct_color(current: float, threshold: float) -> tuple[int, int, int]:
+    """Green when current meets threshold, amber when close, red when far."""
+    if current >= threshold:
+        return (80, 220, 80)
+    if threshold > 0 and current >= threshold * 0.85:
+        return (0, 210, 255)
+    return (80, 80, 255)
+
+
+def _short_gid(gid: str | None) -> str:
+    """Trim 'gid_<hex>' to a readable tail for the overlay (last 4 chars)."""
+    g = str(gid or '').strip()
+    if not g:
+        return '?'
+    tail = g[4:] if g.startswith('gid_') else g
+    return tail[-4:] if len(tail) > 4 else tail
+
+
+def _reid_target_suffix(signal: dict) -> str:
+    """' ->#<gid tail>/<plate>' naming which identity this signal compares against.
+
+    Lets the operator see WHO a track is being ReID-matched against, so an
+    over-merge (two different plates collapsing to one gid) is visible live.
+    """
+    gid = signal.get('target_gid')
+    if not gid:
+        return ''
+    plate = str(signal.get('target_ship_id') or '').strip()
+    plate_part = f'/{plate}' if plate else ''
+    return f' ->#{_short_gid(gid)}{plate_part}'
+
+
+def reid_overlay_lines(entry: dict | None) -> list[tuple[str, tuple[int, int, int]]]:
+    """Debug ReID lines: 'current/threshold' as percentages for each signal.
+
+    Format e.g. 'REID vis 70/90' where 70 is the current computed score and 90
+    is the configured accept threshold (both scaled to 0-100). Used on the debug
+    preview so the operator can tune reid_* config while watching the stream.
+    """
+    diag = (entry or {}).get('reid_diag')
+    if not isinstance(diag, dict):
+        return []
+    lines: list[tuple[str, tuple[int, int, int]]] = []
+
+    visual = diag.get('visual')
+    if isinstance(visual, dict):
+        cur = float(visual.get('score') or 0.0)
+        thr = float(visual.get('threshold') or 0.0)
+        lines.append((
+            f'REID vis {cur * 100:.0f}/{thr * 100:.0f}'
+            f'{_reid_target_suffix(visual)}',
+            _reid_pct_color(cur, thr),
+        ))
+
+    overlap = diag.get('overlap')
+    if isinstance(overlap, dict):
+        cur = float(overlap.get('score') or 0.0)
+        thr = float(overlap.get('accept') or 0.0)
+        mrg = float(overlap.get('margin') or 0.0)
+        mmin = float(overlap.get('min_margin') or 0.0)
+        lines.append((
+            f'REID ovl {cur * 100:.0f}/{thr * 100:.0f} '
+            f'm{mrg * 100:.0f}/{mmin * 100:.0f}'
+            f'{_reid_target_suffix(overlap)}',
+            _reid_pct_color(cur, thr),
+        ))
+
+    directional = diag.get('directional')
+    if isinstance(directional, dict):
+        cur = float(directional.get('score') or 0.0)
+        thr = float(directional.get('accept') or 0.0)
+        lines.append((
+            f'REID dir {cur * 100:.0f}/{thr * 100:.0f}'
+            f'{_reid_target_suffix(directional)}',
+            _reid_pct_color(cur, thr),
+        ))
+
+    lines.extend(_seam_overlay_lines(diag.get('seam')))
+
+    return lines
+
+
+def _seam_overlay_lines(
+    seam: object,
+) -> list[tuple[str, tuple[int, int, int]]]:
+    """Seam-anchor debug lines: occupancy per ROI vs bg threshold + release grace.
+
+    Only rendered when the track's identity is currently anchored at a seam.
+    Two lines:
+      'SEAM A<cam>/B<cam> OCC 42/18 IN'  — foreground ratio (score_a max) vs
+          bg_subtract_threshold, both x100; 'IN'/'OUT' = occupied flag.
+      'SEAM grace 12s'                   — departed-grace countdown once both
+          ROIs go quiet (only while a release is pending).
+    Colour: green when occupied (anchor held), amber while grace counts down.
+    """
+    if not isinstance(seam, dict):
+        return []
+    thr = float(seam.get('threshold') or 0.0)
+    score_a = float(seam.get('score_a') or 0.0)
+    score_b = float(seam.get('score_b') or 0.0)
+    occ = max(score_a, score_b)
+    occupied = bool(seam.get('occupied'))
+    cam_a = seam.get('cam_a_id')
+    cam_b = seam.get('cam_b_id')
+    cam_part = f'A{cam_a}' + (f'/B{cam_b}' if cam_b is not None else '')
+    state_part = 'IN' if occupied else 'OUT'
+    lines: list[tuple[str, tuple[int, int, int]]] = [(
+        f'SEAM {cam_part} occ {occ * 100:.0f}/{thr * 100:.0f} {state_part}',
+        (80, 220, 80) if occupied else (0, 210, 255),
+    )]
+    grace_left = seam.get('grace_left')
+    if grace_left is not None:
+        lines.append((
+            f'SEAM grace {float(grace_left):.0f}s',
+            (0, 210, 255),
+        ))
+    return lines
+
+
 def final_overlay_line(track: TrackedBoat, entry: dict | None) -> str:
     # Source from evidence resolver decision (ocr/embedding/consensus), not visual cache.
     source = str(getattr(track, 'ship_id_decision_source', None) or '').strip()
@@ -255,6 +374,20 @@ def draw_ship_detection_overlay(
                     (255, 220, 80),
                     2,
                 )
+
+                for reid_text, reid_color in reid_overlay_lines(
+                    ent if isinstance(ent, dict) else None
+                ):
+                    y_base = min(y_base + 20, display_frame.shape[0] - 6)
+                    cv2.putText(
+                        display_frame,
+                        reid_text,
+                        (int(b[0]), y_base),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        reid_color,
+                        2,
+                    )
 
     if frame_captured_mono is not None:
         sync_label = format_capture_wall_clock(frame_captured_mono, camera_id=camera_id)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,22 +32,31 @@ class TimedFrame:
 
 
 class LatestFrameBuffer:
-    def __init__(self) -> None:
+    def __init__(self, history_sec: float = 8.0) -> None:
         self._frames: dict[int, TimedFrame] = {}
+        self._history: dict[int, deque[TimedFrame]] = {}
+        self._history_sec = max(1.0, float(history_sec))
         self._sequences: dict[int, int] = {}
         self._lock = threading.Lock()
 
     def set(self, camera_id: int, frame: Any, captured_at: float | None = None) -> None:
         camera_key = int(camera_id)
+        capture_ts = captured_at or time.monotonic()
         with self._lock:
             sequence = self._sequences.get(camera_key, 0) + 1
             self._sequences[camera_key] = sequence
-            self._frames[camera_key] = TimedFrame(
+            item = TimedFrame(
                 camera_id=camera_key,
                 frame=frame.copy(),
-                captured_at=captured_at or time.monotonic(),
+                captured_at=capture_ts,
                 sequence=sequence,
             )
+            self._frames[camera_key] = item
+            history = self._history.setdefault(camera_key, deque())
+            history.append(item)
+            cutoff = capture_ts - self._history_sec
+            while history and history[0].captured_at < cutoff:
+                history.popleft()
 
     def snapshot(self, copy_frames: bool = True) -> dict[int, TimedFrame]:
         with self._lock:
@@ -59,6 +69,29 @@ class LatestFrameBuffer:
                 )
                 for camera_id, item in self._frames.items()
             }
+
+    def history_snapshot(
+        self,
+        camera_ids: list[int] | None = None,
+        *,
+        copy_frames: bool = True,
+    ) -> dict[int, list[TimedFrame]]:
+        ids = None if camera_ids is None else {int(camera_id) for camera_id in camera_ids}
+        with self._lock:
+            result: dict[int, list[TimedFrame]] = {}
+            for camera_id, items in self._history.items():
+                if ids is not None and camera_id not in ids:
+                    continue
+                result[camera_id] = [
+                    TimedFrame(
+                        item.camera_id,
+                        item.frame.copy() if copy_frames else item.frame,
+                        item.captured_at,
+                        item.sequence,
+                    )
+                    for item in items
+                ]
+            return result
 
 
 def _drain_latest_from_capture(cap: Any, *, max_grabs: int = 4) -> Any | None:

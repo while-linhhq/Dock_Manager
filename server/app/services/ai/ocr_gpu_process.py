@@ -83,7 +83,7 @@ def _ocr_subprocess_main(
         apply_thread_env_caps,
     )
 
-    apply_thread_env_caps(ocr_subprocess=True)
+    apply_thread_env_caps(ocr_subprocess=True, force=True)
 
     recognizer = None
     device = 'cpu'

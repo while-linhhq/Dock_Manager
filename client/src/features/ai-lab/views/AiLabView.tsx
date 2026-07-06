@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { FlaskConical, ScanSearch, ScanText, Video } from 'lucide-react';
+import { FlaskConical, Grid2X2, ScanSearch, ScanText, Video } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { DetectionLabPanel } from '../components/DetectionLabPanel';
 import { EmbeddingComparePanel } from '../components/EmbeddingComparePanel';
+import { GroupCamTestPanel } from '../components/GroupCamTestPanel';
 import { OcrLabPanel } from '../components/OcrLabPanel';
 
-type LabTab = 'detection' | 'ocr' | 'embedding';
+type LabTab = 'detection' | 'group-cam' | 'ocr' | 'embedding';
 
 export const AiLabView: React.FC = () => {
   const [tab, setTab] = useState<LabTab>('detection');
@@ -56,6 +57,19 @@ export const AiLabView: React.FC = () => {
           </button>
           <button
             type="button"
+            onClick={() => setTab('group-cam')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition-all',
+              tab === 'group-cam'
+                ? 'bg-white dark:bg-cyan-600 text-cyan-600 dark:text-white shadow-sm'
+                : 'text-gray-600 dark:text-gray-400',
+            )}
+          >
+            <Grid2X2 className="h-3.5 w-3.5" />
+            Group Cam Test
+          </button>
+          <button
+            type="button"
             onClick={() => setTab('embedding')}
             className={cn(
               'inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-[10px] font-bold uppercase tracking-widest transition-all',
@@ -72,6 +86,8 @@ export const AiLabView: React.FC = () => {
 
       {tab === 'detection' ? (
         <DetectionLabPanel />
+      ) : tab === 'group-cam' ? (
+        <GroupCamTestPanel />
       ) : tab === 'ocr' ? (
         <OcrLabPanel />
       ) : (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -16,8 +17,6 @@ from app.services.ai.background_model import BackgroundModelRegistry
 from app.services.ai.boat_tracker import TrackedBoat
 from app.core.config import settings
 from app.services.ai.frame_fusion import (
-    DEFAULT_FUSED_MAX_HEIGHT,
-    DEFAULT_FUSED_MAX_WIDTH,
     FrameFuser,
     FusionMember,
     build_fusion_config_from_group,
@@ -38,6 +37,42 @@ from app.utils.ai.pipeline_utils import put_queue_drop_oldest
 _log = logging.getLogger(__name__)
 
 TrackProvider = Callable[[], list[TrackedBoat]]
+
+
+def _parse_camera_offsets_ms(raw: Any) -> dict[int, float]:
+    """Parse sync_camera_offsets_ms from JSON or comma list.
+
+    Supported formats:
+    - {"201": 0, "301": 4500}
+    - 201=0,301=4500
+
+    Offset is per-camera end-to-end latency in milliseconds. A delayed camera
+    gets a positive offset; faster cameras are matched against history.
+    """
+    if raw is None:
+        return {}
+    text = str(raw).strip()
+    if not text:
+        return {}
+    parsed: Any
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = {}
+        for part in text.split(','):
+            if '=' not in part:
+                continue
+            key, value = part.split('=', 1)
+            parsed[key.strip()] = value.strip()
+    if not isinstance(parsed, dict):
+        return {}
+    offsets: dict[int, float] = {}
+    for key, value in parsed.items():
+        try:
+            offsets[int(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return offsets
 
 
 class GroupFrameHub:
@@ -75,7 +110,15 @@ class GroupFrameHub:
         self._ocr_lock = ocr_lock
         self._ocr_label_ttl_sec = float(ocr_label_ttl_sec)
         self._track_providers: list[TrackProvider] = []
-        self._frame_buffer = LatestFrameBuffer()
+        camera_offsets_ms = _parse_camera_offsets_ms(
+            runtime_cfg.get('sync_camera_offsets_ms', '')
+        )
+        max_offset_sec = max(
+            [abs(value) / 1000.0 for value in camera_offsets_ms.values()] or [0.0]
+        )
+        self._frame_buffer = LatestFrameBuffer(
+            history_sec=max(8.0, max_offset_sec + 2.0),
+        )
         self._per_camera_queues: dict[int, queue.Queue] = {}
         if distribute_per_camera:
             for member in enabled_members:
@@ -91,23 +134,11 @@ class GroupFrameHub:
         self._overlay_members_record: dict[int, FusionMember] = {
             int(m.camera_id): m for m in fusion_config.members if m.enabled
         }
-        preview_max_w = min(
-            int(runtime_cfg['fused_frame_max_width']),
-            int(getattr(settings, 'PREVIEW_MAX_WIDTH', DEFAULT_FUSED_MAX_WIDTH)),
-        )
-        preview_max_h = min(
-            int(runtime_cfg['fused_frame_max_height']),
-            int(getattr(settings, 'PREVIEW_MAX_HEIGHT', DEFAULT_FUSED_MAX_HEIGHT)),
-        )
-        preview_fusion_config = build_fusion_config_from_group(
-            group,
-            max_width=preview_max_w,
-            max_height=preview_max_h,
-        )
-        # Dashboard WS preview = resize of the same fused frame (avoids a 2nd fuse+overlay thread).
+        # Dashboard WS preview must preserve the active group canvas size.
+        # A lower global PREVIEW_MAX_* cap makes wide multi-camera stitches look tiny/blurry.
         self._preview_canvas_size: tuple[int, int] = (
-            int(preview_fusion_config.canvas_width),
-            int(preview_fusion_config.canvas_height),
+            int(fusion_config.canvas_width),
+            int(fusion_config.canvas_height),
         )
         self._boundary_by_camera: dict[int, dict | None] = (
             dict(boundary_by_camera)
@@ -124,6 +155,7 @@ class GroupFrameHub:
             self._frame_buffer,
             camera_ids,
             tolerance_ms=runtime_cfg['sync_tolerance_ms'],
+            camera_offsets_ms=camera_offsets_ms,
         )
         raw_fps = float(runtime_cfg['record_fps'])
         record_fps = raw_fps if raw_fps > 0 else float(settings.RECORD_FPS)

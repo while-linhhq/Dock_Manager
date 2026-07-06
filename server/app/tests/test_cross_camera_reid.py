@@ -155,6 +155,108 @@ def test_finalize_once_after_adjacent_seam_merge() -> None:
     assert finalized[0].startswith('gid_')
 
 
+def test_embedding_match_rejected_when_ship_ids_conflict() -> None:
+    """Over-merge guard: a track with a valid plate must not merge into an
+    identity holding a *different* valid plate, even at high cosine score.
+
+    Reproduces BD-0422/SG-6047: distinct boats reach cosine ~0.88 which clears
+    the 0.6 threshold. Without the ship-id conflict guard they collapse into one
+    global id and one detection is lost.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(7)
+
+    # Identity A on cam1, OCR-confirmed as SG-6047.
+    boat_a = _track('trk_a', camera_id=1)
+    mgr.report_track_update(1, boat_a, embedding=emb)
+    mgr.report_ocr_result(1, 'trk_a', 'SG-6047', 0.95)
+
+    # Track B on adjacent cam2 with a near-identical embedding but a DIFFERENT
+    # confirmed plate. It must get its own identity, not merge into A.
+    boat_b = _track('trk_b', camera_id=2, box=(200.0, 200.0, 320.0, 320.0))
+    similar_emb = emb * 0.98 + _unit_embedding(99) * 0.02
+    boat_b.ship_id = 'BD-0422'
+    mgr.report_track_update(2, boat_b, embedding=similar_emb)
+    mgr.report_ocr_result(2, 'trk_b', 'BD-0422', 0.93)
+
+    gid_a = mgr._track_to_global[(1, 'trk_a')]
+    gid_b = mgr._track_to_global[(2, 'trk_b')]
+    assert gid_a != gid_b
+    assert mgr._identities[gid_a].ship_id == 'SG-6047'
+    assert mgr._identities[gid_b].ship_id == 'BD-0422'
+
+
+def test_embedding_match_still_works_when_incoming_plate_unknown() -> None:
+    """Guard must not block legit handoff: an incoming track with no/unknown
+    plate can still bind to an existing identity via embedding.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(11)
+
+    boat_a = _track('trk_src', camera_id=1)
+    mgr.report_track_update(1, boat_a, embedding=emb)
+    mgr.report_ocr_result(1, 'trk_src', 'SG-1111', 0.92)
+    mgr.report_track_removed(1, boat_a, ocr_history=[('SG-1111', 0.92)])
+
+    # No OCR on the reappearing track — pure embedding handoff must succeed.
+    boat_b = _track('trk_dst', camera_id=2)
+    mgr.report_track_update(2, boat_b, embedding=emb)
+
+    assert mgr.get_global_ship_id(2, 'trk_dst') == 'SG-1111'
+
+
+def test_directional_fallback_rejected_when_ship_ids_conflict() -> None:
+    """Fallback-path over-merge guard: the directional/overlap matchers score on
+    motion/time/embedding only and have NO ship_id check. A track carrying a
+    valid plate B must not be handed off into an identity confirmed as plate A,
+    even when direction + timing + embedding would otherwise accept the merge.
+
+    This is the leak left after the embedding-branch guard: when that guard
+    rejects a conflicting plate it falls through to these fallbacks, which
+    previously re-merged the two distinct boats into one gid.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.99, handoff_window_sec=60.0)
+    mgr.set_camera_layout({1: 0.0, 2: 1000.0})
+    emb = _unit_embedding(7)
+
+    # Identity A on cam1, OCR-confirmed SG-6047, moving RIGHT toward the cam2 seam.
+    boat_a = _track('trk_a', camera_id=1, box=(900.0, 100.0, 980.0, 200.0))
+    boat_a.velocity = (30.0, 0.0)
+    mgr.report_track_update(1, boat_a, embedding=emb, frame_shape=(360, 1000))
+    mgr.report_ocr_result(1, 'trk_a', 'SG-6047', 0.95)
+
+    # Track B appears at cam2's left edge shortly after, near-identical embedding
+    # (would clear the directional floor) but a DIFFERENT confirmed plate.
+    boat_b = _track('trk_b', camera_id=2, box=(10.0, 100.0, 70.0, 200.0))
+    boat_b.velocity = (30.0, 0.0)
+    boat_b.ship_id = 'BD-0422'
+    similar_emb = emb * 0.99 + _unit_embedding(99) * 0.01
+    mgr.report_track_update(2, boat_b, embedding=similar_emb, frame_shape=(360, 1000))
+    mgr.report_ocr_result(2, 'trk_b', 'BD-0422', 0.93)
+
+    gid_a = mgr._track_to_global[(1, 'trk_a')]
+    gid_b = mgr._track_to_global[(2, 'trk_b')]
+    assert gid_a != gid_b
+    assert mgr._identities[gid_a].ship_id == 'SG-6047'
+    assert mgr._identities[gid_b].ship_id == 'BD-0422'
+
+
+def test_identity_ship_id_conflicts_helper() -> None:
+    """Unit: the fallback pre-filter predicate only rejects a *different* valid plate."""
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    identity = mgr._create_empty_identity(1, 'trk')
+
+    identity.ship_id = 'SG-6047'
+    assert mgr._identity_ship_id_conflicts(identity, 'BD-0422') is True
+    assert mgr._identity_ship_id_conflicts(identity, 'SG-6047') is False
+    # Incoming unknown/empty → never a conflict (must allow OCR-less handoff).
+    assert mgr._identity_ship_id_conflicts(identity, '') is False
+    assert mgr._identity_ship_id_conflicts(identity, 'UNKNOWN') is False
+    # Identity has no valid plate → never a conflict.
+    identity.ship_id = None
+    assert mgr._identity_ship_id_conflicts(identity, 'BD-0422') is False
+
+
 def test_get_global_id_returns_gid_after_track_report() -> None:
     mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
     boat = _track('trk_gid', camera_id=1)

@@ -209,3 +209,34 @@ def test_last_chance_merge_before_finalize_prevents_double_in():
     # last-chance merge gom 2 identity cùng ship_id → 1 finalize → 1 IN
     in_events = [t for t, _ in recorded if t.berth_in_ts is not None]
     assert len(in_events) == 1, f'Expected 1 IN event, got {len(in_events)}'
+
+
+def test_same_camera_same_ship_id_tracks_persist_separately():
+    """Regression: nhiều tàu/track trong cùng camera không bị last-chance merge mất detection."""
+    recorded = []
+    mgr = CrossCameraReIdManager(
+        camera_order=[1, 2],
+        visual_threshold=0.6,
+        handoff_window_sec=5.0,
+        on_global_track_removed=lambda t, h: recorded.append((t, h)),
+    )
+    tracks = [
+        _fake_track('t1', 1, ship_id='BD-0001'),
+        _fake_track('t2', 1, ship_id='BD-0001'),
+        _fake_track('t3', 1, ship_id='BD-0002'),
+    ]
+    for idx, track in enumerate(tracks):
+        track.first_seen_ts = 100.0 + idx * 10.0
+        track.last_seen_ts = 105.0 + idx * 10.0
+        mgr.report_track_update(1, track, embedding=None, frame_shape=None)
+        mgr.report_boundary_crossing(1, track.track_id, 'in', 100.0 + idx * 10.0)
+
+    for track in tracks:
+        assert track.ship_id is not None
+        mgr.report_track_removed(1, track, [(track.ship_id, 0.95)])
+
+    mgr.flush_all()
+
+    assert len(recorded) == 3
+    assert sorted(h[0][0] for _, h in recorded) == ['BD-0001', 'BD-0001', 'BD-0002']
+    assert len({t.track_id for t, _ in recorded}) == 3

@@ -46,6 +46,14 @@ export type PipelineStartRequest = {
   enable_ocr?: boolean;
 }
 
+export type LogsResponse = {
+  path: string;
+  exists: boolean;
+  lines: string[];
+  returned: number;
+  requested: number;
+}
+
 function toCameraApiPayload(data: CameraCreate | Partial<CameraCreate>): Partial<CameraApiPayload> {
   return {
     ...(data.name != null ? { camera_name: data.name } : {}),
@@ -122,5 +130,11 @@ export const portApi = {
   },
   stopPipeline: async (): Promise<{ message: string }> => {
     return httpClient.post('/pipeline/stop');
+  },
+  shutdownServer: async (): Promise<{ message: string; orphan_ocr_killed: number[] }> => {
+    return httpClient.post('/pipeline/shutdown-server');
+  },
+  getLogs: async (lines: number = 200): Promise<LogsResponse> => {
+    return httpClient.get<LogsResponse>(`/pipeline/logs?lines=${lines}`);
   },
 };

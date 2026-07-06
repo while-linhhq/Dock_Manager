@@ -61,6 +61,246 @@ async def stop_pipeline():
     await asyncio.to_thread(pipeline_service.stop)
     return {"message": "Pipeline stopped"}
 
+def _kill_orphan_ocr_workers() -> list[int]:
+    """Kill lingering ``ocr-gpu-worker`` child processes holding VRAM.
+
+    The pipeline stop path closes the OCR subprocess cleanly, but a crashed or
+    force-restarted process can leave orphans reparented to init that keep
+    1.5-3GB of CUDA context each. Reap them explicitly on server shutdown so a
+    subsequent start does not hit CUBLAS_ALLOC_FAILED.
+    """
+    import psutil
+
+    killed: list[int] = []
+    me = psutil.Process()
+    for proc in psutil.process_iter(['name', 'cmdline']):
+        try:
+            if proc.pid == me.pid:
+                continue
+            name = proc.info.get('name') or ''
+            cmdline = ' '.join(proc.info.get('cmdline') or [])
+            if 'ocr-gpu-worker' in name or 'ocr-gpu-worker' in cmdline:
+                proc.terminate()
+                killed.append(proc.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if killed:
+        gone, alive = psutil.wait_procs(
+            [psutil.Process(pid) for pid in killed if psutil.pid_exists(pid)],
+            timeout=3.0,
+        )
+        for proc in alive:
+            try:
+                proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    return killed
+
+
+@router.post("/shutdown-server")
+async def shutdown_server(_=Depends(get_current_user)):
+    """Ngắt toàn bộ server: dừng pipeline, kill orphan OCR, thoát tiến trình.
+
+    Trả response trước rồi gửi SIGTERM cho chính tiến trình uvicorn để lifespan
+    shutdown chạy đủ (đóng pipeline, sepay, DB) thay vì kill cứng.
+    """
+    import os
+    import signal
+    import threading
+
+    if pipeline_service.is_running:
+        try:
+            await asyncio.to_thread(pipeline_service.stop)
+        except Exception:
+            pass
+
+    killed = await asyncio.to_thread(_kill_orphan_ocr_workers)
+
+    def _terminate_self() -> None:
+        import time
+
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_terminate_self, daemon=True).start()
+    return {
+        "message": "Server đang tắt",
+        "orphan_ocr_killed": killed,
+    }
+
+
+def _resolve_log_path() -> str:
+    """Absolute path to the active app log file (matches main._configure_logging)."""
+    import os
+
+    log_path = str(getattr(settings, 'LOG_FILE_PATH', 'logs/app.log') or 'logs/app.log')
+    if not os.path.isabs(log_path):
+        # server root = parent of the app package (…/server).
+        # This file is app/api/v1/endpoints/pipeline.py → 5 dirname() to reach …/server.
+        server_root = os.path.dirname(
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+            )
+        )
+        log_path = os.path.join(server_root, log_path)
+    return log_path
+
+
+def _tail_lines(path: str, max_lines: int) -> list[str]:
+    """Read the last ``max_lines`` lines of a file without loading it whole."""
+    import os
+
+    if not os.path.exists(path):
+        return []
+    chunk_size = 64 * 1024
+    with open(path, 'rb') as fh:
+        fh.seek(0, os.SEEK_END)
+        file_size = fh.tell()
+        blocks: list[bytes] = []
+        remaining = file_size
+        newline_count = 0
+        # +1 line so we can drop a partial leading line cleanly.
+        while remaining > 0 and newline_count <= max_lines:
+            read_size = min(chunk_size, remaining)
+            remaining -= read_size
+            fh.seek(remaining)
+            block = fh.read(read_size)
+            blocks.insert(0, block)
+            newline_count += block.count(b'\n')
+        data = b''.join(blocks)
+    text = data.decode('utf-8', errors='replace')
+    lines = text.splitlines()
+    return lines[-max_lines:]
+
+
+@router.get("/logs")
+async def get_logs(lines: int = 200, _=Depends(get_current_user)):
+    """Tail the backend log file for the in-app "Xem Logs" page.
+
+    ``lines`` is clamped to [1, 5000] to bound response size.
+    """
+    max_lines = max(1, min(int(lines), 5000))
+    path = _resolve_log_path()
+    tail = await asyncio.to_thread(_tail_lines, path, max_lines)
+    import os
+
+    return {
+        "path": path,
+        "exists": os.path.exists(path),
+        "lines": tail,
+        "returned": len(tail),
+        "requested": max_lines,
+    }
+
+
+def _authenticate_ws_token(token: str | None) -> int | None:
+    """Validate a JWT query-param token for WS endpoints; return user_id or None."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None
+    user_id = payload.get('sub')
+    if user_id is None:
+        return None
+    db = SessionLocal()
+    try:
+        user = user_repo.get(db, int(user_id))
+        if user is None or not user.is_active:
+            return None
+        return int(user_id)
+    except (TypeError, ValueError):
+        return None
+    finally:
+        db.close()
+
+
+@router.websocket('/logs-stream')
+async def logs_stream(websocket: WebSocket) -> None:
+    """Realtime ``tail -f`` of the backend log file; query ?token=JWT&lines=N.
+
+    Sends the last ``lines`` lines on connect, then streams each new line as it
+    is appended. Handles log rotation (file truncated/replaced) by re-opening
+    from the start when the inode/size shrinks.
+    """
+    token = websocket.query_params.get('token')
+    if _authenticate_ws_token(token) is None:
+        await websocket.close(code=1008)
+        return
+
+    try:
+        initial_lines = int(websocket.query_params.get('lines', '200'))
+    except (TypeError, ValueError):
+        initial_lines = 200
+    initial_lines = max(1, min(initial_lines, 5000))
+
+    ws = SafeWebSocket(websocket)
+    await ws.accept()
+    disconnect, watch_task = start_disconnect_watch(websocket)
+
+    import os
+
+    path = _resolve_log_path()
+
+    def _read_new(state: dict) -> tuple[list[str], dict]:
+        """Blocking read of appended lines; returns (lines, updated_state)."""
+        new_lines: list[str] = []
+        try:
+            if not os.path.exists(path):
+                return [], state
+            size = os.path.getsize(path)
+            offset = state.get('offset', 0)
+            # Rotation / truncation: file shrank -> restart from 0.
+            if size < offset:
+                offset = 0
+            with open(path, 'rb') as fh:
+                fh.seek(offset)
+                chunk = fh.read()
+                new_offset = fh.tell()
+            state = {'offset': new_offset}
+            if chunk:
+                buffered = state_buffer.get('partial', b'') + chunk
+                *complete, partial = buffered.split(b'\n')
+                state_buffer['partial'] = partial
+                for raw in complete:
+                    new_lines.append(raw.decode('utf-8', errors='replace'))
+        except OSError:
+            return [], state
+        return new_lines, state
+
+    # Send initial tail, then set offset to current EOF.
+    state_buffer: dict = {'partial': b''}
+    try:
+        initial = await asyncio.to_thread(_tail_lines, path, initial_lines)
+        for line in initial:
+            await ws.send_text(line)
+        # Start streaming from current end of file.
+        stream_state = {'offset': os.path.getsize(path) if os.path.exists(path) else 0}
+        loop = asyncio.get_running_loop()
+        last_activity = loop.time()
+        while not disconnect.is_set():
+            new_lines, stream_state = await asyncio.to_thread(_read_new, stream_state)
+            if new_lines:
+                for line in new_lines:
+                    await ws.send_text(line)
+                last_activity = loop.time()
+            else:
+                now = loop.time()
+                if now - last_activity > 15.0:
+                    await ws.send_text('\x00ka')  # keepalive sentinel, ignored by client
+                    last_activity = now
+                await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        return
+    finally:
+        await stop_disconnect_watch(watch_task)
+
+
 @router.get("/status")
 async def get_status():
     gpu = pipeline_service.gpu_status
