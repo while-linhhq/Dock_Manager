@@ -10,6 +10,10 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+
+# Use pnpm — npm/yarn lockfiles are noise
+package-lock.json
+yarn.lock
 *.local
 .env
 .env.*
