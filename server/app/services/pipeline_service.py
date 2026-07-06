@@ -831,13 +831,13 @@ class PipelineService:
         frame = job.frame
         if frame is None or getattr(frame, 'size', 0) == 0:
             return
+        ts = time.time()
         for t in job.tracks:
             if getattr(t, 'state', None) != TrackState.CONFIRMED:
                 continue
             tid = str(t.track_id)
-            conf = float(t.conf)
             if job.update_fused:
-                self._media_collector.update_fused_detection(tid, conf, frame)
+                self._media_collector.update_latest_fused(tid, frame, ts)
                 continue
             cam = int(
                 job.camera_id
@@ -845,7 +845,7 @@ class PipelineService:
                 else getattr(t, 'camera_id', None) or 0
             )
             if cam > 0:
-                self._media_collector.update_single_detection(tid, conf, cam, frame)
+                self._media_collector.update_latest_single(tid, cam, frame, ts)
 
     def _enqueue_media_sample(
         self,
@@ -909,18 +909,54 @@ class PipelineService:
         ship_id: str,
         camera_id: int | None,
     ) -> None:
+        # Comparison images are now captured at berth IN/OUT crossings
+        # (see _recording_boundary_media_sample), not on OCR best-shot.
+        # Retained as a no-op so the OCR worker callback contract is unchanged.
+        return
+
+    def _recording_boundary_media_sample(
+        self,
+        camera_id: int,
+        overlay: Any,
+        tracks: list[Any],
+        crossings: list[tuple[str, str]],
+    ) -> None:
+        """Capture single + fused overlay at each berth IN/OUT crossing.
+
+        `overlay` is the single-camera overlay frame for this camera at the
+        crossing instant; the fused counterpart is the latest fused overlay
+        mirrored into _latest_fused_bgr (same instant, within one frame).
+        """
+        if overlay is None or getattr(overlay, 'size', 0) == 0:
+            return
+        confirmed_ids = {
+            str(t.track_id)
+            for t in tracks
+            if getattr(t, 'state', None) == TrackState.CONFIRMED
+        }
+        # Always refresh latest-frame fallback for confirmed tracks on this camera.
+        ts = time.time()
         fused = None
         with self._latest_fused_lock:
             if self._latest_fused_bgr is not None:
                 fused = self._latest_fused_bgr.copy()
-        self._media_collector.update_ocr(
-            track_id,
-            ocr_conf,
-            ship_id,
-            frame,
-            fused if fused is not None else frame,
-            camera_id,
-        )
+        for tid in confirmed_ids:
+            self._media_collector.update_latest_single(tid, int(camera_id), overlay, ts)
+            if fused is not None:
+                self._media_collector.update_latest_fused(tid, fused, ts)
+        if not crossings:
+            return
+        single_copy = overlay.copy()
+        for track_id, direction in crossings:
+            if str(track_id) not in confirmed_ids:
+                continue
+            self._media_collector.set_boundary_overlay(
+                str(track_id),
+                direction,
+                int(camera_id),
+                single_copy,
+                fused,
+            )
 
     def _promote_staging_video(
         self,
@@ -1379,13 +1415,27 @@ class PipelineService:
             audit_uri: str | None = None
             single_image_uri: str | None = None
             if snap is not None:
-                cam_det = snap.single_best_camera_id if snap.single_best_camera_id is not None else 0
-                cam_ocr = snap.single_best_ocr_camera_id if snap.single_best_ocr_camera_id is not None else 0
+                from app.services.ai.track_media_collector import encode_jpeg_bgr
+
+                # OUT fallback: a track that never emitted a clean OUT crossing
+                # (e.g. still moored at finalize) uses the latest overlay frame of
+                # the detection as its OUT image. No best-shot fallback.
+                single_out_jpeg = snap.single_overlay_out_jpeg
+                single_out_cam = snap.single_overlay_out_camera_id
+                if single_out_jpeg is None and snap.single_latest_frame is not None:
+                    single_out_jpeg = encode_jpeg_bgr(snap.single_latest_frame)
+                    single_out_cam = snap.single_latest_camera_id
+                fused_out_jpeg = snap.fused_overlay_out_jpeg
+                if fused_out_jpeg is None and snap.fused_latest_frame is not None:
+                    fused_out_jpeg = encode_jpeg_bgr(snap.fused_latest_frame)
+
+                cam_in = snap.single_overlay_in_camera_id if snap.single_overlay_in_camera_id is not None else 0
+                cam_out = single_out_cam if single_out_cam is not None else 0
                 uploads: list[tuple[bytes | None, str]] = [
-                    (snap.fused_best_detection_jpeg, f'fused_best_detection_{safe_t}.jpg'),
-                    (snap.fused_best_ocr_jpeg, f'fused_best_ocr_{safe_t}.jpg'),
-                    (snap.single_best_detection_jpeg, f'single_best_detection_{cam_det}_{safe_t}.jpg'),
-                    (snap.single_best_ocr_jpeg, f'single_best_ocr_{cam_ocr}_{safe_t}.jpg'),
+                    (snap.single_overlay_in_jpeg, f'single_overlay_in_{cam_in}_{safe_t}.jpg'),
+                    (single_out_jpeg, f'single_overlay_out_{cam_out}_{safe_t}.jpg'),
+                    (snap.fused_overlay_in_jpeg, f'fused_overlay_in_{safe_t}.jpg'),
+                    (fused_out_jpeg, f'fused_overlay_out_{safe_t}.jpg'),
                 ]
                 for jpeg_bytes, fname in uploads:
                     if not jpeg_bytes:
@@ -1404,7 +1454,7 @@ class PipelineService:
                     )
                     if audit_uri is None:
                         audit_uri = uri
-                    if fname.startswith('single_best_detection_'):
+                    if fname.startswith('single_overlay_in_'):
                         single_image_uri = uri
                     detection_media_repo.create(
                         db,
@@ -2023,6 +2073,7 @@ class PipelineService:
                     runs_base=str(self._runtime_media_base / 'detect'),
                     on_image_captured=self._upload_captured_image,
                     on_overlay_media_sample=self._recording_single_media_sample,
+                    on_boundary_media_sample=self._recording_boundary_media_sample,
                     input_frame_queue=self._group_frame_hub.queue_for_camera(camera_id),
                     shared_ocr_queue=self._ocr_queue if ocr_active else None,
                     shared_visual_queue=self._visual_queue if visual_enabled else None,

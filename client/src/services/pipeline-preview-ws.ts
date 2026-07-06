@@ -58,3 +58,21 @@ export function buildPipelinePreviewWsUrl(): string | null {
   const path = u.pathname.replace(/\/$/, '');
   return `${wsProto}//${u.host}${path}${streamPath}?${q.toString()}`;
 }
+
+/**
+ * WebSocket URL for realtime backend log streaming (JWT in query).
+ * `lines` = số dòng tail gửi ban đầu khi kết nối.
+ */
+export function buildLogsStreamWsUrl(lines = 200): string | null {
+  const token = authStorage.getToken();
+  if (!token) {
+    return null;
+  }
+  const q = new URLSearchParams({ token, lines: String(lines) });
+  const streamPath = '/pipeline/logs-stream';
+  const wsBase = resolveWsBaseUrl();
+  const u = new URL(wsBase);
+  const wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  const path = u.pathname.replace(/\/$/, '');
+  return `${wsProto}//${u.host}${path}${streamPath}?${q.toString()}`;
+}

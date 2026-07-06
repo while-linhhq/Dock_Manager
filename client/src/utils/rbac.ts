@@ -11,6 +11,7 @@ export type MenuKey =
   | 'ai_lab'
   | 'backup'
   | 'users'
+  | 'logs'
   | 'profile';
 
 export const ALL_MENU_KEYS: MenuKey[] = [
@@ -24,6 +25,7 @@ export const ALL_MENU_KEYS: MenuKey[] = [
   'ai_lab',
   'backup',
   'users',
+  'logs',
   'profile',
 ];
 
@@ -38,6 +40,7 @@ const MENU_ALIAS: Record<MenuKey, string[]> = {
   ai_lab: ['ai_lab', 'ai-lab', 'ailab'],
   backup: ['backup', 'history'],
   users: ['users', 'rbac', 'roles'],
+  logs: ['logs', 'server_logs', 'server-logs'],
   profile: ['profile'],
 };
 

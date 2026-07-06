@@ -13,7 +13,8 @@ FINAL_VIDEO_RE = re.compile(
 )
 FINAL_IMAGE_RE = re.compile(
     r'^detections/\d{2}-\d{2}-\d{4}/\d+/images/'
-    r'(fused_best_detection_|fused_best_ocr_|single_best_detection_|single_best_ocr_).+\.jpg$'
+    r'(single_overlay_in_|single_overlay_out_|fused_overlay_in_|fused_overlay_out_'
+    r'|fused_best_detection_|fused_best_ocr_|single_best_detection_|single_best_ocr_).+\.jpg$'
 )
 STAGING_VIDEO_RE = re.compile(
     r'^detections/staging/\d{2}-\d{2}-\d{4}/videos/(fused_|single_).+\.mp4$'

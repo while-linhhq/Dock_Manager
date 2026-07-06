@@ -1255,7 +1255,7 @@ def resolve_single_camera_image_path(db: Session, detection_id: int) -> Optional
         path = str(row.file_path or '')
         if row.media_type != 'image' or not path:
             continue
-        if 'single_best_detection_' in path:
+        if 'single_overlay_in_' in path or 'single_best_detection_' in path:
             single = path
             break
         fallback = fallback or path
@@ -1263,7 +1263,7 @@ def resolve_single_camera_image_path(db: Session, detection_id: int) -> Optional
         return single
     det = detection_repo.get(db, detection_id)
     audit = str(getattr(det, 'audit_image_path', '') or '') if det else ''
-    if 'single_best_detection_' in audit:
+    if 'single_overlay_in_' in audit or 'single_best_detection_' in audit:
         return audit
     return fallback or audit or None
 

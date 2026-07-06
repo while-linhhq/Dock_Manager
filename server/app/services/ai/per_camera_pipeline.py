@@ -103,6 +103,7 @@ class PerCameraPipeline(threading.Thread):
         runs_base: str,
         on_image_captured=None,
         on_overlay_media_sample=None,
+        on_boundary_media_sample=None,
         input_frame_queue: queue.Queue | None = None,
         shared_ocr_queue: queue.Queue | None = None,
         shared_visual_queue: queue.Queue | None = None,
@@ -124,6 +125,7 @@ class PerCameraPipeline(threading.Thread):
         self._ocr_lock = ocr_lock
         self._runs_base = runs_base
         self._on_overlay_media_sample = on_overlay_media_sample
+        self._on_boundary_media_sample = on_boundary_media_sample
         self._uses_external_frames = input_frame_queue is not None
         self._frame_queue = input_frame_queue or queue.Queue(maxsize=3)
         self._reader: FrameReaderThread | None = None
@@ -310,6 +312,7 @@ class PerCameraPipeline(threading.Thread):
 
         active_ids = {str(track.track_id) for track in tracked_boats}
         self._motion_classifier.forget_missing(active_ids)
+        boundary_crossings: list[tuple[str, str]] = []
         if self._boundary_tracker is not None:
             h, w = raw_frame.shape[:2]
             now_ts = time.time()
@@ -338,6 +341,7 @@ class PerCameraPipeline(threading.Thread):
                 elif direction == 'out':
                     track.berth_out_ts = now_ts
                 if direction:
+                    boundary_crossings.append((str(track.track_id), direction))
                     self._reid_manager.report_boundary_crossing(
                         int(self.config.camera_id),
                         str(track.track_id),
@@ -402,6 +406,21 @@ class PerCameraPipeline(threading.Thread):
 
                 logging.getLogger(__name__).exception(
                     'on_overlay_media_sample failed for camera_id=%s',
+                    self.config.camera_id,
+                )
+        if self._on_boundary_media_sample is not None:
+            try:
+                self._on_boundary_media_sample(
+                    int(self.config.camera_id),
+                    overlay_frame,
+                    tracked_boats,
+                    boundary_crossings,
+                )
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    'on_boundary_media_sample failed for camera_id=%s',
                     self.config.camera_id,
                 )
         if self.config.enable_preview_stream:

@@ -11,5 +11,6 @@ export const PATHS = {
   AI_LAB: '/ai-lab',
   BACKUP: '/backup',
   USERS: '/users',
+  LOGS: '/logs',
   PROFILE: '/profile',
 } as const;

@@ -32,6 +32,35 @@ from logging.config import dictConfig
 
 def _configure_logging() -> None:
     level = str(getattr(settings, 'LOG_LEVEL', 'INFO') or 'INFO').upper()
+
+    handlers: dict = {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'stream': sys.stdout,
+            'formatter': 'default',
+        },
+    }
+    root_handlers = ['console']
+
+    # Optional rotating file handler so the "Xem Logs" page has a source to tail.
+    if bool(getattr(settings, 'LOG_TO_FILE', False)):
+        import os
+
+        log_path = str(getattr(settings, 'LOG_FILE_PATH', 'logs/app.log') or 'logs/app.log')
+        if not os.path.isabs(log_path):
+            # Resolve relative to the server root (parent of the app package).
+            log_path = os.path.join(_server_root, log_path)
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        handlers['file'] = {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': log_path,
+            'maxBytes': int(getattr(settings, 'LOG_FILE_MAX_BYTES', 10 * 1024 * 1024)),
+            'backupCount': int(getattr(settings, 'LOG_FILE_BACKUP_COUNT', 5)),
+            'encoding': 'utf-8',
+            'formatter': 'default',
+        }
+        root_handlers.append('file')
+
     dictConfig(
         {
             'version': 1,
@@ -41,16 +70,10 @@ def _configure_logging() -> None:
                     'format': '%(asctime)s %(levelname)s [%(name)s] %(message)s',
                 },
             },
-            'handlers': {
-                'console': {
-                    'class': 'logging.StreamHandler',
-                    'stream': sys.stdout,
-                    'formatter': 'default',
-                },
-            },
+            'handlers': handlers,
             'root': {
                 'level': level,
-                'handlers': ['console'],
+                'handlers': root_handlers,
             },
             'loggers': {
                 # Keep uvicorn logs visible and consistent

@@ -192,6 +192,11 @@ class Settings(BaseSettings):
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'
+    # Ghi log ra file để trang "Xem Logs" tail được. Rotating theo dung lượng.
+    LOG_TO_FILE: bool = True
+    LOG_FILE_PATH: str = 'logs/app.log'
+    LOG_FILE_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB/file
+    LOG_FILE_BACKUP_COUNT: int = 5
 
     model_config = SettingsConfigDict(
         env_file='.env',
