@@ -5,7 +5,7 @@ export const vesselSchema = z.object({
   name: z.string().min(1, 'Tên tàu là bắt buộc'),
   vessel_type_id: z.string().min(1, 'Loại tàu là bắt buộc'),
   owner_info: z.string().optional(),
-  is_active: z.boolean(),
+  is_active: z.boolean().optional(),
 });
 
 export const vesselTypeSchema = z.object({

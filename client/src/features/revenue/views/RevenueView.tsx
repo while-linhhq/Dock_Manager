@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRevenueStore } from '../store/revenueStore';
 import { useVesselStore } from '../../vessels/store/vesselStore';
@@ -104,7 +104,7 @@ export const RevenueView: React.FC = () => {
   });
 
   const feeForm = useForm<FeeFormValues>({
-    resolver: zodResolver(feeSchema),
+    resolver: zodResolver(feeSchema) as Resolver<FeeFormValues>,
     defaultValues: {
       is_active: true,
       fee_name: '',

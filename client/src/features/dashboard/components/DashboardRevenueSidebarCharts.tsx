@@ -3,7 +3,6 @@ import ReactApexChart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
 import { TrendingUp } from 'lucide-react';
 import type { DashboardPeriod, DashboardSummary } from '../../../types/api.types';
-import { cn } from '../../../utils/cn';
 import { useHtmlDarkClass } from '../hooks/use-html-dark-class';
 
 function apexCommon(isDark: boolean): Partial<ApexOptions> {
