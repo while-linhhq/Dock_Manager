@@ -89,6 +89,40 @@ def test_out_when_overlap_drops_below_threshold():
     assert trk.update('d', (10, 45, 28, 55), 3.0, 100, 100) == 'out'
 
 
+def test_seed_inside_when_track_first_appears_inside_zone_then_out():
+    """Track sinh ra đã nằm trong berth_zone (đổi track-id giữa vùng, hoặc camera
+    chỉ thấy cảnh RA sau handoff): không chạm line nào ở frame đầu nhưng overlap
+    cao → seed thẳng 'inside' (KHÔNG phát 'in'), để khi tàu rời vùng phát 'out'.
+    Đây là gốc rễ khiến OUT không nhận và rơi về fallback last_seen.
+    """
+    trk = BoundaryCrossingTracker(_cfg())
+    # frame đầu: box (45,45)-(55,55) nằm gọn trong zone x30-80, không chạm x=30/x=60
+    assert trk.update('z', (45, 45, 55, 55), 1.0, 100, 100) is None
+    assert trk.get_phase('z') == 'inside'
+    # tàu rời vùng → overlap tụt < threshold → phát 'out'
+    assert trk.update('z', (5, 45, 20, 55), 2.0, 100, 100) == 'out'
+    assert trk.get_phase('z') == 'completed'
+
+
+def test_no_seed_inside_when_first_frame_touches_line():
+    """First frame chạm line1 (đang băng qua ranh giới, không phải sinh-giữa-vùng):
+    KHÔNG seed inside — phải đi đúng path line1→line2 để phát 'in' chuẩn.
+    """
+    trk = BoundaryCrossingTracker(_cfg())
+    # box (25,45)-(35,55) chạm line1 (x=30), overlap ~0.5 >= threshold
+    assert trk.update('y', (25, 45, 35, 55), 1.0, 100, 100) is None
+    assert trk.get_phase('y') == 'outside'  # chờ line2, chưa vào
+    assert trk.update('y', (45, 45, 65, 55), 2.0, 100, 100) == 'in'
+
+
+def test_no_seed_inside_when_first_frame_low_overlap():
+    """First frame overlap < threshold (chưa thật sự trong vùng): không seed."""
+    trk = BoundaryCrossingTracker(_cfg())
+    # box (5,45)-(20,55) ngoài zone hoàn toàn
+    assert trk.update('x', (5, 45, 20, 55), 1.0, 100, 100) is None
+    assert trk.get_phase('x') == 'outside'
+
+
 def test_completed_track_does_not_emit_second_in():
     trk = BoundaryCrossingTracker(_cfg())
     trk.update('e', (25, 45, 35, 55), 1.0, 100, 100)
