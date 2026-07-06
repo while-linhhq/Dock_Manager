@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     TRACK_MAX_TENTATIVE_SEC: float = 0.5
     TRACK_MAX_LOST_SEC: float = 4.0
     TRACK_IOU_THRESHOLD: float = 0.3
+    # Lọc bbox trùng cho CÙNG một track: nếu 2 detection box chồng nhau với
+    # IoMin (giao / diện tích box nhỏ hơn) >= ngưỡng này thì bỏ box conf thấp
+    # trước khi đưa vào tracker (bắt trường hợp box lồng nhau mà NMS IoU bỏ sót).
+    # 0 = tắt lọc.
+    TRACK_DEDUP_IOMIN_THRESHOLD: float = 0.0
     # Bỏ qua track có thời gian neo đậu (berth_out-berth_in, fallback dwell
     # last_seen-first_seen) nhỏ hơn ngưỡng này (giây). 0 = tắt lọc.
     TRACK_MIN_BERTH_DURATION_SEC: float = 0.0
@@ -67,6 +72,12 @@ class Settings(BaseSettings):
     REID_DIRECTIONAL_ACCEPT_THRESHOLD: float = 0.6
     REID_DIRECTIONAL_EMBEDDING_FLOOR: float = 0.45
     REID_REVERSE_MOTION_GUARD_ENABLED: bool = True
+    # Diversity ceiling for the per-identity embedding buffer. Embeddings are
+    # extracted every frame; without this the 20 buffered vectors are the last
+    # ~1-2s of near-identical poses. Skip an incoming vector whose cosine to the
+    # last kept one is >= this, so the buffer spans distinct poses across the
+    # track's life (better cross-camera "1 vs many" recall). 1.0 disables it.
+    REID_EMBEDDING_DIVERSITY_MAX_COS: float = 0.98
     CLAHE_CLIP_LIMIT: float = 3.0
     CLAHE_TILE_SIZE: int = 8
     # Gray-world white balance before CLAHE (heaviest per-frame CPU step).
