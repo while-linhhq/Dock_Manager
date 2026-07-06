@@ -165,22 +165,34 @@ class DirectionalHandoffMatcher:
             return None
         return int(adj[0])
 
-    def score(self, identity: Any, track: Any, now: float) -> float:
+    def _components(
+        self, identity: Any, track: Any, now: float
+    ) -> dict[str, float] | None:
+        """Raw per-signal scores (emb cosine, direction, time) in [0,1], or None
+        when this identity has no camera adjacent to the incoming track."""
         source_cam = self._source_camera(identity, int(track.camera_id))
         if source_cam is None:
-            return 0.0
+            return None
         emb_cos = _best_embedding_cosine(
             getattr(identity, 'embeddings', []) or [],
             getattr(track, 'embedding', None),
         )
-        if emb_cos < float(self._config.embedding_floor):
+        return {
+            'emb': float(emb_cos),
+            'dir': float(self._direction_score(identity, source_cam, track)),
+            'time': float(self._time_score(identity, track, now)),
+        }
+
+    def score(self, identity: Any, track: Any, now: float) -> float:
+        comp = self._components(identity, track, now)
+        if comp is None:
             return 0.0
-        dir_s = self._direction_score(identity, source_cam, track)
-        time_s = self._time_score(identity, track, now)
+        if comp['emb'] < float(self._config.embedding_floor):
+            return 0.0
         return (
-            self._config.embedding_weight * emb_cos
-            + self._config.direction_weight * dir_s
-            + self._config.time_weight * time_s
+            self._config.embedding_weight * comp['emb']
+            + self._config.direction_weight * comp['dir']
+            + self._config.time_weight * comp['time']
         )
 
     def best_match(self, identities: list, track: Any, now: float) -> str | None:
@@ -214,9 +226,23 @@ class DirectionalHandoffMatcher:
             ((self.score(idn, track, now), idn) for idn in candidates),
             key=lambda pair: pair[0],
         )
+        comp = self._components(best_identity, track, now) or {
+            'emb': 0.0,
+            'dir': 0.0,
+            'time': 0.0,
+        }
         return {
             'score': float(best_score),
             'accept': float(self._config.accept_threshold),
             'target_gid': getattr(best_identity, 'global_id', None),
             'target_ship_id': getattr(best_identity, 'ship_id', None),
+            # Per-signal breakdown so the operator can see WHY the fused score is
+            # what it is and tune each weight independently. Each entry is
+            # (raw_score, weight); raw*weight summed = 'score' above.
+            'components': {
+                'emb': (comp['emb'], float(self._config.embedding_weight)),
+                'dir': (comp['dir'], float(self._config.direction_weight)),
+                'time': (comp['time'], float(self._config.time_weight)),
+            },
+            'emb_floor': float(self._config.embedding_floor),
         }

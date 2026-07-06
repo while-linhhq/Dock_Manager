@@ -92,6 +92,7 @@ class CrossCameraReIdManager:
         overlap_merge_config: 'OverlapMergeConfig | None' = None,
         directional_handoff_config: 'DirectionalHandoffConfig | None' = None,
         reverse_motion_guard_enabled: bool = True,
+        embedding_diversity_max_cos: float = 0.98,
     ) -> None:
         self._camera_order = [int(camera_id) for camera_id in camera_order]
         self._camera_index = {
@@ -117,6 +118,15 @@ class CrossCameraReIdManager:
         self._frame_width_by_camera: dict[int, float] = {}
         self._layout_x_by_camera: dict[int, float] = {}
         self._reverse_motion_guard_enabled = bool(reverse_motion_guard_enabled)
+        # Diversity gate for the per-identity embedding buffer. Embeddings are
+        # extracted every frame, so 20 raw appends = the last ~1-2s of near-
+        # identical poses — a "1 vs 20" match that is really "1 vs 1" repeated.
+        # Skip an incoming embedding when it is >= this cosine to the most recent
+        # kept one, so the 20 slots hold genuinely distinct poses spread over the
+        # track's life (better cross-camera recall). 1.0 disables the gate.
+        self._embedding_diversity_max_cos = float(
+            np.clip(embedding_diversity_max_cos, 0.5, 1.0)
+        )
         self._overlap_matcher = OverlapMergeMatcher(
             overlap_merge_config or OverlapMergeConfig(),
             is_adjacent=self._cameras_are_adjacent_pair,
@@ -262,6 +272,28 @@ class CrossCameraReIdManager:
                 )
                 if identity is None:
                     identity = self._create_identity(camera_key, track)
+                    _log.info(
+                        'reid NEW identity gid=%s cam=%s track=%s ship_id=%s',
+                        identity.global_id,
+                        camera_key,
+                        track.track_id,
+                        identity.ship_id or '-',
+                    )
+                else:
+                    score = (
+                        self._identity_similarity(identity, embedding)
+                        if embedding is not None
+                        else 0.0
+                    )
+                    _log.info(
+                        'reid MATCH gid=%s cam=%s track=%s ship_id=%s cosine=%.2f/%.2f',
+                        identity.global_id,
+                        camera_key,
+                        track.track_id,
+                        identity.ship_id or '-',
+                        score,
+                        self._visual_threshold,
+                    )
 
             self._attach_track(identity, camera_key, track, embedding)
             self._track_to_global[track_key] = identity.global_id
@@ -308,16 +340,33 @@ class CrossCameraReIdManager:
                 identity = self._create_empty_identity(camera_key, str(track_id))
                 self._track_to_global[track_key] = identity.global_id
 
+            prev_ship_id = identity.ship_id
             _append_ocr_history(identity.ocr_history, (normalized_ship_id, float(confidence)))
             identity.ship_id = self._best_ship_id(identity)
             identity.ocr_confirmed_tracks.add(track_key)
+            if identity.ship_id != prev_ship_id:
+                _log.info(
+                    'reid OCR cam=%s track=%s -> ship_id=%s conf=%.2f gid=%s',
+                    camera_key,
+                    track_id,
+                    identity.ship_id,
+                    float(confidence),
+                    identity.global_id,
+                )
 
             for other in list(self._identities.values()):
                 if other.global_id == identity.global_id or other.ship_id != normalized_ship_id:
                     continue
                 if not self._may_merge_identities(identity, other):
                     continue
+                merged_from = other.global_id
                 identity = self._merge_identities(identity, other)
+                _log.info(
+                    'reid MERGE ship_id=%s kept=%s absorbed=%s',
+                    normalized_ship_id,
+                    identity.global_id,
+                    merged_from,
+                )
 
             return identity.global_id
 
@@ -468,6 +517,17 @@ class CrossCameraReIdManager:
                         continue
                     if identity.finalized:
                         continue
+                    # Match the staleness guard from _match_existing_identity: a
+                    # non-anchored identity older than the handoff window can never
+                    # be chosen by the real matcher, so it must not appear on the
+                    # debug overlay either — otherwise the operator sees a live
+                    # "B ~ A 78%" comparison against a boat that departed long ago
+                    # and fears an over-merge the matcher would never make.
+                    if (
+                        not identity.anchored
+                        and now - identity.last_seen_ts > self._handoff_window_sec
+                    ):
+                        continue
                     if not self._is_camera_candidate(int(camera_id), identity):
                         continue
                     score = self._identity_similarity(identity, embedding)
@@ -573,6 +633,29 @@ class CrossCameraReIdManager:
         self._identities[identity.global_id] = identity
         return identity
 
+    def _append_diverse_embedding(
+        self,
+        identity: GlobalIdentity,
+        embedding: np.ndarray,
+    ) -> None:
+        """Append to the identity buffer only when the pose is distinct enough.
+
+        Embeddings arrive every frame, so a naive append+trim keeps 20 near-
+        identical vectors from the last ~1-2s. Drop an incoming vector whose
+        cosine to the most recent kept one is >= the diversity ceiling, so the
+        20 slots span genuinely different poses over the track's life — which is
+        what makes the cross-camera "1 vs many" max-cosine match actually work.
+        """
+        cap = self._embedding_diversity_max_cos
+        if cap < 1.0 and identity.embeddings:
+            if cosine_similarity(identity.embeddings[-1], embedding) >= cap:
+                # Refresh the latest slot so a static boat still tracks slow
+                # drift, but don't grow the buffer with a redundant pose.
+                identity.embeddings[-1] = embedding
+                return
+        identity.embeddings.append(embedding)
+        identity.embeddings = identity.embeddings[-20:]
+
     def _attach_track(
         self,
         identity: GlobalIdentity,
@@ -589,8 +672,7 @@ class CrossCameraReIdManager:
         identity.last_seen_ts = max(identity.last_seen_ts, track.last_seen_ts)
         identity.last_track = track.copy_public()
         if embedding is not None:
-            identity.embeddings.append(normalize_embedding(embedding))
-            identity.embeddings = identity.embeddings[-20:]
+            self._append_diverse_embedding(identity, normalize_embedding(embedding))
         hsv = getattr(track, 'dominant_color_hsv', None)
         if hsv is not None:
             identity.dominant_hsv_history.append(tuple(int(v) for v in hsv))

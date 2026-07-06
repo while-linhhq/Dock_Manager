@@ -147,6 +147,29 @@ def _short_gid(gid: str | None) -> str:
     return tail[-4:] if len(tail) > 4 else tail
 
 
+def _reid_components_suffix(signal: dict) -> str:
+    """' [e60*.6 c40*.25 s90*.15]' — per-signal raw score x weight breakdown.
+
+    Each component entry from the matcher diagnose() is (raw_score, weight).
+    Shows the raw score scaled to 0-100 and the multiplying weight, so the
+    operator can see which signal drives (or starves) the fused total and tune
+    that weight in config. Order matches the matcher's fusion sum.
+    """
+    comps = signal.get('components')
+    if not isinstance(comps, dict) or not comps:
+        return ''
+    parts: list[str] = []
+    for name, value in comps.items():
+        try:
+            raw, weight = float(value[0]), float(value[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        parts.append(f'{str(name)[:1]}{raw * 100:.0f}*{weight:.2f}')
+    if not parts:
+        return ''
+    return ' [' + ' '.join(parts) + ']'
+
+
 def _reid_target_suffix(signal: dict) -> str:
     """' ->#<gid tail>/<plate>' naming which identity this signal compares against.
 
@@ -189,22 +212,32 @@ def reid_overlay_lines(entry: dict | None) -> list[tuple[str, tuple[int, int, in
         thr = float(overlap.get('accept') or 0.0)
         mrg = float(overlap.get('margin') or 0.0)
         mmin = float(overlap.get('min_margin') or 0.0)
+        color = _reid_pct_color(cur, thr)
         lines.append((
             f'REID ovl {cur * 100:.0f}/{thr * 100:.0f} '
             f'm{mrg * 100:.0f}/{mmin * 100:.0f}'
             f'{_reid_target_suffix(overlap)}',
-            _reid_pct_color(cur, thr),
+            color,
         ))
+        comp_suffix = _reid_components_suffix(overlap)
+        if comp_suffix:
+            lines.append((f'  ovl{comp_suffix}', color))
 
     directional = diag.get('directional')
     if isinstance(directional, dict):
         cur = float(directional.get('score') or 0.0)
         thr = float(directional.get('accept') or 0.0)
+        color = _reid_pct_color(cur, thr)
         lines.append((
             f'REID dir {cur * 100:.0f}/{thr * 100:.0f}'
             f'{_reid_target_suffix(directional)}',
-            _reid_pct_color(cur, thr),
+            color,
         ))
+        comp_suffix = _reid_components_suffix(directional)
+        if comp_suffix:
+            floor = float(directional.get('emb_floor') or 0.0)
+            floor_part = f' floor{floor * 100:.0f}' if floor else ''
+            lines.append((f'  dir{comp_suffix}{floor_part}', color))
 
     lines.extend(_seam_overlay_lines(diag.get('seam')))
 
