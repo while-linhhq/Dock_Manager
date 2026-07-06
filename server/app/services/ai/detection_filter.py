@@ -41,6 +41,63 @@ def filter_boxes_by_min_size(
     return filtered_boxes, filtered_confs
 
 
+def _iomin(a, b) -> float:
+    """Intersection over the smaller box area (containment-sensitive overlap).
+
+    Unlike IoU, this returns ~1.0 when one box is fully inside another, so it
+    catches duplicate detections that YOLO's plain-IoU NMS lets through
+    (nested/contained boxes have low IoU but high IoMin).
+    """
+    ax1, ay1, ax2, ay2 = float(a[0]), float(a[1]), float(a[2]), float(a[3])
+    bx1, by1, bx2, by2 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    smaller = min(area_a, area_b)
+    if smaller <= 0.0:
+        return 0.0
+    return inter / smaller
+
+
+def dedup_overlapping_boxes(
+    boxes_list: list,
+    det_confs: list[float],
+    iomin_threshold: float,
+) -> tuple[list, list[float]]:
+    """Suppress a box that overlaps a higher-confidence box with IoMin >= threshold.
+
+    One physical ship sometimes yields two YOLO boxes (a hull box + a smaller
+    contained box, or a bow/stern split) whose mutual IoU is below the NMS
+    threshold, so both survive and the tracker spawns two tracks for it. This
+    greedy pass keeps the highest-confidence box and drops any later box whose
+    intersection-over-min-area with an already-kept box crosses the threshold.
+    ``iomin_threshold <= 0`` disables the pass (returns input unchanged).
+    """
+    if iomin_threshold <= 0.0 or len(boxes_list) < 2:
+        return boxes_list, det_confs
+    order = sorted(range(len(boxes_list)), key=lambda i: det_confs[i], reverse=True)
+    kept_idx: list[int] = []
+    for i in order:
+        bi = boxes_list[i]
+        suppressed = False
+        for k in kept_idx:
+            if _iomin(bi, boxes_list[k]) >= iomin_threshold:
+                suppressed = True
+                break
+        if not suppressed:
+            kept_idx.append(i)
+    kept_idx.sort()
+    return [boxes_list[i] for i in kept_idx], [det_confs[i] for i in kept_idx]
+
+
 def apply_detection_settings_update(
     *,
     camera_id: int,

@@ -21,6 +21,7 @@ from app.services.ai.visual_ship_matching import aggregate_visual_hits
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.detection_filter import (
+    dedup_overlapping_boxes,
     filter_boxes_by_min_size,
     parse_min_bbox_from_detection_settings,
 )
@@ -85,6 +86,7 @@ class PerCameraPipelineConfig:
     visual_no_ocr_match_threshold: float = 0.55
     visual_conflict_threshold: float = 0.96
     ocr_confidence_threshold: float = 0.0
+    track_dedup_iomin_threshold: float = 0.0
 
 
 class PerCameraPipeline(threading.Thread):
@@ -296,6 +298,11 @@ class PerCameraPipeline(threading.Thread):
             det_confs,
             self._det_min_bbox_width,
             self._det_min_bbox_height,
+        )
+        boxes_list, det_confs = dedup_overlapping_boxes(
+            boxes_list,
+            det_confs,
+            self.config.track_dedup_iomin_threshold,
         )
         tracked_boats = self._tracker.update(boxes_list, det_confs)
         catalog_known = (
