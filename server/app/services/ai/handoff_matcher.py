@@ -67,10 +67,12 @@ class OverlapMergeMatcher:
         *,
         is_adjacent: Callable[[int, int], bool] | None = None,
         frame_width_for: Callable[[int], float] | None = None,
+        layout_x_for: Callable[[int], float | None] | None = None,
     ) -> None:
         self._config = config
         self._is_adjacent = is_adjacent or (lambda a, b: False)
         self._frame_width_for = frame_width_for or (lambda cam: 0.0)
+        self._layout_x_for = layout_x_for or (lambda cam: None)
 
     def _components(self, identity: Any, track: Any) -> dict[str, float]:
         """Raw per-signal scores (emb cosine, HSV color sim, box-size ratio) in [0,1]."""
@@ -102,13 +104,46 @@ class OverlapMergeMatcher:
             + self._config.size_weight * comp['size']
         )
 
-    def _track_in_edge_zone(self, track: Any) -> bool:
+    def _source_camera(self, identity: Any, incoming_cam: int) -> int | None:
+        """The identity's active camera that sits adjacent to the incoming track's
+        camera — i.e. the camera sharing the seam with it. None if none adjacent."""
+        active_cams = {cam for cam, _ in getattr(identity, 'active_tracks', set())}
+        adj = [cam for cam in active_cams if self._is_adjacent(cam, int(incoming_cam))]
+        return int(adj[0]) if adj else None
+
+    def _seam_side(self, source_cam: int, incoming_cam: int) -> int:
+        """+1 if the incoming camera sits to the RIGHT of the source camera in the
+        layout (their shared seam is on the incoming frame's LEFT edge), -1 if to
+        the LEFT (seam on the RIGHT edge), 0 if layout geometry is unknown."""
+        xs = self._layout_x_for(int(source_cam))
+        xi = self._layout_x_for(int(incoming_cam))
+        if xs is None or xi is None:
+            return 0
+        if xi > xs:
+            return 1
+        if xi < xs:
+            return -1
+        return 0
+
+    def _track_in_seam_zone(self, identity: Any, track: Any) -> bool:
+        """Track must sit in the edge zone on the side that actually borders the
+        source camera's seam — not just any edge. A boat at cam2's far-right edge
+        can never overlap a boat at cam1 (seam is cam2's left edge)."""
         width = float(self._frame_width_for(int(track.camera_id)) or 0.0)
         if width <= 0.0:
             return True  # unknown frame width → don't block on edge gate
+        source_cam = self._source_camera(identity, int(track.camera_id))
+        side = self._seam_side(source_cam, int(track.camera_id)) if source_cam is not None else 0
         box = np.asarray(track.box, dtype=np.float32)
         cx = (float(box[0]) + float(box[2])) / 2.0
         margin = width * float(self._config.edge_zone_ratio)
+        if side > 0:
+            # incoming sits right of source → seam is incoming's LEFT edge
+            return cx <= margin
+        if side < 0:
+            # incoming sits left of source → seam is incoming's RIGHT edge
+            return cx >= (width - margin)
+        # unknown layout geometry → fall back to symmetric edge test
         return cx <= margin or cx >= (width - margin)
 
     @staticmethod
@@ -134,8 +169,8 @@ class OverlapMergeMatcher:
         # gate: exactly one active track on the identity (1 boat)
         if len(getattr(identity, 'active_tracks', set())) != 1:
             return False
-        # gate: incoming track in edge (overlap) zone
-        if not self._track_in_edge_zone(track):
+        # gate: incoming track in the SEAM edge zone bordering the source camera
+        if not self._track_in_seam_zone(identity, track):
             return False
         # gate A2: motion state compatible
         if not self._motion_compatible(identity, track):

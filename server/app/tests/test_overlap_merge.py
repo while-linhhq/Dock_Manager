@@ -198,3 +198,77 @@ def test_best_match_rejects_when_margin_too_small():
     track = _edge_track('t2', 2, x_left=10)
     # both score ~equally high → margin < 0.12 → reject
     assert matcher.best_match([id1, id3], track, now=1.0) is None
+
+
+def _matcher_with_layout(layout_x: dict[int, float], **overrides):
+    """Matcher with adjacency + frame width + layout_x geometry injected.
+
+    camera_order [1,2,3], layout_x maps each camera to its horizontal position
+    so the seam-side gate knows which edge borders the source camera.
+    """
+    cfg = _cfg(**overrides)
+    order = {1: 0, 2: 1, 3: 2}
+
+    def is_adjacent(cam_a: int, cam_b: int) -> bool:
+        ia, ib = order.get(int(cam_a)), order.get(int(cam_b))
+        return ia is not None and ib is not None and abs(ia - ib) == 1
+
+    return OverlapMergeMatcher(
+        cfg,
+        is_adjacent=is_adjacent,
+        frame_width_for=lambda cam: 1000.0,
+        layout_x_for=lambda cam: layout_x.get(int(cam)),
+    )
+
+
+def test_seam_side_rejects_track_on_far_edge():
+    """cam1 left of cam2 → seam is cam2's LEFT edge. A track at cam2's far-RIGHT
+    edge can never overlap a cam1 boat → merge rejected.
+
+    Reproduces the reported bug: boat at far-left of cam1 overlaying boat at
+    far-right of cam2 (two opposite outer edges, no shared FOV)."""
+    matcher = _matcher_with_layout({1: 0.0, 2: 1920.0})
+    emb = _unit([1.0, 0.0, 0.0])
+    identity = _Identity(
+        global_id='g1', camera_tracks={1: 't1'},
+        active_tracks={(1, 't1')},
+        embeddings=[emb], dominant_hsv_history=[(100, 150, 150)],
+        last_track=_Track('t1', 1, np.array([0, 0, 40, 40], dtype=np.float32),
+                          motion_state=MOTION_STATIC),
+    )
+    # cam2 track at far-RIGHT edge (x_left=950 of width-1000) — outer edge, not seam
+    track = _edge_track('t2', 2, x_left=950)
+    assert matcher.best_match([identity], track, now=1.0) is None
+
+
+def test_seam_side_accepts_track_on_seam_edge():
+    """cam1 left of cam2 → seam is cam2's LEFT edge. A track at cam2's LEFT edge
+    genuinely borders cam1 → merge accepted."""
+    matcher = _matcher_with_layout({1: 0.0, 2: 1920.0})
+    emb = _unit([1.0, 0.0, 0.0])
+    identity = _Identity(
+        global_id='g1', camera_tracks={1: 't1'},
+        active_tracks={(1, 't1')},
+        embeddings=[emb], dominant_hsv_history=[(100, 150, 150)],
+        last_track=_Track('t1', 1, np.array([0, 0, 40, 40], dtype=np.float32),
+                          motion_state=MOTION_STATIC),
+    )
+    track = _edge_track('t2', 2, x_left=10)  # cam2 LEFT edge = seam
+    assert matcher.best_match([identity], track, now=1.0) == 'g1'
+
+
+def test_seam_side_rejects_source_far_edge_when_source_on_right():
+    """Mirror case: cam2 right of cam1, identity on cam2, incoming on cam1.
+    Seam is cam1's RIGHT edge. Track at cam1's far-LEFT edge → rejected."""
+    matcher = _matcher_with_layout({1: 0.0, 2: 1920.0})
+    emb = _unit([1.0, 0.0, 0.0])
+    identity = _Identity(
+        global_id='g2', camera_tracks={2: 't2'},
+        active_tracks={(2, 't2')},
+        embeddings=[emb], dominant_hsv_history=[(100, 150, 150)],
+        last_track=_Track('t2', 2, np.array([0, 0, 40, 40], dtype=np.float32),
+                          motion_state=MOTION_STATIC),
+    )
+    # cam1 track at far-LEFT edge (x_left=10) — outer edge; seam is cam1's RIGHT
+    track = _edge_track('t1', 1, x_left=10)
+    assert matcher.best_match([identity], track, now=1.0) is None

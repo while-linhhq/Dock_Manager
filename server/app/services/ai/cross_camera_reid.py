@@ -131,6 +131,7 @@ class CrossCameraReIdManager:
             overlap_merge_config or OverlapMergeConfig(),
             is_adjacent=self._cameras_are_adjacent_pair,
             frame_width_for=lambda cam: self._frame_width_by_camera.get(int(cam), 0.0),
+            layout_x_for=lambda cam: self._layout_x_by_camera.get(int(cam)),
         )
         self._directional_matcher = DirectionalHandoffMatcher(
             directional_handoff_config or DirectionalHandoffConfig(),
