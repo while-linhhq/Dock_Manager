@@ -723,6 +723,15 @@ class CrossCameraReIdManager:
                 continue
             if self._has_concurrent_active_on_non_adjacent_camera(identity, camera_id):
                 continue
+            # Same-camera concurrency guard: one camera showing two separate
+            # bboxes at the same time is physically two different boats — never
+            # one. If this identity already holds a *live* track on the very
+            # camera we're matching on, a high embedding cosine (near-identical
+            # hulls reach ~0.86+) would wrongly merge them into one global id and
+            # drop one detection. The ship_id path already blocks this via
+            # _allows_ship_id_attach; the embedding path must too.
+            if self._has_active_track_on_camera(identity, camera_id):
+                continue
             if not identity.anchored and now - identity.last_seen_ts > self._handoff_window_sec:
                 continue
             if not self._is_camera_candidate(camera_id, identity):
@@ -750,7 +759,15 @@ class CrossCameraReIdManager:
         # "2 tàu OCR ra 2 mã khác nhau nhưng bị gộp 1 gid" over-merge. Drop any
         # identity holding a different valid plate from the candidate list handed
         # to both fallbacks.
-        fallback_candidates = list(self._identities.values())
+        # Same-camera concurrency guard (see _has_active_track_on_camera): the
+        # directional / overlap fallbacks score on motion/time only and have no
+        # camera-occupancy check, so an identity already live on this camera
+        # must be dropped here too — otherwise the guard above is bypassed.
+        fallback_candidates = [
+            identity
+            for identity in self._identities.values()
+            if not self._has_active_track_on_camera(identity, camera_id)
+        ]
         if incoming_known:
             fallback_candidates = [
                 identity
@@ -935,6 +952,22 @@ class CrossCameraReIdManager:
         """True when another camera still has a live track on this identity."""
         camera_key = int(camera_id)
         return any(cam != camera_key for cam, _ in identity.active_tracks)
+
+    def _has_active_track_on_camera(
+        self,
+        identity: GlobalIdentity,
+        camera_id: int,
+    ) -> bool:
+        """True when this identity already holds a live track on this camera.
+
+        Two separate bboxes concurrently on one camera are two different boats,
+        so an incoming track must never merge into an identity already active on
+        that same camera — regardless of embedding cosine. Guards the embedding
+        and fallback matchers the way _allows_ship_id_attach guards the ship_id
+        path.
+        """
+        camera_key = int(camera_id)
+        return any(cam == camera_key for cam, _ in identity.active_tracks)
 
     def _has_concurrent_active_on_non_adjacent_camera(
         self,

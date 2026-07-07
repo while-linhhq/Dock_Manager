@@ -320,6 +320,10 @@ class PipelineService:
                 cfg_map.get('track_dedup_iomin_threshold', ''),
                 float(settings.TRACK_DEDUP_IOMIN_THRESHOLD),
             ),
+            'berth_out_grace_sec': self._to_float(
+                cfg_map.get('berth_out_grace_sec', ''),
+                float(settings.BERTH_OUT_GRACE_SEC),
+            ),
             'track_reid_window_sec': self._to_float(
                 cfg_map.get('track_reid_window_sec', ''),
                 float(settings.TRACK_REID_WINDOW_SEC),
@@ -2097,6 +2101,7 @@ class PipelineService:
                 resize_scale=runtime_cfg['resize_scale'],
                 track_iou_threshold=runtime_cfg['track_iou_threshold'],
                 track_dedup_iomin_threshold=runtime_cfg['track_dedup_iomin_threshold'],
+                berth_out_grace_sec=runtime_cfg['berth_out_grace_sec'],
                 track_reid_window_sec=runtime_cfg['track_reid_window_sec'],
                 track_reid_max_dist=runtime_cfg['track_reid_max_dist'],
                 track_min_confirm_sec=runtime_cfg['track_min_confirm_sec'],

@@ -114,6 +114,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   track_max_lost_sec: 'track',
   track_iou_threshold: 'track',
   track_dedup_iomin_threshold: 'track',
+  berth_out_grace_sec: 'track',
   track_reid_window_sec: 'track',
   track_reid_max_dist: 'track',
   track_min_berth_duration_sec: 'track',
@@ -250,6 +251,8 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   track_dedup_iomin_threshold:
     'Lọc bbox nhiễu trùng cho cùng một tàu: nếu 2 box chồng nhau với IoMin (giao / diện tích box nhỏ hơn) ≥ ngưỡng này thì bỏ box confidence thấp trước khi vào tracker (bắt trường hợp box lồng nhau mà NMS bỏ sót). 0 = tắt. Gợi ý 0.7–0.85.',
   track_reid_window_sec: 'Cửa sổ thời gian (giây) để Re-ID.',
+  berth_out_grace_sec:
+    'Ân hạn (giây) trước khi chốt tín hiệu OUT. Khi tàu vượt ra ngoài vùng neo, hệ thống chưa coi là RA ngay: OUT chỉ được xác nhận nếu tàu ở NGOÀI vùng liên tục ≥ ngưỡng này. Nếu trong thời gian ân hạn tàu vào lại vùng (đang căn góc, lùi neo) thì OUT bị hủy (unlock), berth_out không bị chốt sai → tránh tính sai thời gian neo đậu và chi phí. 0 = tắt (chốt OUT ngay khi vượt ngưỡng, như cũ). Gợi ý 15–60s tùy thời gian tàu thường maneuver.',
   track_reid_max_dist: 'Khoảng cách tối đa dùng cho Re-ID không gian.',
   track_min_berth_duration_sec:
     'Thời gian neo đậu tối thiểu (giây) để track được tính là detection, kể cả UNKNOWN. Dùng berth_out−berth_in, fallback dwell (last_seen−first_seen). Track ngắn hơn ngưỡng bị bỏ qua hoàn toàn (không lưu, không gửi Zalo). 0 = tắt lọc.',

@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # Bỏ qua track có thời gian neo đậu (berth_out-berth_in, fallback dwell
     # last_seen-first_seen) nhỏ hơn ngưỡng này (giây). 0 = tắt lọc.
     TRACK_MIN_BERTH_DURATION_SEC: float = 0.0
+    # Thời gian ân hạn (giây) trước khi chốt tín hiệu OUT: khi tàu vượt ra ngoài
+    # vùng neo, OUT chỉ được xác nhận nếu tàu ở NGOÀI liên tục >= ngưỡng này.
+    # Nếu tàu vào lại vùng trong thời gian ân hạn (đang căn góc/lùi neo) thì OUT
+    # bị hủy (unlock), berth_out không bị chốt sai → tránh tính sai thời gian và
+    # chi phí. 0 = tắt (chốt OUT ngay khi vượt ngưỡng, như cũ).
+    BERTH_OUT_GRACE_SEC: float = 0.0
     
     # Re-ID & Dedup logic
     TRACK_REID_WINDOW_SEC: float = 120.0

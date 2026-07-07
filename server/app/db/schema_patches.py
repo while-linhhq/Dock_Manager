@@ -1054,6 +1054,61 @@ def _ensure_track_dedup_iomin_port_config() -> None:
         raise
 
 
+def _ensure_berth_out_grace_port_config() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'berth_out_grace_sec': (
+            '0.0',
+            'An han (giay) truoc khi chot tin hieu OUT: khi tau vuot ra ngoai vung '
+            'neo, OUT chi duoc xac nhan neu tau o NGOAI lien tuc >= nguong nay. Neu '
+            'tau vao lai vung trong thoi gian an han (dang can goc / lui neo) thi OUT '
+            'bi huy (unlock), berth_out khong bi chot sai. 0 = tat (chot OUT ngay).',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed berth_out_grace port_config manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured berth_out_grace port_config key')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed berth_out_grace port_config: %s', err)
+        raise
+
+
 def _ensure_min_berth_duration_port_config() -> None:
     try:
         inspector = inspect(engine)
@@ -2491,6 +2546,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_rtsp_nvdec_port_configs()
     _ensure_min_berth_duration_port_config()
     _ensure_track_dedup_iomin_port_config()
+    _ensure_berth_out_grace_port_config()
     _ensure_sync_port_configs()
     _ensure_fused_frame_max_port_configs()
     _ensure_thread_tuning_port_configs()

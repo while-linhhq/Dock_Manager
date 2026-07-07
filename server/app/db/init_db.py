@@ -95,6 +95,7 @@ def _run_seed_data() -> None:
         ('track_min_confirm_sec',          '1.5',        'Seconds before TENTATIVE becomes CONFIRMED'),
         ('track_max_tentative_sec',        '0.5',        'Seconds without match before tentative track is removed'),
         ('track_max_lost_sec',             '4.0',        'Seconds in LOST before track is removed'),
+        ('berth_out_grace_sec',            '0.0',        'An han (giay) truoc khi chot OUT: tau phai o NGOAI vung neo lien tuc >= nguong moi xac nhan RA; vao lai trong thoi gian nay se huy OUT. 0 = tat.'),
         ('ocr_interval_sec',               '0.5',        'Seconds between OCR attempts'),
         ('enable_ocr',                     'true',       'Enable/Disable OCR globally'),
         ('ocr_label_ttl_sec',              '5.0',        'Time to display OCR label on UI'),

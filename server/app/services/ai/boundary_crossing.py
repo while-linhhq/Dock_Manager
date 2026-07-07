@@ -7,7 +7,7 @@ Point = tuple[float, float]
 Segment = tuple[float, float, float, float]  # x1, y1, x2, y2
 Polyline = list[Point]
 Bbox = tuple[float, float, float, float]  # x1, y1, x2, y2
-TrackPhase = Literal['outside', 'inside', 'completed']
+TrackPhase = Literal['outside', 'inside', 'leaving', 'completed']
 
 
 def segment_intersection_t(p0: Point, p1: Point, line: Segment) -> Optional[float]:
@@ -208,6 +208,7 @@ class BoundaryConfig:
     enabled: bool = True
     window_sec: float = 120.0
     bbox_cross_threshold: float = 0.30
+    out_grace_sec: float = 0.0
 
     @classmethod
     def _parse_common(cls, data: dict, *, require_berth_zone: bool) -> Optional['BoundaryConfig']:
@@ -255,6 +256,13 @@ class _TrackState:
     phase: TrackPhase = 'outside'
     pending_line: Optional[int] = None
     pending_ts: float = 0.0
+    # Thời điểm bắt đầu rời vùng (overlap tụt < threshold) khi đang bật grace.
+    # OUT chỉ được chốt khi tàu ở NGOÀI liên tục >= out_grace_sec kể từ mốc này.
+    leaving_since_ts: float = 0.0
+    # Mốc RA THẬT gắn với sự kiện 'out' vừa phát: = thời điểm tàu rời vùng lần
+    # đầu (leaving_since_ts), KHÔNG phải lúc grace hoàn tất. Nhờ vậy berth_out
+    # phản ánh đúng lúc tàu đi, không cộng dồn khoảng ân hạn vào dwell/chi phí.
+    out_event_ts: Optional[float] = None
 
 
 class BoundaryCrossingTracker:
@@ -335,8 +343,37 @@ class BoundaryCrossingTracker:
 
         if st.phase == 'inside':
             if overlap < threshold:
+                grace = self._cfg.out_grace_sec
+                if grace <= 0:
+                    # Grace tắt → hành vi cũ: chốt OUT ngay khi overlap tụt.
+                    st.phase = 'completed'
+                    st.pending_line = None
+                    st.out_event_ts = ts
+                    return 'out'
+                # Bật grace → chưa chốt OUT. Chuyển sang 'leaving' và bấm giờ.
+                # Tàu đang maneuver (căn góc, lùi neo) có thể vượt ngưỡng tạm
+                # thời rồi vào lại; chỉ khi ở NGOÀI liên tục đủ out_grace_sec
+                # mới coi là RA thật. Đây là cơ chế unlock OUT theo yêu cầu.
+                st.phase = 'leaving'
+                st.leaving_since_ts = ts
+            return None
+
+        if st.phase == 'leaving':
+            if overlap >= threshold:
+                # Tàu vào lại vùng trong thời gian grace → hủy OUT (unlock),
+                # quay lại 'inside'. berth_out KHÔNG bị chốt, dwell tính đúng.
+                st.phase = 'inside'
+                st.leaving_since_ts = 0.0
+                return None
+            if ts - st.leaving_since_ts >= self._cfg.out_grace_sec:
+                # Đã ở ngoài liên tục đủ grace → xác nhận RA thật. Mốc OUT là
+                # thời điểm tàu RỜI VÙNG LẦN ĐẦU (leaving_since_ts), KHÔNG phải
+                # bây giờ — grace chỉ là thời gian chờ xác nhận, không được cộng
+                # vào thời gian neo đậu.
                 st.phase = 'completed'
                 st.pending_line = None
+                st.out_event_ts = st.leaving_since_ts
+                st.leaving_since_ts = 0.0
                 return 'out'
             return None
 
@@ -392,6 +429,12 @@ class BoundaryCrossingTracker:
     def get_phase(self, track_id: str) -> TrackPhase:
         st = self._states.get(track_id)
         return st.phase if st is not None else 'outside'
+
+    def get_out_event_ts(self, track_id: str) -> Optional[float]:
+        """Mốc RA THẬT của sự kiện 'out' gần nhất (lúc tàu rời vùng lần đầu),
+        để caller đóng dấu berth_out đúng thời điểm thay vì lúc grace hoàn tất."""
+        st = self._states.get(track_id)
+        return st.out_event_ts if st is not None else None
 
 
 def apply_boundary_lines_update(
