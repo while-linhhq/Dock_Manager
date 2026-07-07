@@ -47,6 +47,7 @@ def build_webhook_url(*, use_origin_path: bool = False) -> str:
 _SET_COMMAND_RE = re.compile(r'^SET\s+(\d+)\s+(.+)$', re.IGNORECASE)
 _SKIP_COMMAND_RE = re.compile(r'^(?:SKIP|BOQUA|BỎ\s*QUA|Bỏ\s*qua)\s+#?(\d+)$', re.IGNORECASE)
 _GOIY_COMMAND_RE = re.compile(r'^(?:GOIY|GOI\s*Y|GỢI\s*Ý|HINT)\s+#?(\d+)$', re.IGNORECASE)
+_OK_COMMAND_RE = re.compile(r'^(?:OK|DUNG|ĐÚNG|Đúng|XACNHAN|XÁC\s*NHẬN)\s+#?(\d+)$', re.IGNORECASE)
 _ACTION_RE = re.compile(r'^act:(\d+):([msc])(?::(.+))?$', re.IGNORECASE)
 ZALO_PENDING_CONFIG_PREFIX = 'zalo_pending_detection_'
 
@@ -185,6 +186,52 @@ def _build_unified_caption(
     return '\n'.join(lines)[:2000]
 
 
+def _resolve_detection_ship_id(db: Session, detection_id: int) -> str:
+    """Mã tàu hiện tại của detection (do embedding gán) để hiển thị xác nhận."""
+    det = detection_repo.get(db, detection_id)
+    if det is None:
+        return ''
+    vessel_id = getattr(det, 'vessel_id', None)
+    if not vessel_id:
+        return ''
+    vessel = vessel_repo.get(db, int(vessel_id))
+    if vessel is None:
+        return ''
+    return normalize_ship_id(str(getattr(vessel, 'ship_id', '') or ''))
+
+
+def _build_embedding_caption(
+    *,
+    detection_id: int,
+    camera_name: str,
+    start_time: Optional[datetime],
+    video_url: Optional[str],
+    ship_id: str,
+) -> str:
+    det = int(detection_id)
+    guess = ship_id or '(chưa rõ)'
+    lines = [
+        '🚢 XÁC NHẬN NHẬN DIỆN (EMBEDDING)',
+        f'📋 Mã phát hiện: #{det}',
+        f'🕐 Thời gian: {_format_detection_time(start_time)}',
+        f'📷 Camera đơn: {camera_name or "-"}',
+        f'🤖 Mã tàu (embedding, chưa có OCR): {guess}',
+        '⚠️ Nhận diện bằng embedding, cần xác nhận.',
+    ]
+    if video_url:
+        lines.extend(['', '🎬 Video ghi hình:', video_url])
+    lines.extend(
+        [
+            '',
+            '👉 Gõ lệnh để xử lý:',
+            f'OK {det} — xác nhận đúng ({guess})',
+            f'SET {det} [MÃ TÀU] — sửa lại mã',
+            f'SKIP {det} — bỏ qua (giữ nguyên phát hiện)',
+        ]
+    )
+    return '\n'.join(lines)[:2000]
+
+
 def _pending_config_key(chat_id: str) -> str:
     return f'{ZALO_PENDING_CONFIG_PREFIX}{chat_id}'
 
@@ -232,11 +279,13 @@ def _create_notification_row(
     chat_id: str,
     *,
     status: str = 'pending_media',
+    kind: str = 'unknown',
 ) -> bool:
     row = ZaloNotification(
         detection_id=detection_id,
         chat_id=chat_id,
         status=status,
+        kind=kind,
     )
     db.add(row)
     try:
@@ -341,6 +390,7 @@ def _deliver_unknown_detection(
     camera_name: str = '',
     start_time: Optional[datetime] = None,
     force_resend: bool = False,
+    kind: str = 'unknown',
 ) -> None:
     """Build URLs and send Zalo photo/message after media is confirmed ready."""
     if not _zalo_enabled():
@@ -370,7 +420,9 @@ def _deliver_unknown_detection(
             return
 
         if not existing or force_resend:
-            if not _create_notification_row(db, detection_id, chat_id, status='pending_media'):
+            if not _create_notification_row(
+                db, detection_id, chat_id, status='pending_media', kind=kind
+            ):
                 _log.info('Skip Zalo notify detection_id=%s: duplicate notification row', detection_id)
                 return
 
@@ -400,12 +452,21 @@ def _deliver_unknown_detection(
 
         image_url = _build_media_url(image_path)
         video_url = _build_media_url(video_path, video=True) if video_path else None
-        caption = _build_unified_caption(
-            detection_id=detection_id,
-            camera_name=camera_name,
-            start_time=start_time,
-            video_url=video_url,
-        )
+        if kind == 'embedding_confirm':
+            caption = _build_embedding_caption(
+                detection_id=detection_id,
+                camera_name=camera_name,
+                start_time=start_time,
+                video_url=video_url,
+                ship_id=_resolve_detection_ship_id(db, detection_id),
+            )
+        else:
+            caption = _build_unified_caption(
+                detection_id=detection_id,
+                camera_name=camera_name,
+                start_time=start_time,
+                video_url=video_url,
+            )
 
         notif = (
             db.query(ZaloNotification)
@@ -507,6 +568,7 @@ def notify_unknown_detection(
     force_resend: bool = False,
     expect_video: bool | None = None,
     wait_for_media: bool = True,
+    kind: str = 'unknown',
 ) -> None:
     """Wait for media bundle then send Zalo confirmation (blocking)."""
     if not _zalo_enabled():
@@ -560,6 +622,7 @@ def notify_unknown_detection(
         camera_name=camera_name,
         start_time=start_time,
         force_resend=force_resend,
+        kind=kind,
     )
 
 
@@ -579,6 +642,8 @@ def schedule_unknown_detection_notify(**kwargs) -> None:
     detection_id = int(kwargs.get('detection_id') or 0)
     if detection_id <= 0:
         return
+
+    kind = str(kwargs.get('kind') or 'unknown')
 
     db = SessionLocal()
     try:
@@ -601,7 +666,9 @@ def schedule_unknown_detection_notify(**kwargs) -> None:
                 db.commit()
             else:
                 return
-        elif not _create_notification_row(db, detection_id, chat_id, status='pending_media'):
+        elif not _create_notification_row(
+            db, detection_id, chat_id, status='pending_media', kind=kind
+        ):
             return
     finally:
         db.close()
@@ -692,7 +759,43 @@ def _handle_action(chat_id: str, detection_id: int, action: str, ship_id: str = 
         if env_chat and str(chat_id) != env_chat:
             return 'Bạn không có quyền xác nhận danh tính tàu.'
 
+        if action == 'o':
+            # Xác nhận đúng kết quả embedding: giữ nguyên mã tàu hiện tại, chỉ
+            # đánh dấu đã xác nhận (không xóa, không đổi mã).
+            notif = (
+                db.query(ZaloNotification)
+                .filter(ZaloNotification.detection_id == detection_id)
+                .first()
+            )
+            if notif is None:
+                return f'Không tìm thấy phát hiện #{detection_id}.'
+            ship_id = _resolve_detection_ship_id(db, detection_id)
+            notif.status = 'identified'
+            notif.resolved_ship_id = ship_id or None
+            notif.resolved_at = datetime.now(timezone.utc)
+            db.commit()
+            if _get_pending_detection_id(db, chat_id) == detection_id:
+                _set_pending_detection_id(db, chat_id, None)
+            shown = ship_id or '(giữ nguyên)'
+            return f'✅ Đã xác nhận phát hiện #{detection_id}: {shown}'
+
         if action == 's':
+            notif = (
+                db.query(ZaloNotification)
+                .filter(ZaloNotification.detection_id == detection_id)
+                .first()
+            )
+            kind = str(getattr(notif, 'kind', 'unknown') or 'unknown') if notif else 'unknown'
+            if kind == 'embedding_confirm':
+                # Embedding: SKIP = giữ nguyên phát hiện, chỉ đánh dấu bỏ qua.
+                if notif is not None:
+                    notif.status = 'skipped'
+                    notif.resolved_at = datetime.now(timezone.utc)
+                    db.commit()
+                if _get_pending_detection_id(db, chat_id) == detection_id:
+                    _set_pending_detection_id(db, chat_id, None)
+                return f'Đã bỏ qua phát hiện #{detection_id} (giữ nguyên).'
+
             from app.services.detection_cleanup_service import purge_detection_resources
 
             result = purge_detection_resources(db, detection_id)
@@ -752,6 +855,10 @@ def _parse_incoming_text(text: str) -> Optional[tuple[str, int, str, str]]:
     match = _SET_COMMAND_RE.match(raw)
     if match:
         return ('set', int(match.group(1)), 'c', match.group(2).strip())
+
+    match = _OK_COMMAND_RE.match(raw)
+    if match:
+        return ('act', int(match.group(1)), 'o', '')
 
     match = _SKIP_COMMAND_RE.match(raw)
     if match:
@@ -844,12 +951,19 @@ def process_incoming_payload(body: dict[str, Any]) -> None:
             send_text_message(chat_id, reply)
         except Exception:
             _log.exception('Failed to send Zalo reply for chat_id=%s', chat_id)
-    elif not _ACTION_RE.match(text) and not _SET_COMMAND_RE.match(text) and not _SKIP_COMMAND_RE.match(text) and not _GOIY_COMMAND_RE.match(text):
+    elif (
+        not _ACTION_RE.match(text)
+        and not _SET_COMMAND_RE.match(text)
+        and not _SKIP_COMMAND_RE.match(text)
+        and not _GOIY_COMMAND_RE.match(text)
+        and not _OK_COMMAND_RE.match(text)
+    ):
         try:
             send_text_message(
                 chat_id,
-                'Khi có tàu chưa xác định, bot gửi ảnh + hướng dẫn lệnh.\n'
-                'SET [ID] [MÃ TÀU] — xác nhận\n'
+                'Bot gửi ảnh + hướng dẫn khi có tàu cần xử lý.\n'
+                'OK [ID] — xác nhận đúng (embedding)\n'
+                'SET [ID] [MÃ TÀU] — xác nhận / sửa mã\n'
                 'SKIP [ID] — bỏ qua\n'
                 'GOIY [ID] — gợi ý mã',
             )

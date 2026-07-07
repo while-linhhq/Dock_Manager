@@ -770,6 +770,10 @@ def _ensure_reid_overlap_merge_port_configs() -> None:
             'true',
             'Chặn tạo IN giả khi tàu lùi ra chạm lại vùng cam trước (đã có OUT).',
         ),
+        'reid_embedding_diversity_max_cos': (
+            '0.98',
+            'Trần đa dạng buffer embedding: bỏ vector có cosine >= mức này so với vector kề trước (0.98). 1.0 = tắt.',
+        ),
     }
 
     dialect = engine.dialect.name
@@ -992,6 +996,61 @@ def _ensure_rtsp_nvdec_port_configs() -> None:
         _patch_done('ensured rtsp nvdec port_configs keys')
     except Exception as err:
         logger.error('schema_patches: failed to seed rtsp nvdec port_configs: %s', err)
+        raise
+
+
+def _ensure_track_dedup_iomin_port_config() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'track_dedup_iomin_threshold': (
+            '0.0',
+            'Loc bbox trung cho CUNG mot track: neu 2 detection box chong nhau '
+            'voi IoMin (giao / dien tich box nho hon) >= nguong nay thi bo box '
+            'conf thap truoc khi dua vao tracker (bat truong hop box long nhau '
+            'ma NMS IoU bo sot). 0 = tat loc.',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed track dedup iomin port_config manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured track dedup iomin port_config key')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed track dedup iomin port_config: %s', err)
         raise
 
 
@@ -1928,6 +1987,41 @@ def _ensure_zalo_notifications_message_ids() -> None:
             raise
 
 
+def _ensure_zalo_notifications_kind() -> None:
+    dialect = engine.dialect.name
+    try:
+        with engine.begin() as conn:
+            if dialect == 'postgresql':
+                conn.execute(
+                    text(
+                        "ALTER TABLE zalo_notifications "
+                        "ADD COLUMN IF NOT EXISTS kind VARCHAR(24) NOT NULL DEFAULT 'unknown'"
+                    )
+                )
+            elif dialect == 'sqlite':
+                existing = {
+                    row[1]
+                    for row in conn.execute(text('PRAGMA table_info(zalo_notifications)')).fetchall()
+                }
+                if 'kind' not in existing:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE zalo_notifications "
+                            "ADD COLUMN kind VARCHAR(24) NOT NULL DEFAULT 'unknown'"
+                        )
+                    )
+            else:
+                logger.warning(
+                    'schema_patches: unknown dialect %s — add zalo_notifications.kind manually',
+                    dialect,
+                )
+                return
+        _patch_done('ensured zalo_notifications.kind')
+    except Exception as err:
+        logger.error('schema_patches: failed to add zalo_notifications.kind: %s', err)
+        raise
+
+
 def _ensure_media_short_links() -> None:
     dialect = engine.dialect.name
     if dialect == 'postgresql':
@@ -2005,6 +2099,38 @@ def _ensure_detections_berth_times() -> None:
         except Exception as err:
             logger.error('schema_patches: failed to add detections.%s: %s', col, err)
             raise
+
+
+def _ensure_detections_berth_out_source() -> None:
+    """Add berth_out_source to detections: 'crossing' vs 'last_seen' (suy diễn)."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('detections'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('detections')}
+        if 'berth_out_source' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect detections: %s', err)
+        return
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE detections ADD COLUMN IF NOT EXISTS berth_out_source VARCHAR(20)')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE detections ADD COLUMN berth_out_source VARCHAR(20)')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add detections.berth_out_source manually',
+            dialect,
+        )
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added detections.berth_out_source')
+    except Exception as err:
+        logger.error('schema_patches: failed to add detections.berth_out_source: %s', err)
+        raise
 
 
 def _ensure_cameras_boundary_lines() -> None:
@@ -2343,6 +2469,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_invoices_creation_source()
     _ensure_detections_audit_image_path()
     _ensure_detections_berth_times()
+    _ensure_detections_berth_out_source()
     _ensure_cameras_boundary_lines()
     _ensure_cameras_detection_settings()
     _ensure_fee_configs_berth_limit()
@@ -2363,6 +2490,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
     _ensure_min_berth_duration_port_config()
+    _ensure_track_dedup_iomin_port_config()
     _ensure_sync_port_configs()
     _ensure_fused_frame_max_port_configs()
     _ensure_thread_tuning_port_configs()
@@ -2372,6 +2500,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_bulk_payment_sessions()
     _ensure_zalo_notifications()
     _ensure_zalo_notifications_message_ids()
+    _ensure_zalo_notifications_kind()
     _ensure_media_short_links()
     _ensure_boundary_crossing_events()
     _ensure_ship_id_rules_tables()

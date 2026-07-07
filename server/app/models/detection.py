@@ -15,6 +15,10 @@ class Detection(Base):
     end_time = Column(DateTime(timezone=True), nullable=True)
     berth_in_time = Column(DateTime(timezone=True), nullable=True)
     berth_out_time = Column(DateTime(timezone=True), nullable=True)
+    # Nguồn của berth_out_time: 'crossing' = tàu cắt line OUT thật; 'last_seen' =
+    # suy diễn từ frame cuối cùng còn thấy tàu (OUT crossing bị mất do track đứt).
+    # NULL với các detection cũ trước khi thêm cột này.
+    berth_out_source = Column(String(20), nullable=True)
     video_path = Column(Text, nullable=True)
     audit_image_path = Column(Text, nullable=True)
     ocr_results = Column(JSONB, nullable=True)

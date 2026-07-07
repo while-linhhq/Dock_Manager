@@ -113,6 +113,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   track_max_tentative_sec: 'track',
   track_max_lost_sec: 'track',
   track_iou_threshold: 'track',
+  track_dedup_iomin_threshold: 'track',
   track_reid_window_sec: 'track',
   track_reid_max_dist: 'track',
   track_min_berth_duration_sec: 'track',
@@ -149,6 +150,7 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   reid_directional_accept_threshold: 'reid',
   reid_directional_embedding_floor: 'reid',
   reid_reverse_motion_guard_enabled: 'reid',
+  reid_embedding_diversity_max_cos: 'reid',
   seam_anchor_enabled: 'seam',
   seam_roi_width_ratio: 'seam',
   seam_proximity_px: 'seam',
@@ -245,6 +247,8 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   track_max_tentative_sec: 'Thời gian tối đa (giây) không match trước khi xóa tentative track.',
   track_max_lost_sec: 'Thời gian tối đa (giây) ở LOST trước khi xóa track.',
   track_iou_threshold: 'Ngưỡng IoU để ghép detections vào cùng track.',
+  track_dedup_iomin_threshold:
+    'Lọc bbox nhiễu trùng cho cùng một tàu: nếu 2 box chồng nhau với IoMin (giao / diện tích box nhỏ hơn) ≥ ngưỡng này thì bỏ box confidence thấp trước khi vào tracker (bắt trường hợp box lồng nhau mà NMS bỏ sót). 0 = tắt. Gợi ý 0.7–0.85.',
   track_reid_window_sec: 'Cửa sổ thời gian (giây) để Re-ID.',
   track_reid_max_dist: 'Khoảng cách tối đa dùng cho Re-ID không gian.',
   track_min_berth_duration_sec:
@@ -278,6 +282,7 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   reid_directional_accept_threshold: 'Ngưỡng tổng score để chấp nhận handoff hướng.',
   reid_directional_embedding_floor: 'Sàn embedding cosine: dưới ngưỡng này không merge dù hướng/thời gian khớp.',
   reid_reverse_motion_guard_enabled: 'Chặn tạo IN giả khi tàu lùi ra chạm lại vùng cam trước (đã có OUT).',
+  reid_embedding_diversity_max_cos: 'Trần đa dạng buffer embedding: bỏ vector có cosine >= mức này so với vector kề trước (mặc định 0.98). 1.0 = tắt gate (giữ hành vi cũ).',
 
   seam_anchor_enabled: 'Bật seam anchor để giữ ID khi tàu neo ở ranh giới 2 camera.',
   seam_roi_width_ratio: 'Tỉ lệ bề rộng vùng ROI cho seam (theo width camera kề).',

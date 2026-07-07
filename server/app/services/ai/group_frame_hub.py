@@ -338,7 +338,7 @@ class GroupFrameHub:
         if not samples:
             return
         avg = sum(samples) / len(samples)
-        _log.info(
+        _log.debug(
             'frame sync spread: cams=%d batches=%d spread_ms avg=%.0f min=%.0f max=%.0f (tolerance=%.0fms)',
             len(batch),
             len(samples),

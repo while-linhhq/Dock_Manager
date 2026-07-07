@@ -316,6 +316,10 @@ class PipelineService:
                 cfg_map.get('track_iou_threshold', ''),
                 float(settings.TRACK_IOU_THRESHOLD),
             ),
+            'track_dedup_iomin_threshold': self._to_float(
+                cfg_map.get('track_dedup_iomin_threshold', ''),
+                float(settings.TRACK_DEDUP_IOMIN_THRESHOLD),
+            ),
             'track_reid_window_sec': self._to_float(
                 cfg_map.get('track_reid_window_sec', ''),
                 float(settings.TRACK_REID_WINDOW_SEC),
@@ -439,6 +443,10 @@ class PipelineService:
             'reid_reverse_motion_guard_enabled': self._to_bool(
                 cfg_map.get('reid_reverse_motion_guard_enabled', ''),
                 bool(settings.REID_REVERSE_MOTION_GUARD_ENABLED),
+            ),
+            'reid_embedding_diversity_max_cos': self._to_float(
+                cfg_map.get('reid_embedding_diversity_max_cos', ''),
+                float(settings.REID_EMBEDDING_DIVERSITY_MAX_COS),
             ),
             'clahe_clip_limit': self._to_float(
                 cfg_map.get('clahe_clip_limit', ''),
@@ -1288,11 +1296,34 @@ class PipelineService:
                 if getattr(tb, 'berth_out_ts', None)
                 else None
             )
+            # Phương án C — OUT suy diễn: track có berth_in nhưng thiếu berth_out
+            # crossing (track đứt trong zone, OUT không kịp emit) thì suy ra OUT =
+            # last_seen (end_dt_utc) — mốc frame cuối cùng còn thấy tàu. end_dt_utc
+            # đã là thời điểm rời gần đúng, KHÔNG chứa độ trễ finalize (reid+handoff),
+            # vì last_seen_ts chỉ cập nhật ở frame khớp cuối. Đánh dấu nguồn để phân
+            # biệt với OUT crossing thật (billing/report có thể lọc/duyệt lại).
+            berth_out_source = 'crossing' if berth_out_dt is not None else None
+            if (
+                berth_out_dt is None
+                and berth_in_dt is not None
+                and end_dt_utc is not None
+                and end_dt_utc > berth_in_dt
+            ):
+                berth_out_dt = end_dt_utc
+                berth_out_source = 'last_seen'
+                _log.info(
+                    'Inferred OUT for track=%s ship=%s: berth_out=last_seen=%s '
+                    '(no OUT crossing, track dropped in zone)',
+                    tb.track_id,
+                    ship_id,
+                    berth_out_dt,
+                )
+
             min_berth_sec = self._min_berth_duration_sec(db)
             if min_berth_sec > 0:
                 # Yêu cầu có thời lượng neo đậu thực sự: phải đủ cả berth_in và
-                # berth_out. Track không có thời lượng neo đậu (thiếu IN/OUT) coi
-                # như không đạt ngưỡng → bỏ qua, kể cả UNKNOWN.
+                # berth_out (thật hoặc suy diễn). Track không có berth_in, hoặc không
+                # suy diễn được berth_out (thiếu cả last_seen) → bỏ qua, kể cả UNKNOWN.
                 if berth_in_dt is None or berth_out_dt is None:
                     _log.info(
                         'Skip persist track=%s ship=%s: no berth duration (in=%s out=%s), '
@@ -1307,11 +1338,13 @@ class PipelineService:
                 dwell_sec = (berth_out_dt - berth_in_dt).total_seconds()
                 if dwell_sec < min_berth_sec:
                     _log.info(
-                        'Skip persist track=%s ship=%s: berth dwell=%.1fs < min_berth=%.1fs',
+                        'Skip persist track=%s ship=%s: berth dwell=%.1fs < min_berth=%.1fs '
+                        '(out_source=%s)',
                         tb.track_id,
                         ship_id,
                         dwell_sec,
                         min_berth_sec,
+                        berth_out_source,
                     )
                     return
             cam_id = int(getattr(tb, 'camera_id', 0) or 0)
@@ -1365,6 +1398,7 @@ class PipelineService:
                         end_time=end_dt_utc,
                         berth_in_time=berth_in_dt,
                         berth_out_time=berth_out_dt,
+                        berth_out_source=berth_out_source,
                         video_path=None,
                         audit_image_path=None,
                         ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],
@@ -1378,6 +1412,16 @@ class PipelineService:
                     raise
 
             det_id_for_invoice = det.id
+            _log.info(
+                'PERSIST detection id=%s ship_id=%s track=%s berth_in=%s berth_out=%s(%s) votes=%d',
+                det.id,
+                ship_id,
+                tb.track_id,
+                berth_in_dt.isoformat() if berth_in_dt else '-',
+                berth_out_dt.isoformat() if berth_out_dt else '-',
+                berth_out_source or '-',
+                len(hist),
+            )
 
             video_uri: str | None = None
             if fused_video is not None:
@@ -1551,7 +1595,18 @@ class PipelineService:
                 vote_summary=vote_summary
             ))
 
-            if is_unknown_ship_id(ship_id) and settings.ZALO_ENABLED and det_id_for_invoice is not None:
+            # Zalo notify: (1) tàu UNKNOWN → xác nhận danh tính như cũ;
+            # (2) tàu nhận diện bằng EMBEDDING mà KHÔNG có OCR → gửi xác nhận
+            #     kết quả embedding (OK / SET mã mới / SKIP giữ nguyên).
+            decision_source = str(getattr(tb, 'ship_id_decision_source', '') or '')
+            notify_kind: str | None = None
+            if settings.ZALO_ENABLED and det_id_for_invoice is not None:
+                if is_unknown_ship_id(ship_id):
+                    notify_kind = 'unknown'
+                elif decision_source == 'embedding' and not has_ocr_evidence:
+                    notify_kind = 'embedding_confirm'
+
+            if notify_kind is not None:
                 from app.repositories.camera_repository import camera_repo
                 from app.services import zalo_service
 
@@ -1569,6 +1624,7 @@ class PipelineService:
                     expect_video=bool(single_video_uri or video_uri),
                     camera_name=camera_name,
                     start_time=start_dt_utc,
+                    kind=notify_kind,
                 )
         except Exception:
             db.rollback()
@@ -1588,6 +1644,7 @@ class PipelineService:
                 from app.services.detection_invoice_service import ensure_ai_invoice_for_detection
 
                 ensure_ai_invoice_for_detection(det_id_for_invoice)
+                _log.info('INVOICE ensured for detection id=%s', det_id_for_invoice)
             except Exception:
                 _log.exception(
                     'AI invoice creation failed for detection_id=%s',
@@ -1863,6 +1920,9 @@ class PipelineService:
             reverse_motion_guard_enabled=bool(
                 runtime_cfg['reid_reverse_motion_guard_enabled']
             ),
+            embedding_diversity_max_cos=float(
+                runtime_cfg['reid_embedding_diversity_max_cos']
+            ),
         )
         # Feed camera layout geometry (layout_x per camera) so the directional
         # handoff matcher knows which camera sits left/right of which.
@@ -2036,6 +2096,7 @@ class PipelineService:
                 ocr_audit_save_frames=runtime_cfg['ocr_audit_save_frames'],
                 resize_scale=runtime_cfg['resize_scale'],
                 track_iou_threshold=runtime_cfg['track_iou_threshold'],
+                track_dedup_iomin_threshold=runtime_cfg['track_dedup_iomin_threshold'],
                 track_reid_window_sec=runtime_cfg['track_reid_window_sec'],
                 track_reid_max_dist=runtime_cfg['track_reid_max_dist'],
                 track_min_confirm_sec=runtime_cfg['track_min_confirm_sec'],

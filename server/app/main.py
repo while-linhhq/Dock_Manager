@@ -83,6 +83,13 @@ def _configure_logging() -> None:
                 # Our app logs
                 'app': {'level': level},
                 'app.startup': {'level': level, 'propagate': True},
+                # Third-party HTTP clients spam one INFO line per request
+                # ("HTTP Request: POST .../points/search" from every Qdrant
+                # embedding search). Cap at WARNING so the log stays readable.
+                'httpx': {'level': 'WARNING'},
+                'httpcore': {'level': 'WARNING'},
+                'urllib3': {'level': 'WARNING'},
+                'qdrant_client': {'level': 'WARNING'},
             },
         }
     )

@@ -11,6 +11,7 @@ class DetectionBase(BaseModel):
     end_time: Optional[datetime] = None
     berth_in_time: Optional[datetime] = None
     berth_out_time: Optional[datetime] = None
+    berth_out_source: Optional[str] = None
     video_path: Optional[str] = None
     audit_image_path: Optional[str] = None
     ocr_results: Optional[List[Dict[str, Any]]] = None

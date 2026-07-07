@@ -351,6 +351,25 @@ class BoundaryCrossingTracker:
         )
 
         if st.phase == 'outside':
+            # Seed 'inside' khi track XUẤT HIỆN LẦN ĐẦU đã nằm gọn trong berth_zone
+            # (overlap >= threshold, không chạm line nào). Xảy ra khi: track-id đổi
+            # giữa vùng neo, hoặc camera nhận handoff và chỉ thấy tàu SAU khi nó đã
+            # vào zone (điển hình là camera chứng kiến cảnh RA). Máy trạng thái chưa
+            # từng thấy chuỗi line1→line2 nên sẽ kẹt 'outside' và KHÔNG BAO GIỜ phát
+            # 'out' → OUT rơi về fallback last_seen. Seed thẳng 'inside' để khi
+            # overlap tụt < threshold sẽ phát 'out' đúng. KHÔNG phát 'in' (đây không
+            # phải arrival thật — berth_in do camera gốc giữ), tránh berth_in giả.
+            # Điều kiện `not l1_hit and not l2_hit` phân biệt track sinh-giữa-vùng với
+            # track đang băng qua ranh giới (track cross line vẫn đi path line1→line2).
+            if (
+                prev_box is None
+                and overlap >= threshold
+                and not l1_hit
+                and not l2_hit
+            ):
+                st.phase = 'inside'
+                st.pending_line = None
+                return None
             if l1_hit and st.pending_line is None:
                 st.pending_line = 1
                 st.pending_ts = ts

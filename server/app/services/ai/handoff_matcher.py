@@ -72,8 +72,8 @@ class OverlapMergeMatcher:
         self._is_adjacent = is_adjacent or (lambda a, b: False)
         self._frame_width_for = frame_width_for or (lambda cam: 0.0)
 
-    def score(self, identity: Any, track: Any) -> float:
-        """Weighted fusion in [0,1] of embedding cosine, HSV color similarity, box-size ratio."""
+    def _components(self, identity: Any, track: Any) -> dict[str, float]:
+        """Raw per-signal scores (emb cosine, HSV color sim, box-size ratio) in [0,1]."""
         emb_cos = _best_embedding_cosine(
             getattr(identity, 'embeddings', []) or [],
             getattr(track, 'embedding', None),
@@ -87,11 +87,19 @@ class OverlapMergeMatcher:
         last_track = getattr(identity, 'last_track', None)
         identity_box = getattr(last_track, 'box', None) if last_track is not None else None
         size_ratio = _box_size_ratio(identity_box, getattr(track, 'box', None))
+        return {
+            'emb': float(emb_cos),
+            'color': float(color_sim),
+            'size': float(size_ratio),
+        }
 
+    def score(self, identity: Any, track: Any) -> float:
+        """Weighted fusion in [0,1] of embedding cosine, HSV color similarity, box-size ratio."""
+        comp = self._components(identity, track)
         return (
-            self._config.embedding_weight * emb_cos
-            + self._config.color_weight * color_sim
-            + self._config.size_weight * size_ratio
+            self._config.embedding_weight * comp['emb']
+            + self._config.color_weight * comp['color']
+            + self._config.size_weight * comp['size']
         )
 
     def _track_in_edge_zone(self, track: Any) -> bool:
@@ -171,6 +179,7 @@ class OverlapMergeMatcher:
         )
         best_score, best_identity = scored[0]
         second_score = scored[1][0] if len(scored) > 1 else 0.0
+        comp = self._components(best_identity, track)
         return {
             'score': float(best_score),
             'accept': float(self._config.accept_threshold),
@@ -178,4 +187,11 @@ class OverlapMergeMatcher:
             'min_margin': float(self._config.min_margin),
             'target_gid': getattr(best_identity, 'global_id', None),
             'target_ship_id': getattr(best_identity, 'ship_id', None),
+            # Per-signal breakdown: each entry is (raw_score, weight); raw*weight
+            # summed = 'score' above. Lets the operator tune each weight live.
+            'components': {
+                'emb': (comp['emb'], float(self._config.embedding_weight)),
+                'color': (comp['color'], float(self._config.color_weight)),
+                'size': (comp['size'], float(self._config.size_weight)),
+            },
         }
