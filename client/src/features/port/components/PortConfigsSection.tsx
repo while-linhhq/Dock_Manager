@@ -118,6 +118,9 @@ const KEY_PREFIX_MAP: Record<string, CategoryId> = {
   track_reid_window_sec: 'track',
   track_reid_max_dist: 'track',
   track_min_berth_duration_sec: 'track',
+  berth_merge_gap_sec: 'track',
+  detection_merge_window_hours: 'track',
+  berth_merge_skip_unknown: 'track',
   sync_tolerance_ms: 'track',
   thread_caps_enabled: 'threads',
   thread_omp_threads: 'threads',
@@ -256,6 +259,12 @@ const KEY_VI_DESCRIPTION: Partial<Record<string, string>> = {
   track_reid_max_dist: 'Khoảng cách tối đa dùng cho Re-ID không gian.',
   track_min_berth_duration_sec:
     'Thời gian neo đậu tối thiểu (giây) để track được tính là detection, kể cả UNKNOWN. Dùng berth_out−berth_in, fallback dwell (last_seen−first_seen). Track ngắn hơn ngưỡng bị bỏ qua hoàn toàn (không lưu, không gửi Zalo). 0 = tắt lọc.',
+  berth_merge_gap_sec:
+    'Ngưỡng khoảng TRỐNG (giây) để gộp 2 detection cùng tàu thành 1 lượt neo. Gap = berth_in(lượt sau) − berth_out(lượt trước). Gap < ngưỡng: track bị đứt rồi nối lại trong cùng một lượt → GỘP (giữ berth_in sớm nhất, berth_out muộn nhất). Gap ≥ ngưỡng: tàu đã rời bến thật rồi mới quay lại → giữ 2 lượt RIÊNG (không mất detection). Dựa trên đồ thị gap thực tế: track-chết-nối-lại ≤30 phút, rời-thật-quay-lại 40–60 phút → mặc định 1800 (30 phút) nằm đúng đáy thung lũng. Tăng nếu tàu hay đứt track lâu; giảm nếu tàu quay lại nhanh bị gộp oan. 0 = tắt gộp theo gap (chỉ còn gộp khi 2 cửa sổ THẬT SỰ chồng lấn).',
+  detection_merge_window_hours:
+    'Bán kính (giờ) lưới lọc ỨNG VIÊN thô khi tìm detection cùng tàu để xét gộp. Chỉ giới hạn phạm vi query cho rẻ, KHÔNG tự quyết định gộp (việc gộp do berth_merge_gap_sec + chồng lấn quyết). Phải RỘNG hơn ngưỡng gộp; hệ thống tự nới rộng theo berth_merge_gap_sec nếu cần. Mặc định 2 giờ là đủ cho mọi lượt neo trong ngày.',
+  berth_merge_skip_unknown:
+    'BẬT (true) = KHÔNG gộp các detection UNKNOWN (tàu chưa xác nhận danh tính). Lý do: mọi tàu UNKNOWN đều trỏ về CÙNG một vessel "UNKNOWN", nên nếu gộp theo vessel_id sẽ trộn nhiều con tàu khác nhau thành một lượt sai. Giữ riêng từng detection UNKNOWN cho tới khi Zalo bot xác nhận mã tàu — lúc reassign sang vessel thật, hệ tự động chạy coalesce để gộp lại các mảnh cùng lượt của đúng tàu đó. TẮT (false) = gộp cả UNKNOWN (KHÔNG khuyến nghị, dễ trộn nhầm tàu).',
   sync_tolerance_ms:
     'Sai số tối đa giữa các camera trong cùng batch (ms). Tăng nếu RTSP chậm; giảm nếu cần khớp chặt hơn.',
 

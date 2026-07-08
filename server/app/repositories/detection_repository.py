@@ -97,12 +97,12 @@ class DetectionRepository:
         berth_in: datetime,
         berth_out: datetime,
         exclude_id: int,
-        window_hours: int = 2,
+        window_hours: float = 2.0,
     ) -> List[Detection]:
         from datetime import timedelta
 
-        earliest = berth_in - timedelta(hours=window_hours)
-        latest = berth_out + timedelta(hours=window_hours)
+        earliest = berth_in - timedelta(hours=float(window_hours))
+        latest = berth_out + timedelta(hours=float(window_hours))
         # Candidate phải có berth_in; berth_out có thể NULL (track mất giữa
         # chừng) — absorb_contained dùng end_time fallback cho duration.
         return (

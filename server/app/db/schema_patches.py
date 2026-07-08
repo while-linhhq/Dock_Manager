@@ -1163,6 +1163,83 @@ def _ensure_min_berth_duration_port_config() -> None:
         raise
 
 
+def _ensure_detection_merge_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'berth_merge_gap_sec': (
+            '1800',
+            'Nguong khoang trong (giay) de gop 2 detection cung tau thanh 1 luot '
+            'neo. Gap = berth_in(luot sau) - berth_out(luot truoc). Gap < nguong '
+            '=> track bi dut roi noi lai trong cung luot => GOP (berth_in som nhat, '
+            'berth_out muon nhat). Gap >= nguong => tau da roi ben that roi quay '
+            'lai => giu 2 luot RIENG. Do thi gap thuc te 7/6-7/8: track-chet-noi '
+            'lai <=30 phut, roi-that-quay-lai 40-60 phut => 1800 (30 phut) nam '
+            'dung day thung lung. Tang neu tau hay dut track lau; giam neu tau '
+            'quay lai nhanh bi gop oan. 0 = tat gop theo gap (chi con gop khi 2 '
+            'cua so THAT SU chong lan).',
+        ),
+        'detection_merge_window_hours': (
+            '2',
+            'Ban kinh (gio) luoi loc UNG VIEN tho khi tim detection cung tau de '
+            'xet gop. Chi gioi han pham vi query cho re, KHONG tu quyet dinh gop '
+            '(viec gop do berth_merge_gap_sec + chong lan quyet). Phai RONG hon '
+            'nguong gop; he thong tu noi rong theo berth_merge_gap_sec neu can. '
+            'Mac dinh 2 gio la du cho moi luot neo trong ngay.',
+        ),
+        'berth_merge_skip_unknown': (
+            'true',
+            'true = KHONG gop cac detection UNKNOWN (tau chua xac nhan danh tinh). '
+            'Ly do: moi tau UNKNOWN deu tro ve CUNG mot vessel "UNKNOWN", nen gop '
+            'theo vessel_id se tron nhieu con tau khac nhau thanh mot luot sai. '
+            'Giu rieng tung detection cho toi khi Zalo bot xac nhan ma tau: luc '
+            'reassign sang vessel that, he tu dong chay coalesce de gop lai cac '
+            'manh cung luot. false = gop ca UNKNOWN (KHONG khuyen nghi).',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed detection_merge port_config manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured detection_merge port_config keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed detection_merge port_configs: %s', err)
+        raise
+
+
 def _ensure_sync_port_configs() -> None:
     try:
         inspector = inspect(engine)
@@ -2545,6 +2622,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
     _ensure_min_berth_duration_port_config()
+    _ensure_detection_merge_port_configs()
     _ensure_track_dedup_iomin_port_config()
     _ensure_berth_out_grace_port_config()
     _ensure_sync_port_configs()

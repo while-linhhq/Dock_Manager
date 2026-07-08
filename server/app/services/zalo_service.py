@@ -703,6 +703,19 @@ def _reassign_vessel_identity(db: Session, detection_id: int, new_ship_id: str) 
 
     detection_repo.update_vessel_id(db, detection_id, vessel.id)
 
+    # Sau khi định danh: detection không còn UNKNOWN → chạy coalesce để gộp với
+    # các lượt cùng tàu vừa được xác nhận (mảnh track-chết-nối-lại cùng vessel
+    # thật). absorb_contained tự bỏ qua nếu vẫn còn UNKNOWN hoặc không có mảnh
+    # nào cùng lượt. Có thể đổi detection_id thắng cuộc → cập nhật để tính invoice
+    # trên winner.
+    try:
+        from app.services.detection_merge_service import absorb_contained
+
+        detection_id = absorb_contained(db, detection_id)
+    except Exception:
+        db.rollback()
+        _log.exception('detection_merge after Zalo identity failed detection_id=%s', detection_id)
+
     notif = (
         db.query(ZaloNotification)
         .filter(ZaloNotification.detection_id == detection_id)
