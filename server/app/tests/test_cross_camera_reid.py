@@ -121,6 +121,68 @@ def test_same_plate_not_merged_on_same_camera_concurrent_tracks() -> None:
     assert gid_one != gid_two
 
 
+def test_embedding_match_not_merged_on_same_camera_concurrent_tracks() -> None:
+    """Reproduces SG-8271 / SG-10447 (2026-07-07 07:58:39).
+
+    Two look-alike boats on the SAME camera, seen concurrently. The second boat
+    has not been OCR-read yet, so the ship-id conflict guard cannot fire. Its
+    embedding cosine to the first identity clears the visual threshold. Without
+    the same-camera concurrency guard the two collapse into one global id and
+    one detection (SG-10447) is lost. Two live bboxes on one camera are always
+    two boats, so they must keep separate identities.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(7)
+
+    # Boat A on cam1, OCR-confirmed SG-8271.
+    boat_a = _track('trk_8271', camera_id=1, box=(10.0, 10.0, 100.0, 100.0))
+    mgr.report_track_update(1, boat_a, embedding=emb)
+    mgr.report_ocr_result(1, 'trk_8271', 'SG-8271', 0.95)
+
+    # Boat B appears on the SAME cam1 concurrently, near-identical hull, NO OCR yet.
+    boat_b = _track('trk_10447', camera_id=1, box=(300.0, 300.0, 400.0, 400.0))
+    similar_emb = emb * 0.98 + _unit_embedding(99) * 0.02
+    mgr.report_track_update(1, boat_b, embedding=similar_emb)
+
+    gid_a = mgr._track_to_global[(1, 'trk_8271')]
+    gid_b = mgr._track_to_global[(1, 'trk_10447')]
+    assert gid_a != gid_b
+    # B must not inherit A's plate.
+    assert mgr.get_global_ship_id(1, 'trk_10447') is None
+    assert boat_b.ship_id is None
+
+    # After B is OCR-read as its own plate, the two identities stay distinct.
+    mgr.report_ocr_result(1, 'trk_10447', 'SG-10447', 0.9)
+    assert mgr._identities[gid_a].ship_id == 'SG-8271'
+    assert mgr._identities[gid_b].ship_id == 'SG-10447'
+
+
+def test_same_camera_reattach_after_removed_still_works() -> None:
+    """Guard must not block legit same-camera re-id: when the first track is
+    REMOVED (IoU tracker dropped it), it leaves active_tracks, so a reappearing
+    track with a matching embedding on the same camera can rebind. Only *live*
+    concurrent tracks are two boats.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(11)
+
+    boat_a = _track('trk_first', camera_id=1)
+    mgr.report_track_update(1, boat_a, embedding=emb)
+    mgr.report_ocr_result(1, 'trk_first', 'SG-1111', 0.92)
+    gid_first = mgr._track_to_global[(1, 'trk_first')]
+
+    # Tracker drops the track (no active track left on cam1).
+    mgr.report_track_removed(1, boat_a, ocr_history=[('SG-1111', 0.92)])
+
+    # Same boat reappears on the SAME camera with a matching embedding, no OCR.
+    boat_b = _track('trk_reappear', camera_id=1)
+    mgr.report_track_update(1, boat_b, embedding=emb)
+
+    gid_reappear = mgr._track_to_global[(1, 'trk_reappear')]
+    assert gid_reappear == gid_first
+    assert mgr.get_global_ship_id(1, 'trk_reappear') == 'SG-1111'
+
+
 def test_finalize_once_after_adjacent_seam_merge() -> None:
     finalized: list[str] = []
 

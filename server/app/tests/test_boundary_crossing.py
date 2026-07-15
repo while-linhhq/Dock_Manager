@@ -89,6 +89,76 @@ def test_out_when_overlap_drops_below_threshold():
     assert trk.update('d', (10, 45, 28, 55), 3.0, 100, 100) == 'out'
 
 
+def _cfg_grace(grace: float, threshold: float = 0.30) -> BoundaryConfig:
+    cfg = _cfg(threshold)
+    cfg.out_grace_sec = grace
+    return cfg
+
+
+def test_grace_out_confirmed_after_continuous_absence():
+    """Bật grace: tàu ra ngoài liên tục >= grace_sec → OUT chốt đúng."""
+    trk = BoundaryCrossingTracker(_cfg_grace(30.0))
+    trk.update('g', (25, 45, 35, 55), 1.0, 100, 100)
+    assert trk.update('g', (45, 45, 65, 55), 2.0, 100, 100) == 'in'
+    # frame đầu ra ngoài: chưa chốt OUT, chuyển 'leaving'
+    assert trk.update('g', (5, 45, 20, 55), 3.0, 100, 100) is None
+    assert trk.get_phase('g') == 'leaving'
+    # vẫn ngoài nhưng chưa đủ grace (3.0 -> 20.0 = 17s < 30s)
+    assert trk.update('g', (5, 45, 20, 55), 20.0, 100, 100) is None
+    assert trk.get_phase('g') == 'leaving'
+    # ngoài liên tục đủ grace (3.0 -> 34.0 = 31s >= 30s) → OUT
+    assert trk.update('g', (5, 45, 20, 55), 34.0, 100, 100) == 'out'
+    assert trk.get_phase('g') == 'completed'
+    # Mốc OUT = lúc tàu rời vùng LẦN ĐẦU (ts=3.0), KHÔNG phải lúc grace hoàn
+    # tất (34.0) — grace không được cộng vào thời gian neo đậu.
+    assert trk.get_out_event_ts('g') == 3.0
+
+
+def test_grace_out_unlocked_when_boat_returns_within_grace():
+    """Cốt lõi tính năng: tàu maneuver ra ngoài rồi VÀO LẠI trong thời gian
+    grace → OUT bị hủy (unlock), berth_out không chốt, quay lại 'inside'.
+    """
+    trk = BoundaryCrossingTracker(_cfg_grace(30.0))
+    trk.update('m', (25, 45, 35, 55), 1.0, 100, 100)
+    assert trk.update('m', (45, 45, 65, 55), 2.0, 100, 100) == 'in'
+    # ra ngoài (căn góc) → 'leaving', chưa OUT
+    assert trk.update('m', (5, 45, 20, 55), 5.0, 100, 100) is None
+    assert trk.get_phase('m') == 'leaving'
+    # vào lại vùng trong grace (10s < 30s) → hủy OUT, về 'inside'
+    assert trk.update('m', (45, 45, 65, 55), 10.0, 100, 100) is None
+    assert trk.get_phase('m') == 'inside'
+    # sau đó ở yên trong vùng, không hề phát OUT
+    assert trk.update('m', (45, 45, 65, 55), 40.0, 100, 100) is None
+    assert trk.get_phase('m') == 'inside'
+
+
+def test_grace_releaving_resets_timer():
+    """Ra → vào lại → ra lần nữa: timer grace reset, không cộng dồn lần ra trước."""
+    trk = BoundaryCrossingTracker(_cfg_grace(30.0))
+    trk.update('r', (25, 45, 35, 55), 1.0, 100, 100)
+    trk.update('r', (45, 45, 65, 55), 2.0, 100, 100)
+    trk.update('r', (5, 45, 20, 55), 5.0, 100, 100)          # leaving @5
+    trk.update('r', (45, 45, 65, 55), 20.0, 100, 100)        # về inside @20
+    assert trk.get_phase('r') == 'inside'
+    trk.update('r', (5, 45, 20, 55), 40.0, 100, 100)         # leaving lại @40
+    # @65 = 25s kể từ 40 < 30 → chưa OUT (nếu cộng dồn từ @5 thì đã 60s)
+    assert trk.update('r', (5, 45, 20, 55), 65.0, 100, 100) is None
+    assert trk.get_phase('r') == 'leaving'
+    # @71 = 31s kể từ 40 >= 30 → OUT
+    assert trk.update('r', (5, 45, 20, 55), 71.0, 100, 100) == 'out'
+
+
+def test_grace_zero_keeps_legacy_immediate_out():
+    """grace=0 → hành vi cũ: chốt OUT ngay frame đầu overlap tụt."""
+    trk = BoundaryCrossingTracker(_cfg_grace(0.0))
+    trk.update('z', (25, 45, 35, 55), 1.0, 100, 100)
+    trk.update('z', (45, 45, 65, 55), 2.0, 100, 100)
+    assert trk.update('z', (10, 45, 28, 55), 3.0, 100, 100) == 'out'
+    assert trk.get_phase('z') == 'completed'
+    # grace tắt → mốc OUT chính là frame phát 'out' (ts=3.0).
+    assert trk.get_out_event_ts('z') == 3.0
+
+
 def test_seed_inside_when_track_first_appears_inside_zone_then_out():
     """Track sinh ra đã nằm trong berth_zone (đổi track-id giữa vùng, hoặc camera
     chỉ thấy cảnh RA sau handoff): không chạm line nào ở frame đầu nhưng overlap

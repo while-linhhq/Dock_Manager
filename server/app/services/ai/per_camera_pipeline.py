@@ -87,6 +87,7 @@ class PerCameraPipelineConfig:
     visual_conflict_threshold: float = 0.96
     ocr_confidence_threshold: float = 0.0
     track_dedup_iomin_threshold: float = 0.0
+    berth_out_grace_sec: float = 0.0
 
 
 class PerCameraPipeline(threading.Thread):
@@ -156,8 +157,8 @@ class PerCameraPipeline(threading.Thread):
             ocr_confidence_threshold=config.ocr_confidence_threshold,
         )
         self._boundary_lines_payload: dict | None = config.boundary_lines
-        bcfg = BoundaryConfig.from_dict(self._boundary_lines_payload)
-        self._boundary_tracker = BoundaryCrossingTracker(bcfg) if bcfg else None
+        self._berth_out_grace_sec = float(config.berth_out_grace_sec)
+        self._boundary_tracker = self._build_boundary_tracker(self._boundary_lines_payload)
         self._detection_settings_payload: dict | None = config.detection_settings
         self._det_min_bbox_width, self._det_min_bbox_height = parse_min_bbox_from_detection_settings(
             self._detection_settings_payload
@@ -222,10 +223,18 @@ class PerCameraPipeline(threading.Thread):
         with self._overlay_tracks_lock:
             return [track.copy_public() for track in self._overlay_tracks]
 
+    def _build_boundary_tracker(self, payload: dict | None) -> BoundaryCrossingTracker | None:
+        bcfg = BoundaryConfig.from_dict(payload)
+        if bcfg is None:
+            return None
+        # out_grace_sec là knob toàn cục (port_config), không nằm trong
+        # boundary_lines JSON per-camera → tiêm vào sau khi parse geometry.
+        bcfg.out_grace_sec = self._berth_out_grace_sec
+        return BoundaryCrossingTracker(bcfg)
+
     def update_boundary_lines(self, payload: dict | None) -> None:
         self._boundary_lines_payload = dict(payload) if isinstance(payload, dict) else None
-        bcfg = BoundaryConfig.from_dict(self._boundary_lines_payload)
-        self._boundary_tracker = BoundaryCrossingTracker(bcfg) if bcfg else None
+        self._boundary_tracker = self._build_boundary_tracker(self._boundary_lines_payload)
 
     def update_detection_settings(self, payload: dict | None) -> None:
         self._detection_settings_payload = payload
@@ -345,15 +354,25 @@ class PerCameraPipeline(threading.Thread):
                 )
                 if direction == 'in':
                     track.berth_in_ts = now_ts
+                    crossing_ts = now_ts
                 elif direction == 'out':
-                    track.berth_out_ts = now_ts
+                    # Mốc OUT là lúc tàu RỜI VÙNG THẬT (đầu grace), không phải
+                    # lúc grace hoàn tất — grace chỉ để chờ xác nhận, không cộng
+                    # vào thời gian neo đậu. Khi grace tắt, out_event_ts == now_ts.
+                    out_ts = self._boundary_tracker.get_out_event_ts(
+                        str(track.track_id)
+                    )
+                    crossing_ts = out_ts if out_ts is not None else now_ts
+                    track.berth_out_ts = crossing_ts
+                else:
+                    crossing_ts = now_ts
                 if direction:
                     boundary_crossings.append((str(track.track_id), direction))
                     self._reid_manager.report_boundary_crossing(
                         int(self.config.camera_id),
                         str(track.track_id),
                         direction,
-                        now_ts,
+                        crossing_ts,
                     )
                 phase = self._boundary_tracker.get_phase(str(track.track_id))
                 if phase == 'inside' and track.berth_in_ts is None:
