@@ -6,7 +6,10 @@ import { Input } from '../../../components/Input/Input';
 import { Modal } from '../../../components/Modal/Modal';
 import type { VesselTypeRead } from '../../../types/api.types';
 import type { InvoiceCreate, PaymentCreate } from '../services/revenueApi';
-import type { FeeFormValues } from '../revenue-schemas';
+import type {
+  MonthlyFeeFormInput,
+  MonthlyFeeFormValues,
+} from '../revenue-schemas';
 import {
   FEE_BILLING_UNIT_AMOUNT_LABELS,
   FEE_BILLING_UNIT_LABELS,
@@ -40,11 +43,11 @@ export type RevenueModalsProps = {
   paymentInvoice?: InvoiceRead | null;
   isFeeModalOpen: boolean;
   onCloseFee: () => void;
-  feeForm: UseFormReturn<FeeFormValues>;
-  onFeeSubmit: (data: FeeFormValues) => void | Promise<void>;
+  feeForm: UseFormReturn<MonthlyFeeFormInput, unknown, MonthlyFeeFormValues>;
+  onFeeSubmit: (data: MonthlyFeeFormValues) => void | Promise<void>;
   editingFeeId: string | number | null;
   vesselTypes: VesselTypeRead[];
-  feeUnit: FeeFormValues['unit'];
+  feeUnit: MonthlyFeeFormValues['unit'];
   isLoading: boolean;
 };
 
@@ -234,7 +237,7 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
               />
             </FeeField>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <FeeField label="Loại tàu">
+              <FeeField label="Loại tàu (áp cho tàu tháng)">
                 <select
                   {...feeForm.register('vessel_type_id')}
                   className={feeControlClass}
@@ -246,6 +249,11 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
                     </option>
                   ))}
                 </select>
+                {feeForm.formState.errors.vessel_type_id && (
+                  <p className="text-[10px] text-red-500 font-bold uppercase tracking-tighter mt-1">
+                    {feeForm.formState.errors.vessel_type_id.message}
+                  </p>
+                )}
               </FeeField>
               <FeeField label="Đơn vị phí">
                 <select {...feeForm.register('unit')} className={feeControlClass}>
@@ -307,19 +315,24 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
                 />
               </FeeField>
               <FeeField
-                label="Phạt ngoài giờ (₫)"
-                error={feeForm.formState.errors.outside_hours_penalty_amount?.message}
+                label="Phạt ngoài giờ (₫/giờ)"
+                error={feeForm.formState.errors.outside_hours_penalty_per_hour?.message}
               >
                 <input
                   type="number"
                   min={0}
                   step={1000}
                   placeholder="0"
+                  title="Tàu tháng: nhân đơn giá này với số giờ neo thực nằm ngoài khung cho phép."
                   className={feeMonoControlClass}
-                  {...feeForm.register('outside_hours_penalty_amount', { valueAsNumber: true })}
+                  {...feeForm.register('outside_hours_penalty_per_hour', { valueAsNumber: true })}
                 />
               </FeeField>
             </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-snug">
+              Tàu tháng không còn phạt cố định theo lượt. Ví dụ giờ cho phép 08:00–20:00, tàu neo
+              đến 21:00 → tính 1 giờ ngoài khung × đơn giá cấu hình.
+            </p>
             {(feeForm.formState.errors.berth_limit_count ||
               feeForm.formState.errors.berth_limit_unit ||
               feeForm.formState.errors.over_limit_penalty_amount) && (
@@ -329,6 +342,38 @@ export const RevenueModals: React.FC<RevenueModalsProps> = ({
                   feeForm.formState.errors.over_limit_penalty_amount?.message}
               </p>
             )}
+          </FeeSection>
+
+          <FeeSection title="Giới hạn thời gian mỗi lần neo">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <FeeField label="Thời gian tối đa (phút)">
+                <input
+                  type="number"
+                  min={1}
+                  placeholder="∞"
+                  title="Để trống = không giới hạn thời gian mỗi lần neo"
+                  className={feeMonoControlClass}
+                  {...feeForm.register('max_berth_duration_minutes', { valueAsNumber: true })}
+                />
+              </FeeField>
+              <FeeField
+                label="Phạt vượt thời gian (₫)"
+                error={feeForm.formState.errors.over_duration_penalty_amount?.message}
+              >
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  placeholder="0"
+                  className={feeMonoControlClass}
+                  {...feeForm.register('over_duration_penalty_amount', { valueAsNumber: true })}
+                />
+              </FeeField>
+            </div>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-snug">
+              Áp cho mỗi lượt neo: nếu thời gian một lần neo (berth-in → berth-out) vượt số phút
+              cho phép, hóa đơn tự cộng khoản phạt này.
+            </p>
           </FeeSection>
 
           <FeeSection title="Giờ neo đậu">

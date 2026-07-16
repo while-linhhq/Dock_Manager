@@ -4,6 +4,8 @@ import { useShipIdRulesStore } from '../store/shipIdRulesStore';
 import type { PatternCreate, PatternRead, PatternUpdate } from '../types/ship-id-rules.types';
 import { Button } from '../../../components/Button/Button';
 import { Modal } from '../../../components/Modal/Modal';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 function validateRegex(pattern: string): string | null {
   try {
@@ -114,7 +116,15 @@ export const PatternTable: React.FC = () => {
     await deletePattern(id);
   };
 
-  const sorted = [...patterns].sort((a, b) => b.priority - a.priority);
+  const byPriority = [...patterns].sort((a, b) => b.priority - a.priority);
+
+  const sortAccessors: SortAccessors<PatternRead> = {
+    priority: (p) => p.priority,
+    name: (p) => p.name,
+    pattern: (p) => p.pattern,
+    is_active: (p) => p.is_active,
+  };
+  const { sorted, sort, toggle } = useTableSort(byPriority, sortAccessors);
 
   return (
     <div className="space-y-3">
@@ -156,10 +166,18 @@ export const PatternTable: React.FC = () => {
         <table className="w-full text-xs">
           <thead className="bg-gray-50 dark:bg-white/5 text-gray-500 uppercase tracking-wider">
             <tr>
-              <th className="px-3 py-2 text-left">Priority</th>
-              <th className="px-3 py-2 text-left">Tên</th>
-              <th className="px-3 py-2 text-left">Pattern</th>
-              <th className="px-3 py-2 text-left">Trạng thái</th>
+              <SortableTh sortKey="priority" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Priority
+              </SortableTh>
+              <SortableTh sortKey="name" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Tên
+              </SortableTh>
+              <SortableTh sortKey="pattern" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Pattern
+              </SortableTh>
+              <SortableTh sortKey="is_active" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Trạng thái
+              </SortableTh>
               <th className="px-3 py-2 text-right">Hành động</th>
             </tr>
           </thead>

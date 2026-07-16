@@ -10,6 +10,8 @@ import {
 } from '../../revenue/components/revenue-invoice-display';
 import type { DiscountRequestStatus } from '../services/discountApprovalApi';
 import { DiscountRejectModal } from './DiscountRejectModal';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 const th = 'px-2.5 py-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap';
 const td = 'px-2.5 py-2 text-xs whitespace-nowrap align-middle';
@@ -33,6 +35,16 @@ export const DiscountApprovalSection: React.FC<DiscountApprovalSectionProps> = (
 }) => {
   const [busyId, setBusyId] = useState<string | number | null>(null);
   const [rejectTarget, setRejectTarget] = useState<InvoiceRead | null>(null);
+
+  // Sắp xếp client-side theo cột dữ liệu.
+  const sortAccessors: SortAccessors<InvoiceRead> = {
+    invoice_number: (inv) => inv.invoice_number ?? '',
+    vessel_ship_id: (inv) => inv.vessel_ship_id ?? '',
+    gross: (inv) => getInvoiceGrossAmount(inv),
+    requested: (inv) => Number(inv.discount_requested_amount ?? 0),
+    created_at: (inv) => inv.created_at ?? '',
+  };
+  const { sorted, sort, toggle } = useTableSort(requests, sortAccessors);
 
   const handleApprove = async (inv: InvoiceRead) => {
     setBusyId(inv.id);
@@ -88,11 +100,21 @@ export const DiscountApprovalSection: React.FC<DiscountApprovalSectionProps> = (
             <thead>
               <tr className={cn(dt.headRow, 'text-[11px] tracking-normal normal-case')}>
                 <th className={cn(th, 'w-10 text-center')}>#</th>
-                <th className={th}>Số HĐ</th>
-                <th className={th}>Mã tàu</th>
-                <th className={cn(th, 'text-right')}>Tổng trước giảm</th>
-                <th className={cn(th, 'text-right')}>Yêu cầu giảm</th>
-                <th className={th}>Ngày tạo HĐ</th>
+                <SortableTh sortKey="invoice_number" sort={sort} onSort={toggle} className={th}>
+                  Số HĐ
+                </SortableTh>
+                <SortableTh sortKey="vessel_ship_id" sort={sort} onSort={toggle} className={th}>
+                  Mã tàu
+                </SortableTh>
+                <SortableTh sortKey="gross" sort={sort} onSort={toggle} align="right" className={cn(th, 'text-right')}>
+                  Tổng trước giảm
+                </SortableTh>
+                <SortableTh sortKey="requested" sort={sort} onSort={toggle} align="right" className={cn(th, 'text-right')}>
+                  Yêu cầu giảm
+                </SortableTh>
+                <SortableTh sortKey="created_at" sort={sort} onSort={toggle} className={th}>
+                  Ngày tạo HĐ
+                </SortableTh>
                 {statusTab !== 'pending' ? <th className={th}>Người duyệt</th> : null}
                 {statusTab === 'rejected' ? <th className={th}>Lý do</th> : null}
                 {statusTab === 'pending' ? (
@@ -107,8 +129,8 @@ export const DiscountApprovalSection: React.FC<DiscountApprovalSectionProps> = (
                     <Loader2 className="w-7 h-7 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
-              ) : requests.length > 0 ? (
-                requests.map((inv, index) => {
+              ) : sorted.length > 0 ? (
+                sorted.map((inv, index) => {
                   const gross = getInvoiceGrossAmount(inv);
                   const requested = Number(inv.discount_requested_amount ?? 0);
                   const isBusy = busyId != null && String(busyId) === String(inv.id);

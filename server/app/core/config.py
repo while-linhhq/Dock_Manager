@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Bỏ qua track có thời gian neo đậu (berth_out-berth_in, fallback dwell
     # last_seen-first_seen) nhỏ hơn ngưỡng này (giây). 0 = tắt lọc.
     TRACK_MIN_BERTH_DURATION_SEC: float = 0.0
+    BERTH_MERGE_GAP_SEC: float = 1800.0
+    DETECTION_MERGE_WINDOW_HOURS: float = 2.0
+    BERTH_MERGE_SKIP_UNKNOWN: bool = True
     # Thời gian ân hạn (giây) trước khi chốt tín hiệu OUT: khi tàu vượt ra ngoài
     # vùng neo, OUT chỉ được xác nhận nếu tàu ở NGOÀI liên tục >= ngưỡng này.
     # Nếu tàu vào lại vùng trong thời gian ân hạn (đang căn góc/lùi neo) thì OUT
@@ -194,6 +197,9 @@ class Settings(BaseSettings):
     # Zalo Bot (unknown ship identity notifications)
     ZALO_BOT_TOKEN: str = ''
     ZALO_CHAT_ID: str = ''
+    # Bot cảnh báo nghiệp vụ riêng; chat ID phải thuộc bot này.
+    ZALO_ALERT_BOT_TOKEN: str = ''
+    ZALO_ALERT_CHAT_ID: str = ''
     ZALO_WEBHOOK_SECRET: str = ''
     ZALO_ENABLED: bool = False
     ZALO_PUBLIC_BASE_URL: str = ''

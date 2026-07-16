@@ -531,6 +531,16 @@ class CrossCameraReIdManager:
                         continue
                     if not self._is_camera_candidate(int(camera_id), identity):
                         continue
+                    # Seam-zone gate — SAME test the real overlap matcher uses.
+                    # Without it the visual overlay compared the incoming track's
+                    # embedding against ANY adjacent-camera identity regardless of
+                    # where the track sits in the frame, so a boat at the far edge
+                    # of the last camera showed "REID vis x/y ->#gid/<plate>"
+                    # naming a boat from the first camera it can never overlap.
+                    # Delegating to the matcher's own gate keeps overlay and match
+                    # logic from drifting apart (the recurring root cause).
+                    if not self._overlap_matcher._track_in_seam_zone(identity, track):
+                        continue
                     score = self._identity_similarity(identity, embedding)
                     if score > visual_best:
                         visual_best = score
@@ -672,6 +682,22 @@ class CrossCameraReIdManager:
         identity.first_seen_ts = min(identity.first_seen_ts or track.first_seen_ts, track.first_seen_ts)
         identity.last_seen_ts = max(identity.last_seen_ts, track.last_seen_ts)
         identity.last_track = track.copy_public()
+        # Propagate track-local berth_in vào identity. Một track có thể xác lập
+        # berth_in mà KHÔNG phát 'in' crossing — điển hình là track xuất hiện đã
+        # nằm trong berth_zone (seed-inside ở BoundaryCrossingTracker), và máy
+        # trạng thái CỐ TÌNH nén sự kiện 'in' để tránh berth_in giả trên camera
+        # handoff chỉ chứng kiến cảnh RA. Nếu không đồng bộ ở đây, identity.
+        # berth_in_ts kẹt None tới khi một 'in' crossing (có thể muộn hơn nhiều
+        # phút) mới nổ → hoặc lệch giờ IN, hoặc MẤT detection (berth_in None →
+        # chặn suy diễn berth_out → rớt ngưỡng min_berth). Lấy mốc SỚM NHẤT,
+        # đúng như first_seen. KHÔNG mở lại sau khi đã RA (reverse-motion guard):
+        # berth_out_ts đã set nghĩa là tàu đã đi, seed-inside lúc này là tàu lùi
+        # chạm lại vùng camera khác, không phải arrival mới.
+        track_berth_in = getattr(track, 'berth_in_ts', None)
+        if track_berth_in is not None and identity.berth_out_ts is None:
+            if identity.berth_in_ts is None or track_berth_in < identity.berth_in_ts:
+                identity.berth_in_ts = float(track_berth_in)
+                identity.berth_in_camera_id = camera_key
         if embedding is not None:
             self._append_diverse_embedding(identity, normalize_embedding(embedding))
         hsv = getattr(track, 'dominant_color_hsv', None)
@@ -682,12 +708,18 @@ class CrossCameraReIdManager:
         if vel is not None:
             identity.vx_history.append(float(vel[0]))
             identity.vx_history = identity.vx_history[-10:]
-        if track.ship_id or track.last_known_ship_id:
-            _append_ocr_history(
-                identity.ocr_history,
-                (track.ship_id or track.last_known_ship_id or '', 1.0),
-            )
-            identity.ship_id = self._best_ship_id(identity)
+        # Seed identity.ship_id from the track ONLY when the identity has no
+        # evidence of its own yet. Do NOT push this into ocr_history: track.ship_id
+        # is frequently just a reflection of identity.ship_id (propagated back at
+        # report_track_update:306 / update_track_metadata), so appending it as a
+        # conf=1.0 "vote" every frame stuffs the ballot — a single provisional guess
+        # accumulates hundreds of synthetic 1.0 votes and buries the real fractional
+        # OCR reads in _best_ship_id (self-reinforcing phantom identity; e.g. SG-8853
+        # winning 196×1.0 over the correct SG-9190). Genuine votes enter with their
+        # true confidence via report_ocr_result / report_track_removed.
+        track_ship_id = (track.ship_id or track.last_known_ship_id or '').strip().upper()
+        if track_ship_id and identity.ship_id is None and not identity.ocr_history:
+            identity.ship_id = track_ship_id
 
     def _match_existing_identity(
         self,

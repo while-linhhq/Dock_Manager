@@ -11,4 +11,6 @@ export const vesselSchema = z.object({
 export const vesselTypeSchema = z.object({
   type_name: z.string().min(1, 'Tên loại tàu là bắt buộc'),
   description: z.string().optional(),
+  // Danh sách id tàu (tháng) gán cho loại này. Gửi kèm khi tạo/sửa loại.
+  member_vessel_ids: z.array(z.number()).optional(),
 });

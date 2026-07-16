@@ -18,6 +18,7 @@ from app.models.detection import Detection
 from app.models.fee import FeeConfig
 from app.models.vessel import Vessel
 from app.repositories.fee_config_repository import fee_config_repo
+from app.services.fee_resolution_service import resolve_billable_fees
 from app.services.ship_id_utils import is_unknown_ship_id
 
 VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
@@ -306,9 +307,9 @@ def compute_invoice_over_berth_limit(db: Session, invoice) -> bool:
                     fees_from_items.append(fc_row)
 
     fees_to_check = _fees_with_berth_limits(fees_from_items)
-    if not fees_to_check and ctx.vessel_type_id is not None:
+    if not fees_to_check and ctx.vessel_id is not None:
         fees_to_check = _fees_with_berth_limits(
-            fee_config_repo.get_by_vessel_type(db, ctx.vessel_type_id),
+            resolve_billable_fees(db, ctx.vessel_id),
         )
 
     if not fees_to_check:
@@ -344,13 +345,13 @@ def compute_detection_over_berth_limit(db: Session, detection: Detection) -> boo
         vessel, vessel_id, ship_id = resolved
         vessel_type_id = vessel.vessel_type_id
 
-    if vessel_type_id is None:
+    if vessel_id is None:
         return False
 
     reference = _reference_dt(detection)
     event_time = detection.berth_in_time or detection.start_time or detection.created_at
     fees = _fees_with_berth_limits(
-        fee_config_repo.get_by_vessel_type(db, vessel_type_id),
+        resolve_billable_fees(db, vessel if vessel is not None else vessel_id),
     )
     if not fees:
         return False

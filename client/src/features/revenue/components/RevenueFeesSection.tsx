@@ -10,11 +10,15 @@ import {
 import type { FeeConfigRead, VesselTypeRead } from '../../../types/api.types';
 import { formatFeeConfigDisplay } from '../../../utils/fee-billing-unit';
 import { summarizeOperatingHours, operatingHoursFromApi } from '../types/fee-operating-hours';
-import { feeConfigVesselTypeLabel } from '../utils/revenue-fee-helpers';
+import { feeConfigVesselLabel, feeConfigVesselTypeLabel } from '../utils/revenue-fee-helpers';
 
 export type RevenueFeesSectionProps = {
   feeQ: string;
   setFeeQ: (v: string) => void;
+  /** Phạm vi phí đang xem: 'spot' = phí gắn mã tàu (tàu lẻ), 'monthly' = phí gắn loại tàu (tàu tháng). */
+  feeScope: 'spot' | 'monthly';
+  setFeeScope: (v: 'spot' | 'monthly') => void;
+  feeScopeCounts: { spot: number; monthly: number };
   feeTypeId: string;
   setFeeTypeId: (v: string) => void;
   feeActive: 'all' | 'on' | 'off';
@@ -39,6 +43,9 @@ export type RevenueFeesSectionProps = {
 export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
   feeQ,
   setFeeQ,
+  feeScope,
+  setFeeScope,
+  feeScopeCounts,
   feeTypeId,
   setFeeTypeId,
   feeActive,
@@ -59,36 +66,90 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
   onExportExcel,
   isExporting,
 }) => {
+  const scopeTabs: Array<{ key: 'spot' | 'monthly'; label: string; hint: string; count: number }> = [
+    {
+      key: 'spot',
+      label: 'Phí Tàu Lẻ',
+      hint: 'Phí gắn trực tiếp từng mã tàu',
+      count: feeScopeCounts.spot,
+    },
+    {
+      key: 'monthly',
+      label: 'Phí Loại Tàu Tháng',
+      hint: 'Phí gắn theo loại tàu',
+      count: feeScopeCounts.monthly,
+    },
+  ];
+
   return (
     <div className="space-y-6">
+      {/* 2 menu chọn phạm vi phí: tàu lẻ (gắn mã tàu) vs loại tàu tháng (gắn loại tàu). */}
+      <div className="inline-flex rounded-2xl border border-gray-200 bg-gray-50 p-1 dark:border-white/10 dark:bg-white/5">
+        {scopeTabs.map((tab) => {
+          const active = feeScope === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => {
+                setFeeScope(tab.key);
+                if (tab.key === 'spot') setFeeTypeId('');
+              }}
+              title={tab.hint}
+              className={cn(
+                'flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold uppercase tracking-widest transition-all',
+                active
+                  ? 'bg-white text-blue-600 shadow-sm dark:bg-[#1a1a1e] dark:text-blue-400'
+                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200',
+              )}
+            >
+              {tab.label}
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[10px] font-mono',
+                  active
+                    ? 'bg-blue-600/10 text-blue-600 dark:text-blue-400'
+                    : 'bg-gray-200 text-gray-500 dark:bg-white/10 dark:text-gray-400',
+                )}
+              >
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       <TableFilterPanel
         title="Bộ lọc cấu hình phí"
         onReset={resetFeeFilters}
         activeCount={feeFilterCount}
       >
-        <FilterField label="Tên phí / loại tàu (chữ)">
+        <FilterField label={feeScope === 'spot' ? 'Tên phí / mã tàu (chữ)' : 'Tên phí (chữ)'}>
           <input
             type="text"
             value={feeQ}
             onChange={(e) => setFeeQ(e.target.value)}
-            placeholder="Lọc theo tên hoặc nhãn loại tàu..."
+            placeholder="Lọc theo tên phí hoặc mã tàu..."
             className={filterControlClass}
           />
         </FilterField>
-        <FilterField label="Loại tàu (ID)">
-          <select
-            value={feeTypeId}
-            onChange={(e) => setFeeTypeId(e.target.value)}
-            className={filterControlClass}
-          >
-            <option value="">Tất cả</option>
-            {vesselTypes.map((t) => (
-              <option key={t.id} value={String(t.id)}>
-                {t.type_name}
-              </option>
-            ))}
-          </select>
-        </FilterField>
+        {/* Lọc theo loại tàu chỉ có nghĩa với phí loại tàu tháng — phí tàu lẻ không gắn loại. */}
+        {feeScope === 'monthly' ? (
+          <FilterField label="Loại tàu">
+            <select
+              value={feeTypeId}
+              onChange={(e) => setFeeTypeId(e.target.value)}
+              className={filterControlClass}
+            >
+              <option value="">Tất cả</option>
+              {vesselTypes.map((t) => (
+                <option key={t.id} value={String(t.id)}>
+                  {t.type_name}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+        ) : null}
         <FilterField label="Áp dụng">
           <select
             value={feeActive}
@@ -145,7 +206,7 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-widest">
-            Bảng Giá Cước Tàu
+            {feeScope === 'spot' ? 'Bảng Giá Phí Tàu Lẻ' : 'Bảng Giá Phí Loại Tàu Tháng'}
           </h3>
           <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 max-w-xl leading-relaxed">
             <span className="font-bold text-gray-700 dark:text-gray-300">Tạm dừng áp dụng:</span>{' '}
@@ -154,14 +215,20 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
             hẳn khỏi hệ thống.
           </p>
         </div>
-        <Button
-          type="button"
-          onClick={onOpenAddFee}
-          className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20 shrink-0 self-start sm:self-center"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Thêm Cấu Hình
-        </Button>
+        {feeScope === 'monthly' ? (
+          <Button
+            type="button"
+            onClick={onOpenAddFee}
+            className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20 shrink-0 self-start sm:self-center"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Thêm Cấu Hình
+          </Button>
+        ) : (
+          <p className="text-xs text-gray-500 dark:text-gray-400 sm:text-right">
+            Cấu hình phí tàu lẻ quản lý trong chi tiết từng tàu.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -195,7 +262,9 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                   {fee.fee_name}
                 </h4>
                 <p className="text-[10px] text-gray-500 uppercase tracking-widest">
-                  Loại tàu: {feeConfigVesselTypeLabel(fee, vesselTypes)}
+                  {fee.vessel_id != null
+                    ? `Mã tàu: ${feeConfigVesselLabel(fee)}`
+                    : `Loại tàu: ${feeConfigVesselTypeLabel(fee, vesselTypes)}`}
                 </p>
                 {fee.berth_limit_count != null && fee.berth_limit_count > 0 && fee.berth_limit_unit ? (
                   <p className="text-[10px] text-orange-600 dark:text-orange-400 uppercase tracking-widest mt-1">
@@ -213,10 +282,32 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                     Giờ neo: {summarizeOperatingHours(operatingHoursFromApi(fee.operating_hours))}
                   </p>
                 ) : null}
-                {fee.outside_hours_penalty_amount != null &&
+                {fee.vessel_id != null &&
+                fee.outside_hours_penalty_amount != null &&
                 Number(fee.outside_hours_penalty_amount) > 0 ? (
                   <p className="text-[10px] text-violet-600 dark:text-violet-400 tracking-widest mt-1">
                     Phạt ngoài giờ: {Number(fee.outside_hours_penalty_amount).toLocaleString('vi-VN')} ₫/lượt
+                  </p>
+                ) : null}
+                {fee.vessel_id == null &&
+                Number(
+                  fee.outside_hours_penalty_per_hour ?? fee.outside_hours_penalty_amount ?? 0,
+                ) > 0 ? (
+                  <p className="text-[10px] text-fuchsia-600 dark:text-fuchsia-400 tracking-widest mt-1">
+                    Phạt ngoài giờ: {Number(
+                      fee.outside_hours_penalty_per_hour ?? fee.outside_hours_penalty_amount,
+                    ).toLocaleString('vi-VN')} ₫/giờ ngoài khung
+                  </p>
+                ) : null}
+                {fee.max_berth_duration_minutes != null && fee.max_berth_duration_minutes > 0 ? (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 uppercase tracking-widest mt-1">
+                    Giới hạn thời gian: {fee.max_berth_duration_minutes} phút/lần neo
+                  </p>
+                ) : null}
+                {fee.over_duration_penalty_amount != null &&
+                Number(fee.over_duration_penalty_amount) > 0 ? (
+                  <p className="text-[10px] text-rose-600 dark:text-rose-400 tracking-widest mt-1">
+                    Phạt vượt thời gian: {Number(fee.over_duration_penalty_amount).toLocaleString('vi-VN')} ₫/lượt
                   </p>
                 ) : null}
               </div>
@@ -228,18 +319,20 @@ export const RevenueFeesSection: React.FC<RevenueFeesSectionProps> = ({
                   </p>
                 </div>
                 <div className="flex items-end gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => onEditFee(fee)}
-                    className={cn(
-                      'p-2 rounded-lg transition-colors',
-                      'text-gray-500 hover:text-blue-600 hover:bg-blue-50 dark:text-gray-400 dark:hover:text-blue-400 dark:hover:bg-blue-500/10',
-                    )}
-                    title="Chỉnh sửa"
-                    aria-label="Chỉnh sửa"
-                  >
-                    <Pencil className="w-4 h-4" />
-                  </button>
+                  {feeScope === 'monthly' ? (
+                    <button
+                      type="button"
+                      onClick={() => onEditFee(fee)}
+                      className={cn(
+                        'p-2 rounded-lg transition-colors',
+                        'text-gray-500 hover:text-blue-600 hover:bg-blue-50 dark:text-gray-400 dark:hover:text-blue-400 dark:hover:bg-blue-500/10',
+                      )}
+                      title="Chỉnh sửa"
+                      aria-label="Chỉnh sửa"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => onDeleteFee(fee)}

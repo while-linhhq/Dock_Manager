@@ -19,6 +19,10 @@ class Detection(Base):
     # suy diễn từ frame cuối cùng còn thấy tàu (OUT crossing bị mất do track đứt).
     # NULL với các detection cũ trước khi thêm cột này.
     berth_out_source = Column(String(20), nullable=True)
+    # Nguồn của berth_in_time: 'crossing' = tàu cắt line IN thật; 'inferred' =
+    # suy diễn từ first_seen (track sinh ra đã nằm trong zone / handoff trễ, IN
+    # crossing không phát). NULL với các detection cũ trước khi thêm cột này.
+    berth_in_source = Column(String(20), nullable=True)
     video_path = Column(Text, nullable=True)
     audit_image_path = Column(Text, nullable=True)
     ocr_results = Column(JSONB, nullable=True)

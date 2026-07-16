@@ -7,7 +7,8 @@ import { StatisticsLogsTable } from '../components/StatisticsLogsTable';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
 
 export const StatisticsView: React.FC = () => {
-  const { logs, isLoading, fetchLogs, exportLogs } = useStatisticsStore();
+  const { logs, outsideSummary, isLoading, fetchLogs, fetchOutsideSummary, exportLogs } =
+    useStatisticsStore();
   const [shipId, setShipId] = useState('');
   const [vesselTypeFilter, setVesselTypeFilter] = useState('');
   const [trackQ, setTrackQ] = useState('');
@@ -18,7 +19,17 @@ export const StatisticsView: React.FC = () => {
 
   useEffect(() => {
     fetchLogs(0, 500);
-  }, [fetchLogs]);
+    fetchOutsideSummary();
+  }, [fetchLogs, fetchOutsideSummary]);
+
+  // Lookup 'SHIP_ID|YYYY-MM-DD' → số lượt neo ngoài giờ trong ngày (VN).
+  const outsideCountByShipDate = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of outsideSummary) {
+      map.set(`${row.ship_id.trim().toUpperCase()}|${row.date}`, row.count);
+    }
+    return map;
+  }, [outsideSummary]);
 
   const displayLogs = useMemo(() => {
     return logs.filter((log) => {
@@ -94,7 +105,12 @@ export const StatisticsView: React.FC = () => {
         onExport={() => exportLogs(dateTo || dateFrom || undefined, shipId.trim() || undefined)}
       />
 
-      <StatisticsLogsTable isLoading={isLoading} logs={logs} displayLogs={displayLogs} />
+      <StatisticsLogsTable
+        isLoading={isLoading}
+        logs={logs}
+        displayLogs={displayLogs}
+        outsideCountByShipDate={outsideCountByShipDate}
+      />
     </div>
   );
 };

@@ -1,5 +1,15 @@
-import React, { useMemo, useState } from 'react';
-import { CheckCircle2, Loader2, RefreshCw, Trash2, X, XCircle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  X,
+  XCircle,
+} from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
 import { cn } from '../../../utils/cn';
@@ -12,12 +22,14 @@ import {
   getDetectionShipLabel,
 } from '../../../utils/detection-display';
 import type { DetectionMediaRead, DetectionRead, VesselRead, VesselTypeRead } from '../../../types/api.types';
-import { portApi } from '../services/portApi';
+import { portApi, type DetectionUpdate } from '../services/portApi';
 import {
   FilterField,
   TableFilterPanel,
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 export type PortDetectionsSectionProps = {
   detQ: string;
@@ -44,6 +56,7 @@ export type PortDetectionsSectionProps = {
   vesselTypes: VesselTypeRead[];
   onVerify: (id: string, data: { is_accepted: boolean }) => void;
   onDeleteDetection: (id: string) => void;
+  onUpdateDetection: (id: string, data: DetectionUpdate) => Promise<void>;
 };
 
 export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
@@ -71,12 +84,76 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   vesselTypes,
   onVerify,
   onDeleteDetection,
+  onUpdateDetection,
 }) => {
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [editDet, setEditDet] = useState<DetectionRead | null>(null);
+  const [editForm, setEditForm] = useState<{
+    vessel_id: string;
+    start_time: string;
+    end_time: string;
+    berth_in_time: string;
+    berth_out_time: string;
+    confidence: string;
+  }>({
+    vessel_id: '',
+    start_time: '',
+    end_time: '',
+    berth_in_time: '',
+    berth_out_time: '',
+    confidence: '',
+  });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareShipLabel, setCompareShipLabel] = useState<string>('—');
   const [compareMedia, setCompareMedia] = useState<DetectionMediaRead[]>([]);
   const [compareLoading, setCompareLoading] = useState(false);
+
+  const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [page, setPage] = useState(1);
+
+  const totalRows = filteredDetections.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+
+  // Clamp/reset the current page whenever the filtered set or page size changes.
+  useEffect(() => {
+    // Pagination state must follow filtered dataset bounds.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPage((prev) => Math.min(Math.max(1, prev), totalPages));
+  }, [totalPages]);
+
+  useEffect(() => {
+    // Filter/page-size changes must return table to first page.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPage(1);
+  }, [detFilterCount, pageSize, totalRows]);
+
+  // Sắp xếp client-side TOÀN BỘ tập đã lọc rồi mới phân trang → không phá phân trang.
+  const sortAccessors: SortAccessors<DetectionRead> = {
+    time: (d) => {
+      const iso = getDetectionDisplayTimeIso(d);
+      return iso ? new Date(iso) : null;
+    },
+    ship_id: (d) => getDetectionShipLabel(d),
+    confidence: (d) => Number(d.confidence ?? 0),
+    camera: (d) => d.berth_in_camera_name ?? '',
+    status: (d) => (d.is_accepted === true ? 'Đã Xác Nhận' : 'Chờ Duyệt'),
+  };
+  const { sorted: sortedDetections, sort, toggle } = useTableSort(
+    filteredDetections,
+    sortAccessors,
+  );
+
+  const pageStartIndex = (page - 1) * pageSize;
+  const pagedDetections = useMemo(
+    () => sortedDetections.slice(pageStartIndex, pageStartIndex + pageSize),
+    [sortedDetections, pageStartIndex, pageSize],
+  );
+
+  const rangeFrom = totalRows === 0 ? 0 : pageStartIndex + 1;
+  const rangeTo = Math.min(pageStartIndex + pageSize, totalRows);
 
   const mediaOrigin = useMemo(() => {
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
@@ -158,6 +235,95 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
       setCompareMedia([]);
     } finally {
       setCompareLoading(false);
+    }
+  };
+
+  // ISO (UTC) -> giá trị input datetime-local (giờ địa phương, không có 'Z').
+  const isoToLocalInput = (iso?: string | null): string => {
+    if (!iso) {
+      return '';
+    }
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) {
+      return '';
+    }
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  // input datetime-local (giờ địa phương) -> ISO UTC để gửi backend.
+  const localInputToIso = (value: string): string | null => {
+    const v = (value || '').trim();
+    if (!v) {
+      return null;
+    }
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) {
+      return null;
+    }
+    return d.toISOString();
+  };
+
+  const openEditModal = (det: DetectionRead) => {
+    setEditError(null);
+    setEditDet(det);
+    setEditForm({
+      vessel_id: det.vessel_id != null ? String(det.vessel_id) : '',
+      start_time: isoToLocalInput(det.start_time),
+      end_time: isoToLocalInput(det.end_time),
+      berth_in_time: isoToLocalInput(det.berth_in_time),
+      berth_out_time: isoToLocalInput(det.berth_out_time),
+      confidence:
+        det.confidence != null ? String((Number(det.confidence) * 100).toFixed(1)) : '',
+    });
+  };
+
+  const closeEditModal = () => {
+    setEditDet(null);
+    setEditError(null);
+    setEditSaving(false);
+  };
+
+  const submitEdit = async () => {
+    if (!editDet) {
+      return;
+    }
+    setEditError(null);
+
+    const payload: DetectionUpdate = {
+      vessel_id: editForm.vessel_id ? Number(editForm.vessel_id) : null,
+      start_time: localInputToIso(editForm.start_time),
+      end_time: localInputToIso(editForm.end_time),
+      berth_in_time: localInputToIso(editForm.berth_in_time),
+      berth_out_time: localInputToIso(editForm.berth_out_time),
+    };
+
+    const confTrim = editForm.confidence.trim();
+    if (confTrim) {
+      const pct = Number(confTrim);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        setEditError('Độ tin cậy phải trong khoảng 0–100.');
+        return;
+      }
+      payload.confidence = pct / 100;
+    }
+
+    if (
+      payload.start_time &&
+      payload.end_time &&
+      new Date(payload.end_time).getTime() < new Date(payload.start_time).getTime()
+    ) {
+      setEditError('Thời gian kết thúc phải sau thời gian bắt đầu.');
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      await onUpdateDetection(editDet.id, payload);
+      closeEditModal();
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Cập nhật thất bại.');
+      setEditSaving(false);
     }
   };
 
@@ -258,12 +424,22 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={dt.headRow}>
-                <th className={dt.pad}>Thời Gian</th>
+                <SortableTh sortKey="time" sort={sort} onSort={toggle}>
+                  Thời Gian
+                </SortableTh>
                 <th className={dt.pad}>Thời Lượng Neo Đậu</th>
-                <th className={dt.pad}>Mã Tàu</th>
-                <th className={dt.pad}>Độ Tin Cậy</th>
-                <th className={dt.pad}>Camera IN / OUT</th>
-                <th className={dt.pad}>Trạng Thái</th>
+                <SortableTh sortKey="ship_id" sort={sort} onSort={toggle}>
+                  Mã Tàu
+                </SortableTh>
+                <SortableTh sortKey="confidence" sort={sort} onSort={toggle}>
+                  Độ Tin Cậy
+                </SortableTh>
+                <SortableTh sortKey="camera" sort={sort} onSort={toggle}>
+                  Camera IN / OUT
+                </SortableTh>
+                <SortableTh sortKey="status" sort={sort} onSort={toggle}>
+                  Trạng Thái
+                </SortableTh>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
               </tr>
             </thead>
@@ -274,8 +450,8 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                     <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
-              ) : filteredDetections.length > 0 ? (
-                filteredDetections.map((det) => (
+              ) : pagedDetections.length > 0 ? (
+                pagedDetections.map((det) => (
                   <tr
                     key={det.id}
                     className="hover:bg-gray-50 dark:hover:bg-white/2 transition-colors"
@@ -345,6 +521,14 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                       >
                         Đối chiếu
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(det)}
+                        title="Chỉnh sửa"
+                        className="p-1.5 text-indigo-500 hover:bg-indigo-500/10 rounded-lg transition-all"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
                       {det.is_accepted !== true && (
                         <>
                           <button
@@ -392,6 +576,54 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
             </tbody>
           </table>
         </div>
+
+        <div className="flex flex-col gap-3 border-t border-gray-100 dark:border-white/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            <span>
+              {totalRows === 0
+                ? 'Không có bản ghi'
+                : `Hiển thị ${rangeFrom}–${rangeTo} / ${totalRows} bản ghi`}
+            </span>
+            <label className="flex items-center gap-1.5 normal-case">
+              <span>Mỗi trang</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="rounded-md border border-gray-200 bg-transparent px-1.5 py-1 text-xs dark:border-white/10"
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Trước
+            </button>
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Trang {page} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              Sau
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {previewImageUrl && (
@@ -416,6 +648,136 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
               alt="Ảnh xác minh nhận diện tàu"
               className="max-h-[78vh] w-full rounded-xl object-contain"
             />
+          </div>
+        </div>
+      )}
+
+      {editDet && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 lg:pl-[calc(256px+1rem)]">
+          <button
+            type="button"
+            className="absolute inset-0"
+            aria-label="Đóng chỉnh sửa"
+            onClick={closeEditModal}
+          />
+          <div className="relative z-10 w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-[#121214]">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wider text-gray-800 dark:text-white">
+                  Chỉnh sửa nhận diện
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Tàu: {getDetectionShipLabel(editDet)} · Track: {editDet.track_id ?? '—'}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-full bg-gray-100 p-2 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-white dark:hover:bg-white/20"
+                onClick={closeEditModal}
+                aria-label="Đóng"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                Mã tàu (vessel)
+                <select
+                  value={editForm.vessel_id}
+                  onChange={(e) => setEditForm((f) => ({ ...f, vessel_id: e.target.value }))}
+                  className={cn(filterControlClass, 'mt-1 normal-case')}
+                >
+                  <option value="">— Không gán —</option>
+                  {vessels.map((vessel) => (
+                    <option key={vessel.id} value={String(vessel.id)}>
+                      {vessel.ship_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                  Bắt đầu
+                  <input
+                    type="datetime-local"
+                    value={editForm.start_time}
+                    onChange={(e) => setEditForm((f) => ({ ...f, start_time: e.target.value }))}
+                    className={cn(filterControlClass, 'mt-1 normal-case')}
+                  />
+                </label>
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                  Kết thúc
+                  <input
+                    type="datetime-local"
+                    value={editForm.end_time}
+                    onChange={(e) => setEditForm((f) => ({ ...f, end_time: e.target.value }))}
+                    className={cn(filterControlClass, 'mt-1 normal-case')}
+                  />
+                </label>
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                  Vào vùng (berth in)
+                  <input
+                    type="datetime-local"
+                    value={editForm.berth_in_time}
+                    onChange={(e) => setEditForm((f) => ({ ...f, berth_in_time: e.target.value }))}
+                    className={cn(filterControlClass, 'mt-1 normal-case')}
+                  />
+                </label>
+                <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                  Rời vùng (berth out)
+                  <input
+                    type="datetime-local"
+                    value={editForm.berth_out_time}
+                    onChange={(e) => setEditForm((f) => ({ ...f, berth_out_time: e.target.value }))}
+                    className={cn(filterControlClass, 'mt-1 normal-case')}
+                  />
+                </label>
+              </div>
+
+              <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
+                Độ tin cậy (%)
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.1"
+                  value={editForm.confidence}
+                  onChange={(e) => setEditForm((f) => ({ ...f, confidence: e.target.value }))}
+                  placeholder="VD: 87.5"
+                  className={cn(filterControlClass, 'mt-1 normal-case')}
+                />
+              </label>
+
+              <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] normal-case text-amber-600 dark:text-amber-400">
+                Lưu thay đổi sẽ tự động tính lại hóa đơn AI của nhận diện này (trừ khi hóa đơn đã thanh toán).
+              </p>
+
+              {editError && (
+                <p className="text-[12px] normal-case text-red-500">{editError}</p>
+              )}
+            </div>
+
+            <div className="mt-5 flex gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={closeEditModal}
+                className="flex-1"
+                disabled={editSaving}
+              >
+                Hủy
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void submitEdit()}
+                disabled={editSaving}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                {editSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Lưu & Tính Lại Hóa Đơn'}
+              </Button>
+            </div>
           </div>
         </div>
       )}

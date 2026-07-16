@@ -57,6 +57,7 @@ def persist_harness(monkeypatch):
     monkeypatch.setattr('app.services.pipeline_service.port_log_repo.get_logs_by_date', MagicMock(return_value=[]))
     monkeypatch.setattr('app.services.pipeline_service.port_log_repo.create', MagicMock(return_value=None))
     monkeypatch.setattr('app.services.detection_invoice_service.ensure_ai_invoice_for_detection', MagicMock(return_value=None), raising=False)
+    monkeypatch.setattr('app.services.registry_expiry_alert_service.schedule_berthing_alerts', MagicMock(return_value=None), raising=False)
 
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = det

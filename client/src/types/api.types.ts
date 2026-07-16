@@ -30,19 +30,28 @@ export type ApplicableFeeRead = {
   unit?: string | null;
 }
 
+/** Phân loại cứng của mã tàu: tàu lẻ (phí per-tàu) | tàu tháng (phí per-loại) | chưa phân loại (từ nhận diện). */
+export type VesselClassification = 'spot' | 'monthly' | 'unclassified';
+
 export type VesselRead = {
   id: string | number;
   ship_id: string;
   name?: string | null;
+  /** Phân loại cứng — quyết định luồng tính phí. */
+  classification: VesselClassification;
   vessel_type_id?: string | number | null;
   /** Backend field */
   owner?: string | null;
   /** Legacy / form alias */
   owner_info?: string | null;
   registration_number?: string | null;
+  /** Chiều dài tàu (mét) */
+  length_m?: number | string | null;
+  /** Ngày hết hạn đăng kiểm (ISO date) */
+  registry_expiry?: string | null;
   is_active: boolean;
   vessel_type?: VesselTypeRead;
-  /** First active fee config for this vessel's type */
+  /** First active fee config bound directly to this vessel */
   applicable_fee?: ApplicableFeeRead | null;
   last_seen?: string | null;
   created_at?: string;
@@ -153,6 +162,8 @@ export type FeeOperatingHours = Partial<
 export type FeeConfigRead = {
   id: number;
   vessel_type_id?: number | null;
+  /** Fee giờ gắn trực tiếp mã tàu */
+  vessel_id?: number | null;
   fee_name: string;
   base_fee: number | string;
   unit?: string | null;
@@ -163,10 +174,18 @@ export type FeeConfigRead = {
   berth_limit_unit?: 'day' | 'month' | null;
   over_limit_penalty_amount?: number | string | null;
   outside_hours_penalty_amount?: number | string | null;
+  /** Phạt neo ngoài giờ TÍNH THEO GIỜ (₫/giờ) — chỉ áp cho tàu tháng */
+  outside_hours_penalty_per_hour?: number | string | null;
+  /** Giới hạn thời gian cho MỘT lần neo đậu (phút) */
+  max_berth_duration_minutes?: number | null;
+  /** Phí phạt khi một lần neo vượt thời gian cho phép */
+  over_duration_penalty_amount?: number | string | null;
   operating_hours?: FeeOperatingHours | null;
   created_at: string;
   updated_at: string;
   vessel_type?: VesselTypeRead;
+  /** Nested vessel khi fee gắn theo mã tàu */
+  vessel?: { id: number; ship_id: string; name?: string | null } | null;
 }
 
 export type PaymentRead = {

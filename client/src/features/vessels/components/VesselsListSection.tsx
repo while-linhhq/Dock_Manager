@@ -9,6 +9,8 @@ import {
   TableFilterPanel,
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 import { formatApplicableFee, resolveVesselTypeName } from '../utils/vessel-display-helpers';
 
 export type VesselsListSectionProps = {
@@ -24,6 +26,8 @@ export type VesselsListSectionProps = {
   setVesselDateTo: (v: string) => void;
   resetVesselFilters: () => void;
   vesselFilterCount: number;
+  /** Tab phân loại đang mở — quyết định cột hiển thị (spot bỏ Loại Tàu, thêm STT). */
+  activeTab: 'spot' | 'monthly' | 'unclassified';
   onOpenAddVessel: () => void;
   vesselTypes: VesselTypeRead[];
   vessels: VesselRead[];
@@ -47,6 +51,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
   setVesselDateTo,
   resetVesselFilters,
   vesselFilterCount,
+  activeTab,
   onOpenAddVessel,
   vesselTypes,
   vessels,
@@ -56,6 +61,24 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
   onDeleteVessel,
   onOpenUploadModal,
 }) => {
+  // Tàu lẻ gắn phí per-tàu, không dùng loại tàu → ẩn cột Loại Tàu.
+  const isSpot = activeTab === 'spot';
+  // STT hiển thị ở tab Tàu Lẻ và Tàu Tháng (danh sách cấu hình cố định).
+  const showIndex = activeTab === 'spot' || activeTab === 'monthly';
+  // Số cột thực tế: 8 cột gốc (có Loại Tàu) +STT nếu bật, -Loại Tàu nếu spot.
+  const colCount = 8 + (showIndex ? 1 : 0) - (isSpot ? 1 : 0);
+
+  // Sắp xếp client-side theo cột. STT đánh số theo thứ tự SAU khi đã sort.
+  const sortAccessors: SortAccessors<VesselRead> = {
+    ship_id: (v) => v.ship_id,
+    name: (v) => v.name ?? '',
+    vessel_type: (v) => resolveVesselTypeName(v, vesselTypes),
+    visual_reference_count: (v) => v.visual_reference_count ?? 0,
+    owner: (v) => v.owner ?? v.owner_info ?? '',
+    is_active: (v) => v.is_active,
+  };
+  const { sorted: sortedVessels, sort, toggle } = useTableSort(filteredVessels, sortAccessors);
+
   return (
     <div className="space-y-6">
       <TableFilterPanel onReset={resetVesselFilters} activeCount={vesselFilterCount}>
@@ -129,36 +152,58 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={dt.headRow}>
-                <th className={dt.pad}>Mã Tàu (Ship ID)</th>
-                <th className={dt.pad}>Tên Tàu</th>
-                <th className={dt.pad}>Loại Tàu</th>
-                <th className={dt.pad}>Ảnh Mẫu</th>
+                {showIndex && <th className={cn(dt.pad, 'w-12 text-center')}>STT</th>}
+                <SortableTh sortKey="ship_id" sort={sort} onSort={toggle}>
+                  Mã Tàu
+                </SortableTh>
+                <SortableTh sortKey="name" sort={sort} onSort={toggle}>
+                  Tên Tàu
+                </SortableTh>
+                {!isSpot && (
+                  <SortableTh sortKey="vessel_type" sort={sort} onSort={toggle}>
+                    Loại Tàu
+                  </SortableTh>
+                )}
+                <SortableTh sortKey="visual_reference_count" sort={sort} onSort={toggle}>
+                  Ảnh Mẫu
+                </SortableTh>
                 <th className={dt.pad}>Chi Phí Theo Loại (tham chiếu)</th>
-                <th className={dt.pad}>Chủ Tàu</th>
-                <th className={dt.pad}>Trạng Thái</th>
+                <SortableTh sortKey="owner" sort={sort} onSort={toggle}>
+                  Chủ Tàu
+                </SortableTh>
+                <SortableTh sortKey="is_active" sort={sort} onSort={toggle}>
+                  Trạng Thái
+                </SortableTh>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-white/5">
               {isLoading && vessels.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className={cn(dt.pad, 'py-12 text-center')}>
+                  <td colSpan={colCount} className={cn(dt.pad, 'py-12 text-center')}>
                     <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
-              ) : filteredVessels.length > 0 ? (
-                filteredVessels.map((v) => (
+              ) : sortedVessels.length > 0 ? (
+                sortedVessels.map((v, idx) => (
                   <tr
                     key={v.id}
                     className="hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-colors"
                   >
+                    {showIndex && (
+                      <td className={cn(dt.pad, dt.mono, 'text-center text-gray-500')}>
+                        {idx + 1}
+                      </td>
+                    )}
                     <td className={cn(dt.pad, dt.monoAccent)}>{v.ship_id}</td>
                     <td className={cn(dt.pad, dt.body, 'font-bold uppercase')}>
                       {v.name || '—'}
                     </td>
-                    <td className={cn(dt.pad, dt.meta)}>
-                      {resolveVesselTypeName(v, vesselTypes)}
-                    </td>
+                    {!isSpot && (
+                      <td className={cn(dt.pad, dt.meta)}>
+                        {resolveVesselTypeName(v, vesselTypes)}
+                      </td>
+                    )}
                     <td className={cn(dt.pad, dt.mono)}>
                       {typeof v.visual_reference_count === 'number' ? v.visual_reference_count : 0}
                     </td>
@@ -234,7 +279,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
               ) : (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={colCount}
                     className={cn(
                       dt.pad,
                       'py-12 text-center font-mono uppercase tracking-wide',

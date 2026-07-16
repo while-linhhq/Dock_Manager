@@ -82,6 +82,37 @@ class DetectionRepository:
         db.refresh(db_obj)
         return db_obj
 
+    def update_fields(
+        self,
+        db: Session,
+        detection_id: int,
+        data: dict,
+        *,
+        commit: bool = True,
+    ) -> Optional[Detection]:
+        """Ghi field được phép sửa; caller có thể giữ transaction mở."""
+        db_obj = self.get(db, detection_id)
+        if not db_obj:
+            return None
+        editable = {
+            'vessel_id',
+            'track_id',
+            'start_time',
+            'end_time',
+            'berth_in_time',
+            'berth_out_time',
+            'confidence',
+        }
+        for key, value in data.items():
+            if key in editable:
+                setattr(db_obj, key, value)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        db.refresh(db_obj)
+        return self.get(db, detection_id)
+
     def delete(self, db: Session, detection_id: int) -> bool:
         db_obj = self.get(db, detection_id)
         if not db_obj:
@@ -97,12 +128,12 @@ class DetectionRepository:
         berth_in: datetime,
         berth_out: datetime,
         exclude_id: int,
-        window_hours: int = 2,
+        window_hours: float = 2.0,
     ) -> List[Detection]:
         from datetime import timedelta
 
-        earliest = berth_in - timedelta(hours=window_hours)
-        latest = berth_out + timedelta(hours=window_hours)
+        earliest = berth_in - timedelta(hours=float(window_hours))
+        latest = berth_out + timedelta(hours=float(window_hours))
         # Candidate phải có berth_in; berth_out có thể NULL (track mất giữa
         # chừng) — absorb_contained dùng end_time fallback cho duration.
         return (

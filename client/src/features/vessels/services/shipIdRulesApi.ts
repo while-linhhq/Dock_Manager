@@ -8,6 +8,9 @@ import type {
   PatternCreate,
   PatternRead,
   PatternUpdate,
+  PrefixConvertCreate,
+  PrefixConvertRead,
+  PrefixConvertUpdate,
 } from '../types/ship-id-rules.types';
 
 const BASE = '/ship-id-rules';
@@ -31,6 +34,13 @@ export const shipIdRulesApi = {
   updateConvertMap: (id: number, data: ConvertMapUpdate) =>
     httpClient.put<ConvertMapRead>(`${BASE}/convert-map/${id}`, data),
   deleteConvertMap: (id: number) => httpClient.delete(`${BASE}/convert-map/${id}`),
+
+  getPrefixConvert: () => httpClient.get<PrefixConvertRead[]>(`${BASE}/prefix-convert`),
+  createPrefixConvert: (data: PrefixConvertCreate) =>
+    httpClient.post<PrefixConvertRead>(`${BASE}/prefix-convert`, data),
+  updatePrefixConvert: (id: number, data: PrefixConvertUpdate) =>
+    httpClient.put<PrefixConvertRead>(`${BASE}/prefix-convert/${id}`, data),
+  deletePrefixConvert: (id: number) => httpClient.delete(`${BASE}/prefix-convert/${id}`),
 
   reload: () => httpClient.post<{ reloaded: boolean }>(`${BASE}/reload`, {}),
 };

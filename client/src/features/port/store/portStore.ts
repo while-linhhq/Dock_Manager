@@ -3,6 +3,7 @@ import type { DetectionRead, CameraRead } from '../../../types/api.types';
 import { portApi } from '../services/portApi';
 import type {
   DetectionVerify,
+  DetectionUpdate,
   CameraCreate,
   PortConfigRead,
   PortConfigUpdate,
@@ -20,6 +21,7 @@ interface PortState {
   fetchCameras: (activeOnly?: boolean) => Promise<void>;
   fetchConfigs: () => Promise<void>;
   verifyDetection: (id: string, data: DetectionVerify) => Promise<void>;
+  updateDetection: (id: string, data: DetectionUpdate) => Promise<void>;
   upsertCamera: (id: string | null, data: CameraCreate) => Promise<void>;
   deleteCamera: (id: string | number) => Promise<void>;
   updateConfig: (key: string, data: PortConfigUpdate) => Promise<void>;
@@ -40,8 +42,27 @@ export const usePortStore = create<PortState>((set, get) => ({
   fetchDetections: async (skip, limit, vesselId) => {
     set({ isLoading: true, error: null });
     try {
-      const detections = await portApi.getDetections(skip, limit, vesselId);
-      set({ detections, isLoading: false });
+      // If caller passes explicit paging, honor it. Otherwise load ALL detections
+      // by paging through the backend so the client table can filter/sort the full set.
+      if (skip !== undefined || limit !== undefined) {
+        const detections = await portApi.getDetections(skip, limit, vesselId);
+        set({ detections, isLoading: false });
+        return;
+      }
+      const pageSize = 500;
+      const all: DetectionRead[] = [];
+      let offset = 0;
+      // Hard ceiling to avoid an infinite loop if the API ever misbehaves.
+      const maxPages = 200;
+      for (let page = 0; page < maxPages; page += 1) {
+        const batch = await portApi.getDetections(offset, pageSize, vesselId);
+        all.push(...batch);
+        if (batch.length < pageSize) {
+          break;
+        }
+        offset += pageSize;
+      }
+      set({ detections: all, isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to fetch detections', isLoading: false });
     }
@@ -71,6 +92,16 @@ export const usePortStore = create<PortState>((set, get) => ({
       await get().fetchDetections();
     } catch (err: any) {
       set({ error: err.message || 'Failed to verify detection', isLoading: false });
+      throw err;
+    }
+  },
+  updateDetection: async (id, data) => {
+    set({ isLoading: true, error: null });
+    try {
+      await portApi.updateDetection(id, data);
+      await get().fetchDetections();
+    } catch (err: any) {
+      set({ error: err.message || 'Failed to update detection', isLoading: false });
       throw err;
     }
   },
@@ -171,8 +202,11 @@ export const usePortStore = create<PortState>((set, get) => ({
       window.dispatchEvent(new CustomEvent('pipeline-status-changed'));
       set({ isLoading: false });
       return res.orphan_ocr_killed ?? [];
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to shutdown server', isLoading: false });
+    } catch (err: unknown) {
+      set({
+        error: err instanceof Error ? err.message : 'Failed to shutdown server',
+        isLoading: false,
+      });
       throw err;
     }
   },

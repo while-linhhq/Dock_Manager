@@ -36,7 +36,7 @@ export const UsersModals: React.FC<UsersModalsProps> = ({
   onRoleSubmit,
 }) => {
   const roleAll = roleForm.watch('permissions.all');
-  const roleMenus = roleForm.watch('permissions.menus') || [];
+  const roleMenus = (roleForm.watch('permissions.menus') as string[] | undefined) ?? [];
   const menuOptions = [
     { key: 'dashboard', label: 'Dashboard' },
     { key: 'orders', label: 'Đơn hàng' },

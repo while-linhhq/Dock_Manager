@@ -1163,6 +1163,83 @@ def _ensure_min_berth_duration_port_config() -> None:
         raise
 
 
+def _ensure_detection_merge_port_configs() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('port_configs'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect port_configs: %s', err)
+        return
+
+    defaults = {
+        'berth_merge_gap_sec': (
+            '1800',
+            'Nguong khoang trong (giay) de gop 2 detection cung tau thanh 1 luot '
+            'neo. Gap = berth_in(luot sau) - berth_out(luot truoc). Gap < nguong '
+            '=> track bi dut roi noi lai trong cung luot => GOP (berth_in som nhat, '
+            'berth_out muon nhat). Gap >= nguong => tau da roi ben that roi quay '
+            'lai => giu 2 luot RIENG. Do thi gap thuc te 7/6-7/8: track-chet-noi '
+            'lai <=30 phut, roi-that-quay-lai 40-60 phut => 1800 (30 phut) nam '
+            'dung day thung lung. Tang neu tau hay dut track lau; giam neu tau '
+            'quay lai nhanh bi gop oan. 0 = tat gop theo gap (chi con gop khi 2 '
+            'cua so THAT SU chong lan).',
+        ),
+        'detection_merge_window_hours': (
+            '2',
+            'Ban kinh (gio) luoi loc UNG VIEN tho khi tim detection cung tau de '
+            'xet gop. Chi gioi han pham vi query cho re, KHONG tu quyet dinh gop '
+            '(viec gop do berth_merge_gap_sec + chong lan quyet). Phai RONG hon '
+            'nguong gop; he thong tu noi rong theo berth_merge_gap_sec neu can. '
+            'Mac dinh 2 gio la du cho moi luot neo trong ngay.',
+        ),
+        'berth_merge_skip_unknown': (
+            'true',
+            'true = KHONG gop cac detection UNKNOWN (tau chua xac nhan danh tinh). '
+            'Ly do: moi tau UNKNOWN deu tro ve CUNG mot vessel "UNKNOWN", nen gop '
+            'theo vessel_id se tron nhieu con tau khac nhau thanh mot luot sai. '
+            'Giu rieng tung detection cho toi khi Zalo bot xac nhan ma tau: luc '
+            'reassign sang vessel that, he tu dong chay coalesce de gop lai cac '
+            'manh cung luot. false = gop ca UNKNOWN (KHONG khuyen nghi).',
+        ),
+    }
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            """
+            INSERT INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            ON CONFLICT (key) DO NOTHING
+            """
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            """
+            INSERT OR IGNORE INTO port_configs (key, value, description)
+            VALUES (:key, :value, :description)
+            """
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — seed detection_merge port_config manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for key, (default_value, description) in defaults.items():
+                conn.execute(
+                    stmt,
+                    {'key': key, 'value': default_value, 'description': description},
+                )
+        _patch_done('ensured detection_merge port_config keys')
+    except Exception as err:
+        logger.error('schema_patches: failed to seed detection_merge port_configs: %s', err)
+        raise
+
+
 def _ensure_sync_port_configs() -> None:
     try:
         inspector = inspect(engine)
@@ -1472,6 +1549,103 @@ def _ensure_fee_configs_penalty_fields() -> None:
         _patch_done('ensured fee_configs penalty and operating_hours columns')
     except Exception as err:
         logger.error('schema_patches: failed to add fee_configs penalty columns: %s', err)
+        raise
+
+
+def _ensure_fee_configs_berth_duration_fields() -> None:
+    """Giới hạn thời gian MỘT lần neo (phút) + phí phạt khi vượt."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('fee_configs'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('fee_configs')}
+        needed = {'max_berth_duration_minutes', 'over_duration_penalty_amount'}
+        if needed.issubset(cols):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect fee_configs table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        stmts = [
+            text(
+                'ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS '
+                'max_berth_duration_minutes INTEGER'
+            ),
+            text(
+                'ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS '
+                'over_duration_penalty_amount NUMERIC(12,2)'
+            ),
+        ]
+    elif dialect == 'sqlite':
+        if 'max_berth_duration_minutes' not in cols:
+            stmts.append(
+                text('ALTER TABLE fee_configs ADD COLUMN max_berth_duration_minutes INTEGER')
+            )
+        if 'over_duration_penalty_amount' not in cols:
+            stmts.append(
+                text('ALTER TABLE fee_configs ADD COLUMN over_duration_penalty_amount NUMERIC(12,2)')
+            )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add fee_configs berth duration columns manually',
+            dialect,
+        )
+        return
+
+    if not stmts:
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        _patch_done('ensured fee_configs berth duration columns')
+    except Exception as err:
+        logger.error('schema_patches: failed to add fee_configs berth duration columns: %s', err)
+        raise
+
+
+def _ensure_fee_configs_outside_hours_per_hour() -> None:
+    """Phạt neo ngoài giờ TÍNH THEO GIỜ (₫/giờ) — chỉ áp cho tàu tháng."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('fee_configs'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('fee_configs')}
+        if 'outside_hours_penalty_per_hour' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect fee_configs table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            'ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS '
+            'outside_hours_penalty_per_hour NUMERIC(12,2)'
+        )
+    elif dialect == 'sqlite':
+        stmt = text(
+            'ALTER TABLE fee_configs ADD COLUMN outside_hours_penalty_per_hour NUMERIC(12,2)'
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add outside_hours_penalty_per_hour manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('ensured fee_configs.outside_hours_penalty_per_hour column')
+    except Exception as err:
+        logger.error(
+            'schema_patches: failed to add fee_configs.outside_hours_penalty_per_hour: %s', err
+        )
         raise
 
 
@@ -1963,10 +2137,11 @@ def _ensure_zalo_notifications() -> None:
                 detection_id     INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
                 chat_id          VARCHAR(100),
                 status           VARCHAR(20) DEFAULT 'sent',
+                kind             VARCHAR(24) NOT NULL DEFAULT 'unknown',
                 resolved_ship_id VARCHAR(100),
                 created_at       TIMESTAMP DEFAULT NOW(),
                 resolved_at      TIMESTAMP,
-                CONSTRAINT uq_zalo_notifications_detection_id UNIQUE (detection_id)
+                CONSTRAINT uq_zalo_notifications_detection_kind UNIQUE (detection_id, kind)
             )
             """
         )
@@ -1981,10 +2156,11 @@ def _ensure_zalo_notifications() -> None:
                 detection_id     INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
                 chat_id          VARCHAR(100),
                 status           VARCHAR(20) DEFAULT 'sent',
+                kind             VARCHAR(24) NOT NULL DEFAULT 'unknown',
                 resolved_ship_id VARCHAR(100),
                 created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 resolved_at      TIMESTAMP,
-                UNIQUE (detection_id)
+                UNIQUE (detection_id, kind)
             )
             """
         )
@@ -2075,6 +2251,55 @@ def _ensure_zalo_notifications_kind() -> None:
     except Exception as err:
         logger.error('schema_patches: failed to add zalo_notifications.kind: %s', err)
         raise
+
+
+def _ensure_zalo_notifications_kind_unique() -> None:
+    """Đổi UNIQUE(detection_id) -> UNIQUE(detection_id, kind).
+
+    Cột `kind` (unknown/embedding/registry_expired/outside_hours/over_duration) được thêm sau nhưng constraint
+    cũ chỉ trên detection_id nên mỗi detection chỉ có đúng 1 notify. Hoàn tất migration
+    để một detection có thể có nhiều loại cảnh báo khác nhau (vd: unknown + hết đăng kiểm).
+    """
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        'ALTER TABLE zalo_notifications '
+                        'DROP CONSTRAINT IF EXISTS uq_zalo_notifications_detection_id'
+                    )
+                )
+                exists = conn.execute(
+                    text(
+                        "SELECT 1 FROM pg_constraint "
+                        "WHERE conname = 'uq_zalo_notifications_detection_kind'"
+                    )
+                ).first()
+                if not exists:
+                    conn.execute(
+                        text(
+                            'ALTER TABLE zalo_notifications '
+                            'ADD CONSTRAINT uq_zalo_notifications_detection_kind '
+                            'UNIQUE (detection_id, kind)'
+                        )
+                    )
+            _patch_done('migrated zalo_notifications unique -> (detection_id, kind)')
+        except Exception as err:
+            logger.error(
+                'schema_patches: failed to migrate zalo_notifications unique: %s', err
+            )
+            raise
+    elif dialect == 'sqlite':
+        # sqlite không drop/alter constraint tại chỗ; DB test tạo mới dùng CREATE DDL.
+        logger.info(
+            'schema_patches: sqlite — bỏ qua migrate composite unique zalo_notifications'
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — migrate zalo_notifications unique thủ công',
+            dialect,
+        )
 
 
 def _ensure_media_short_links() -> None:
@@ -2185,6 +2410,38 @@ def _ensure_detections_berth_out_source() -> None:
         _patch_done('added detections.berth_out_source')
     except Exception as err:
         logger.error('schema_patches: failed to add detections.berth_out_source: %s', err)
+        raise
+
+
+def _ensure_detections_berth_in_source() -> None:
+    """Add berth_in_source to detections: 'crossing' vs 'inferred' (suy diễn)."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('detections'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('detections')}
+        if 'berth_in_source' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect detections: %s', err)
+        return
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE detections ADD COLUMN IF NOT EXISTS berth_in_source VARCHAR(20)')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE detections ADD COLUMN berth_in_source VARCHAR(20)')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add detections.berth_in_source manually',
+            dialect,
+        )
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('added detections.berth_in_source')
+    except Exception as err:
+        logger.error('schema_patches: failed to add detections.berth_in_source: %s', err)
         raise
 
 
@@ -2352,7 +2609,12 @@ def _ensure_ship_id_rules_tables() -> None:
     try:
         inspector = inspect(engine)
         existing = set(inspector.get_table_names())
-        tables_needed = {'ship_id_patterns', 'ship_id_blacklist', 'ship_id_convert_map'}
+        tables_needed = {
+            'ship_id_patterns',
+            'ship_id_blacklist',
+            'ship_id_convert_map',
+            'ship_id_prefix_convert',
+        }
         has_all_tables = tables_needed.issubset(existing)
     except Exception as err:
         logger.warning('schema_patches: could not inspect ship_id_rules tables: %s', err)
@@ -2392,6 +2654,17 @@ def _ensure_ship_id_rules_tables() -> None:
                     id SERIAL PRIMARY KEY,
                     wrong_value VARCHAR(100) NOT NULL UNIQUE,
                     correct_value VARCHAR(100) NOT NULL,
+                    reason TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            ),
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_prefix_convert (
+                    id SERIAL PRIMARY KEY,
+                    from_prefix VARCHAR(10) NOT NULL UNIQUE,
+                    to_prefix VARCHAR(10) NOT NULL,
                     reason TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
@@ -2449,6 +2722,17 @@ def _ensure_ship_id_rules_tables() -> None:
                 )
                 """
             ),
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS ship_id_prefix_convert (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_prefix TEXT NOT NULL UNIQUE,
+                    to_prefix TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+                """
+            ),
         ]
         seed_stmt = text(
             """
@@ -2475,7 +2759,7 @@ def _ensure_ship_id_rules_tables() -> None:
                 conn.execute(stmt)
             seed_result = conn.execute(seed_stmt)
         if not has_all_tables or seed_result.rowcount:
-            _patch_done('created ship_id_patterns, ship_id_blacklist, ship_id_convert_map tables')
+            _patch_done('created ship_id_patterns, ship_id_blacklist, ship_id_convert_map, ship_id_prefix_convert tables')
     except Exception as err:
         logger.error('schema_patches: failed to create ship_id_rules tables: %s', err)
         raise
@@ -2525,10 +2809,13 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_detections_audit_image_path()
     _ensure_detections_berth_times()
     _ensure_detections_berth_out_source()
+    _ensure_detections_berth_in_source()
     _ensure_cameras_boundary_lines()
     _ensure_cameras_detection_settings()
     _ensure_fee_configs_berth_limit()
     _ensure_fee_configs_penalty_fields()
+    _ensure_fee_configs_berth_duration_fields()
+    _ensure_fee_configs_outside_hours_per_hour()
     _ensure_invoices_is_over_berth_limit()
     _ensure_invoices_is_outside_operating_hours()
     _ensure_invoices_discount_amount()
@@ -2545,6 +2832,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_training_snapshot_port_configs()
     _ensure_rtsp_nvdec_port_configs()
     _ensure_min_berth_duration_port_config()
+    _ensure_detection_merge_port_configs()
     _ensure_track_dedup_iomin_port_config()
     _ensure_berth_out_grace_port_config()
     _ensure_sync_port_configs()
@@ -2557,11 +2845,16 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_zalo_notifications()
     _ensure_zalo_notifications_message_ids()
     _ensure_zalo_notifications_kind()
+    _ensure_zalo_notifications_kind_unique()
     _ensure_media_short_links()
     _ensure_boundary_crossing_events()
     _ensure_ship_id_rules_tables()
     _ensure_detections_deleted_at()
     _ensure_anchored_identities_berth_columns()
+    _ensure_vessels_length_registry()
+    _ensure_vessels_classification()
+    _ensure_fee_configs_vessel_id()
+    _migrate_vessel_classification_data()
     return list(_patch_applied)
 
 
@@ -2604,4 +2897,246 @@ def _ensure_anchored_identities_berth_columns() -> None:
         _patch_done('ensured anchored_identities berth columns')
     except Exception as err:
         logger.error('schema_patches: failed to add anchored_identities berth columns: %s', err)
+        raise
+
+
+def _ensure_vessels_length_registry() -> None:
+    """Add length_m (chiều dài) and registry_expiry (hết hạn đăng kiểm) to vessels."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('vessels'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('vessels')}
+        if 'length_m' in cols and 'registry_expiry' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect vessels table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        if 'length_m' not in cols:
+            stmts.append(text('ALTER TABLE vessels ADD COLUMN IF NOT EXISTS length_m NUMERIC(8, 2)'))
+        if 'registry_expiry' not in cols:
+            stmts.append(text('ALTER TABLE vessels ADD COLUMN IF NOT EXISTS registry_expiry DATE'))
+    elif dialect == 'sqlite':
+        if 'length_m' not in cols:
+            stmts.append(text('ALTER TABLE vessels ADD COLUMN length_m NUMERIC(8, 2)'))
+        if 'registry_expiry' not in cols:
+            stmts.append(text('ALTER TABLE vessels ADD COLUMN registry_expiry DATE'))
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add vessels.length_m/registry_expiry manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        _patch_done('ensured vessels.length_m + registry_expiry')
+    except Exception as err:
+        logger.error('schema_patches: failed to add vessels length/registry columns: %s', err)
+        raise
+
+
+def _ensure_vessels_classification() -> None:
+    """Add classification (spot/monthly/unclassified) to vessels for existing DBs."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('vessels'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('vessels')}
+        if 'classification' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect vessels table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    stmts = []
+    if dialect == 'postgresql':
+        stmts.append(
+            text(
+                "ALTER TABLE vessels ADD COLUMN IF NOT EXISTS classification "
+                "VARCHAR(20) NOT NULL DEFAULT 'unclassified'"
+            )
+        )
+        stmts.append(
+            text('CREATE INDEX IF NOT EXISTS ix_vessels_classification ON vessels(classification)')
+        )
+    elif dialect == 'sqlite':
+        stmts.append(
+            text("ALTER TABLE vessels ADD COLUMN classification VARCHAR(20) NOT NULL DEFAULT 'unclassified'")
+        )
+        stmts.append(
+            text('CREATE INDEX IF NOT EXISTS ix_vessels_classification ON vessels(classification)')
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add vessels.classification manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        _patch_done('ensured vessels.classification')
+    except Exception as err:
+        logger.error('schema_patches: failed to add vessels.classification: %s', err)
+        raise
+
+
+def _migrate_vessel_classification_data() -> None:
+    """Backfill legacy type-based vessels into explicit billing classifications.
+
+    Only rows still carrying the default ``unclassified`` value are touched, so
+    an operator can safely run this after a manual production migration.
+    """
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('vessels') or not inspector.has_table('vessel_types'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect classification migration tables: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect not in {'postgresql', 'sqlite'}:
+        logger.warning('schema_patches: unknown dialect %s — skip vessel classification migration', dialect)
+        return
+
+    try:
+        with engine.begin() as conn:
+            # Type names are source of truth for old databases; explicit values win.
+            conn.execute(text("""
+                UPDATE vessels v
+                SET classification = CASE
+                    WHEN lower(coalesce(vt.type_name, '')) LIKE '%tàu lẻ%'
+                      OR lower(coalesce(vt.type_name, '')) LIKE '%tau le%'
+                        THEN 'spot'
+                    WHEN v.vessel_type_id IS NOT NULL THEN 'monthly'
+                    ELSE 'unclassified'
+                END
+                FROM vessel_types vt
+                WHERE v.vessel_type_id = vt.id
+                  AND v.classification = 'unclassified'
+            """ if dialect == 'postgresql' else """
+                UPDATE vessels
+                SET classification = CASE
+                    WHEN lower(coalesce((SELECT type_name FROM vessel_types WHERE id = vessels.vessel_type_id), '')) LIKE '%tàu lẻ%'
+                      OR lower(coalesce((SELECT type_name FROM vessel_types WHERE id = vessels.vessel_type_id), '')) LIKE '%tau le%'
+                        THEN 'spot'
+                    WHEN vessel_type_id IS NOT NULL THEN 'monthly'
+                    ELSE 'unclassified'
+                END
+                WHERE classification = 'unclassified'
+            """))
+
+            # Spot fees become per-vessel. Copy only once per vessel/name/scope.
+            conn.execute(text("""
+                INSERT INTO fee_configs
+                    (vessel_id, fee_name, base_fee, unit, is_active,
+                     effective_from, effective_to, berth_limit_count, berth_limit_unit,
+                     over_limit_penalty_amount, outside_hours_penalty_amount,
+                     outside_hours_penalty_per_hour, max_berth_duration_minutes,
+                     over_duration_penalty_amount, operating_hours)
+                SELECT v.id, f.fee_name, f.base_fee, f.unit, f.is_active,
+                       f.effective_from, f.effective_to, f.berth_limit_count, f.berth_limit_unit,
+                       f.over_limit_penalty_amount, f.outside_hours_penalty_amount,
+                       f.outside_hours_penalty_per_hour, f.max_berth_duration_minutes,
+                       f.over_duration_penalty_amount, f.operating_hours
+                FROM vessels v
+                JOIN fee_configs f ON f.vessel_type_id = v.vessel_type_id
+                WHERE v.classification = 'spot'
+                  AND f.is_active = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM fee_configs existing
+                      WHERE existing.vessel_id = v.id
+                        AND existing.fee_name = f.fee_name
+                  )
+            """))
+            conn.execute(text("""
+                UPDATE fee_configs
+                SET is_active = FALSE
+                WHERE vessel_type_id IN (
+                    SELECT v.vessel_type_id FROM vessels v WHERE v.classification = 'spot'
+                )
+                  AND vessel_id IS NULL
+            """))
+            conn.execute(text("""
+                UPDATE vessels
+                SET vessel_type_id = NULL
+                WHERE classification = 'spot'
+            """))
+        _patch_done('migrated legacy vessel classifications and spot fees')
+    except Exception as err:
+        logger.error('schema_patches: failed legacy vessel classification migration: %s', err)
+        raise
+
+
+def _ensure_fee_configs_vessel_id() -> None:
+    """Ensure fee_configs.vessel_id, index, and PostgreSQL FK all exist."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('fee_configs'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('fee_configs')}
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect fee_configs table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmts = [
+            text('ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS vessel_id INTEGER'),
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'fee_configs'::regclass
+                          AND conname = 'fk_fee_configs_vessel_id'
+                    ) THEN
+                        ALTER TABLE fee_configs
+                        ADD CONSTRAINT fk_fee_configs_vessel_id
+                        FOREIGN KEY (vessel_id) REFERENCES vessels(id) ON DELETE CASCADE;
+                    END IF;
+                END $$
+                """
+            ),
+            text(
+                'CREATE INDEX IF NOT EXISTS ix_fee_configs_vessel_id '
+                'ON fee_configs(vessel_id)'
+            ),
+        ]
+    elif dialect == 'sqlite':
+        stmts = []
+        if 'vessel_id' not in cols:
+            stmts.append(text('ALTER TABLE fee_configs ADD COLUMN vessel_id INTEGER'))
+        stmts.append(
+            text(
+                'CREATE INDEX IF NOT EXISTS ix_fee_configs_vessel_id '
+                'ON fee_configs(vessel_id)'
+            )
+        )
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add fee_configs.vessel_id manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+        _patch_done('ensured fee_configs.vessel_id + index + FK')
+    except Exception as err:
+        logger.error('schema_patches: failed to ensure fee_configs.vessel_id: %s', err)
         raise

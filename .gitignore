@@ -16,6 +16,11 @@ __pycache__/
 
 # Logs
 *.log
+# Production exports, incident reports, and one-shot data repair scripts
+REPAIR_REPORT_*.txt
+server/_phase*_backup_*.json
+server/scripts/import_*.py
+server/scripts/capture_*_frames.py
 logs/
 !client/src/features/logs/
 

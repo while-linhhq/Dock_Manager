@@ -7,9 +7,10 @@ from typing import List, Optional
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.detection import DetectionCreate, DetectionRead, DetectionVerify
+from app.schemas.detection import DetectionCreate, DetectionRead, DetectionUpdate, DetectionVerify
 from app.schemas.detection_media import DetectionMediaRead
 from app.services.detection_cleanup_service import purge_detection_resources
+from app.services.detection_invoice_service import recompute_ai_invoice_for_detection
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.services.storage.s3_service import presign_get, parse_minio_uri
@@ -136,6 +137,58 @@ def verify_detection(
     if not updated:
         raise HTTPException(status_code=404, detail='Detection not found')
     return _detection_to_read(db, updated)
+
+
+@router.patch('/{detection_id}', response_model=DetectionRead)
+def update_detection(
+    detection_id: int,
+    data: DetectionUpdate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Sửa thông tin detection, sau đó tính lại hóa đơn AI liên kết.
+
+    Hóa đơn AI đã PAID (khóa tài chính) không bị tính lại tiền.
+    Response header X-Invoice-Recompute cho biết kết quả tính lại.
+    """
+    obj = detection_repo.get(db, detection_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail='Detection not found')
+
+    payload = data.model_dump(exclude_unset=True)
+    new_track = payload.get('track_id')
+    if new_track and new_track != obj.track_id:
+        clash = detection_repo.get_by_track_id(db, new_track)
+        if clash and clash.id != detection_id:
+            raise HTTPException(status_code=409, detail='track_id already exists')
+
+    try:
+        updated = detection_repo.update_fields(db, detection_id, payload, commit=False)
+        if not updated:
+            raise HTTPException(status_code=404, detail='Detection not found')
+
+        # Existing unpaid invoice and detection update share one transaction.
+        invoice_result = recompute_ai_invoice_for_detection(
+            detection_id,
+            session=db,
+            commit=False,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail='Detection/invoice update failed') from exc
+
+    # No prior invoice: create only after detection commit. Failure cannot leave an
+    # existing invoice stale; service logs and returns status without reverting data.
+    if invoice_result.get('status') == 'needs_create':
+        recompute_ai_invoice_for_detection(detection_id)
+
+    fresh = detection_repo.get(db, detection_id) or updated
+    camera_map = resolve_camera_in_out(db, [str(fresh.track_id or '')])
+    return _detection_to_read(db, fresh, camera_map=camera_map)
 
 
 @router.delete('/{detection_id}', status_code=204)

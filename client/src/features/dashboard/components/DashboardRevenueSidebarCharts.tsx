@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo, type FC } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
 import { TrendingUp } from 'lucide-react';
@@ -45,7 +45,7 @@ export type DashboardRevenueSidebarChartsProps = {
   isLoading: boolean;
 };
 
-export const DashboardRevenueSidebarCharts: React.FC<DashboardRevenueSidebarChartsProps> = ({
+export const DashboardRevenueSidebarCharts: FC<DashboardRevenueSidebarChartsProps> = ({
   summary,
   isLoading,
 }) => {

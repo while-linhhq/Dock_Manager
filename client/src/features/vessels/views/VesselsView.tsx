@@ -13,6 +13,8 @@ import { VesselsMainTabs, type VesselsMainTab } from '../components/VesselsMainT
 import { VesselsListSection } from '../components/VesselsListSection';
 import { VesselTypesSection } from '../components/VesselTypesSection';
 import { VesselsModals } from '../components/VesselsModals';
+import { VesselFeeConfigsPanel } from '../components/VesselFeeConfigsPanel';
+import { VesselTypeMembersPicker } from '../components/VesselTypeMembersPicker';
 import { RecognitionConfigSection } from '../components/RecognitionConfigSection';
 import { useShipIdRulesStore } from '../store/shipIdRulesStore';
 import { vesselsApi } from '../services/vesselsApi';
@@ -22,13 +24,26 @@ import { Button } from '../../../components/Button/Button';
 import { ImageMultiDropzone } from '../../../components/ImageMultiDropzone/ImageMultiDropzone';
 import type { VesselVisualReference } from '../services/vesselsApi';
 
-const VESSELS_TAB_IDS: VesselsMainTab[] = ['vessels', 'types', 'recognition'];
+const VESSELS_TAB_IDS: VesselsMainTab[] = [
+  'spot',
+  'monthly',
+  'unclassified',
+  'types',
+  'recognition',
+];
+
+const CLASSIFICATION_TABS = ['spot', 'monthly', 'unclassified'] as const;
+type ClassificationTab = (typeof CLASSIFICATION_TABS)[number];
+
+function isClassificationTab(tab: VesselsMainTab): tab is ClassificationTab {
+  return (CLASSIFICATION_TABS as readonly string[]).includes(tab);
+}
 
 function parseVesselsTab(value: string | null): VesselsMainTab {
   if (value && VESSELS_TAB_IDS.includes(value as VesselsMainTab)) {
     return value as VesselsMainTab;
   }
-  return 'vessels';
+  return 'spot';
 }
 
 export const VesselsView: React.FC = () => {
@@ -40,6 +55,9 @@ export const VesselsView: React.FC = () => {
   const [isVesselModalOpen, setIsVesselModalOpen] = useState(false);
   const [isTypeModalOpen, setIsTypeModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // id tàu được chọn trong picker gán tàu vào loại (modal loại tàu).
+  const [typeMemberIds, setTypeMemberIds] = useState<number[]>([]);
+  const [isTypeMembersLoading, setIsTypeMembersLoading] = useState(false);
   const [vesselQ, setVesselQ] = useState('');
   const [vesselTypeFilter, setVesselTypeFilter] = useState('');
   const [vesselActive, setVesselActive] = useState<'all' | 'active' | 'inactive'>('all');
@@ -78,9 +96,12 @@ export const VesselsView: React.FC = () => {
     resolver: zodResolver(vesselTypeSchema),
   });
 
+  // Phân loại tàu đang chỉnh sửa (live theo form) — quyết định panel phí nào hiển thị.
+  const editingVesselClassification = vesselForm.watch('classification') ?? 'unclassified';
+
   const handleTabChange = (tab: VesselsMainTab) => {
     const next = new URLSearchParams(searchParams);
-    if (tab === 'vessels') {
+    if (tab === 'spot') {
       next.delete('tab');
     } else {
       next.set('tab', tab);
@@ -93,8 +114,9 @@ export const VesselsView: React.FC = () => {
       void fetchShipIdRules();
       return;
     }
-    if (activeTab === 'vessels') {
-      fetchVessels();
+    if (isClassificationTab(activeTab)) {
+      // Nạp toàn bộ tàu 1 lần; lọc theo phân loại ở client để có count mỗi tab.
+      fetchVessels(0, 10000);
       fetchVesselTypes();
       return;
     }
@@ -103,8 +125,25 @@ export const VesselsView: React.FC = () => {
     }
   }, [activeTab, fetchVessels, fetchVesselTypes, fetchShipIdRules]);
 
+  // Đếm số tàu mỗi phân loại (từ toàn bộ danh sách, không phụ thuộc filter).
+  const classificationCounts = useMemo(() => {
+    const counts = { spot: 0, monthly: 0, unclassified: 0 };
+    for (const v of vessels) {
+      const c = (v.classification ?? 'unclassified') as ClassificationTab;
+      if (c in counts) counts[c] += 1;
+    }
+    return counts;
+  }, [vessels]);
+
   const filteredVessels = useMemo(() => {
     return vessels.filter((v) => {
+      // Lọc theo tab phân loại đang mở (spot/monthly/unclassified).
+      if (isClassificationTab(activeTab)) {
+        const c = v.classification ?? 'unclassified';
+        if (c !== activeTab) {
+          return false;
+        }
+      }
       if (
         !matchesAnyField(
           vesselQ,
@@ -132,7 +171,7 @@ export const VesselsView: React.FC = () => {
       }
       return true;
     });
-  }, [vessels, vesselQ, vesselTypeFilter, vesselActive, vesselDateFrom, vesselDateTo]);
+  }, [vessels, activeTab, vesselQ, vesselTypeFilter, vesselActive, vesselDateFrom, vesselDateTo]);
 
   const filteredTypes = useMemo(() => {
     return vesselTypes.filter((t) => matchesAnyField(typeQ, t.type_name, t.description));
@@ -166,10 +205,14 @@ export const VesselsView: React.FC = () => {
 
   const onTypeSubmit = async (data: VesselTypeCreate) => {
     try {
-      await upsertVesselType(editingId, data);
+      // Gửi kèm danh sách tàu gán vào loại; backend đồng bộ membership + classification.
+      await upsertVesselType(editingId, { ...data, member_vessel_ids: typeMemberIds });
       setIsTypeModalOpen(false);
       typeForm.reset();
       setEditingId(null);
+      setTypeMemberIds([]);
+      // Membership đổi classification/vessel_type_id của tàu → nạp lại danh sách tàu.
+      await fetchVessels();
     } catch (err) {
       console.error(err);
     }
@@ -180,8 +223,11 @@ export const VesselsView: React.FC = () => {
     vesselForm.reset({
       ship_id: vessel.ship_id,
       name: vessel.name ?? '',
+      classification: vessel.classification ?? 'unclassified',
       vessel_type_id: vessel.vessel_type_id != null ? String(vessel.vessel_type_id) : '',
       owner_info: vessel.owner ?? vessel.owner_info ?? '',
+      length_m: vessel.length_m != null ? String(vessel.length_m) : '',
+      registry_expiry: vessel.registry_expiry ?? '',
       is_active: vessel.is_active,
     });
     setIsVesselModalOpen(true);
@@ -291,9 +337,12 @@ export const VesselsView: React.FC = () => {
         activeTab={activeTab}
         onTabChange={handleTabChange}
         activePatternCount={activePatternCount}
+        spotCount={classificationCounts.spot}
+        monthlyCount={classificationCounts.monthly}
+        unclassifiedCount={classificationCounts.unclassified}
       />
 
-      {activeTab === 'vessels' && (
+      {isClassificationTab(activeTab) && (
         <VesselsListSection
           vesselQ={vesselQ}
           setVesselQ={setVesselQ}
@@ -307,9 +356,11 @@ export const VesselsView: React.FC = () => {
           setVesselDateTo={setVesselDateTo}
           resetVesselFilters={resetVesselFilters}
           vesselFilterCount={vesselFilterCount}
+          activeTab={activeTab}
           onOpenAddVessel={() => {
             setEditingId(null);
-            vesselForm.reset({ is_active: true });
+            // Preset phân loại theo tab đang mở; tàu tháng cần chọn loại tàu.
+            vesselForm.reset({ is_active: true, classification: activeTab });
             setIsVesselModalOpen(true);
           }}
           vesselTypes={vesselTypes}
@@ -331,6 +382,7 @@ export const VesselsView: React.FC = () => {
           onOpenAddType={() => {
             setEditingId(null);
             typeForm.reset();
+            setTypeMemberIds([]);
             setIsTypeModalOpen(true);
           }}
           vesselTypes={vesselTypes}
@@ -350,11 +402,42 @@ export const VesselsView: React.FC = () => {
         onVesselSubmit={onVesselSubmit}
         editingId={editingId}
         vesselTypes={vesselTypes}
+        feeConfigsSlot={
+          editingId && editingVesselClassification === 'spot' ? (
+            <VesselFeeConfigsPanel
+              vesselId={Number(editingId)}
+              vesselShipId={
+                vessels.find((v) => String(v.id) === editingId)?.ship_id
+              }
+            />
+          ) : editingId && editingVesselClassification === 'monthly' ? (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Tàu tháng dùng phí theo <strong>Loại Tàu</strong>. Cấu hình giá tại{' '}
+              <strong>Doanh Thu › Cấu Hình Phí</strong> (gắn theo loại tàu).
+            </p>
+          ) : editingId ? (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Tàu <strong>chưa phân loại</strong> không sinh hóa đơn. Đổi sang Tàu Lẻ hoặc
+              Tàu Tháng để cấu hình phí.
+            </p>
+          ) : null
+        }
         isLoading={isLoading}
         isTypeModalOpen={isTypeModalOpen}
         onCloseType={() => setIsTypeModalOpen(false)}
         typeForm={typeForm}
         onTypeSubmit={onTypeSubmit}
+        isTypeMembersLoading={isTypeMembersLoading}
+        typeMembersSlot={
+          isTypeModalOpen ? (
+            <VesselTypeMembersPicker
+              editingTypeId={editingId}
+              selectedIds={typeMemberIds}
+              onChange={setTypeMemberIds}
+              onLoadingChange={setIsTypeMembersLoading}
+            />
+          ) : null
+        }
       />
 
       <Modal

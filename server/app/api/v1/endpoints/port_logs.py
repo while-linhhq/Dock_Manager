@@ -9,8 +9,29 @@ from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.port_log import PortLogCreate, PortLogRead
 from app.repositories.port_log_repository import port_log_repo
+from app.services.outside_hours_stats_service import outside_hours_berth_summary
 
 router = APIRouter()
+
+
+@router.get('/outside-hours-summary')
+def outside_hours_summary(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    ship_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Số LƯỢT neo ngoài khung giờ cho phép, gộp theo (mã tàu, ngày VN).
+
+    Áp cho mọi tàu (lẻ + tháng), thuần đếm/giám sát — không tính tiền.
+    """
+    return outside_hours_berth_summary(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        ship_id=ship_id,
+    )
 
 
 @router.post('/', response_model=PortLogRead, status_code=201)

@@ -64,6 +64,65 @@ def test_ocr_on_second_track_shows_plate_only_after_read() -> None:
     assert mgr.get_global_ship_id(2, 'trk_2') == 'SG-7082'
 
 
+def test_repeated_track_updates_do_not_ballot_stuff_ship_id() -> None:
+    """Per-frame report_track_update must NOT inject synthetic conf=1.0 votes.
+
+    Regression for the self-reinforcing phantom identity: a track seeded with a
+    wrong provisional ship_id (from a noisy embedding) used to append
+    (ship_id, 1.0) into identity.ocr_history on EVERY frame via _attach_track.
+    After N frames that ID accumulated N synthetic 1.0 votes and buried the real
+    fractional OCR reads in _best_ship_id — e.g. SG-8853 winning 196x1.0 over the
+    correct SG-9190. Real OCR reads must decide the winner regardless of how many
+    frames the wrong provisional guess was carried.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(21)
+
+    boat = _track('trk_x', camera_id=1)
+    # First frame: track carries a wrong provisional guess (no real OCR yet).
+    boat.ship_id = 'SG-8853'
+    mgr.report_track_update(1, boat, embedding=emb)
+
+    # A real OCR read votes the CORRECT plate once, at true fractional confidence.
+    mgr.report_ocr_result(1, 'trk_x', 'SG-9190', 0.87)
+
+    # Now the wrong provisional guess rides along for 200 more frames (identity
+    # propagates ship_id back onto the track, which _attach_track would re-vote).
+    for _ in range(200):
+        boat.ship_id = 'SG-8853'
+        mgr.report_track_update(1, boat, embedding=emb)
+
+    gid = mgr.get_global_id(1, 'trk_x')
+    assert gid is not None
+    identity = mgr._identities[gid]
+    # Only the single genuine OCR read should be in the vote pool.
+    assert identity.ocr_history == [('SG-9190', 0.87)]
+    assert mgr.get_global_ship_id(1, 'trk_x') == 'SG-9190'
+
+
+def test_seed_ship_id_when_no_ocr_evidence() -> None:
+    """When identity has no OCR evidence at all, a track's provisional ship_id
+    still seeds identity.ship_id so the overlay shows something — but it is NOT
+    written into ocr_history, so a later real OCR read overrides it cleanly."""
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(33)
+
+    boat = _track('trk_seed', camera_id=1)
+    boat.ship_id = 'SG-1000'
+    mgr.report_track_update(1, boat, embedding=emb)
+
+    gid = mgr.get_global_id(1, 'trk_seed')
+    assert gid is not None
+    identity = mgr._identities[gid]
+    assert identity.ship_id == 'SG-1000'
+    assert identity.ocr_history == []  # seeded, not voted
+
+    # A real OCR read of a different plate must win — no synthetic votes to fight.
+    mgr.report_ocr_result(1, 'trk_seed', 'SG-2000', 0.80)
+    assert identity.ocr_history == [('SG-2000', 0.80)]
+    assert mgr.get_global_ship_id(1, 'trk_seed') == 'SG-2000'
+
+
 def test_handoff_inherits_plate_after_source_track_removed() -> None:
     mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
     emb = _unit_embedding(11)
@@ -361,3 +420,118 @@ def test_ocr_history_is_capped() -> None:
     identity = mgr._identity_for_track((1, 'trk_hist'))
     assert identity is not None
     assert len(identity.ocr_history) <= _MAX_OCR_HISTORY
+
+
+def test_track_local_berth_in_propagates_to_identity() -> None:
+    """Seed-inside path: a track sets berth_in_ts WITHOUT emitting an 'in'
+    crossing (boat appeared already inside the zone). _attach_track must lift
+    that timestamp onto the identity, otherwise berth_in stays None → the track
+    is dropped at persist (min_berth gate) or the IN time is stamped late."""
+    mgr = CrossCameraReIdManager([1], visual_threshold=0.5, handoff_window_sec=60.0)
+    boat = _track('trk_seed', camera_id=1)
+    # No report_boundary_crossing('in') is ever called — mimic seed-inside.
+    boat.berth_in_ts = boat.first_seen_ts
+    mgr.report_track_update(1, boat, embedding=_unit_embedding(21))
+
+    identity = mgr._identity_for_track((1, 'trk_seed'))
+    assert identity is not None
+    assert identity.berth_in_ts == boat.first_seen_ts
+    assert identity.berth_in_camera_id == 1
+
+
+def test_track_local_berth_in_keeps_earliest() -> None:
+    """When both a track-local berth_in and a later crossing exist, the identity
+    keeps the EARLIEST — the true arrival, not the late line-cross."""
+    mgr = CrossCameraReIdManager([1], visual_threshold=0.5, handoff_window_sec=60.0)
+    boat = _track('trk_early', camera_id=1)
+    early = boat.first_seen_ts
+    late = early + 300.0
+
+    # A late 'in' crossing lands first (the buggy real-world order).
+    mgr.report_boundary_crossing(1, 'trk_early', 'in', late)
+    # Then the per-frame update carries the true (earlier) arrival.
+    boat.berth_in_ts = early
+    mgr.report_track_update(1, boat, embedding=_unit_embedding(22))
+
+    identity = mgr._identity_for_track((1, 'trk_early'))
+    assert identity is not None
+    assert identity.berth_in_ts == early
+
+
+def test_track_local_berth_in_not_reopened_after_departure() -> None:
+    """Reverse-motion guard: once berth_out_ts is set (boat departed), a
+    seed-inside re-touch on another camera must NOT resurrect berth_in."""
+    mgr = CrossCameraReIdManager([1], visual_threshold=0.5, handoff_window_sec=60.0)
+    boat = _track('trk_rev', camera_id=1)
+    t0 = boat.first_seen_ts
+    mgr.report_boundary_crossing(1, 'trk_rev', 'in', t0)
+    mgr.report_boundary_crossing(1, 'trk_rev', 'out', t0 + 100.0)
+
+    identity = mgr._identity_for_track((1, 'trk_rev'))
+    assert identity is not None
+    berth_in_before = identity.berth_in_ts
+
+    # Boat backs out and clips the zone again → seed-inside sets a new berth_in_ts.
+    boat.berth_in_ts = t0 + 200.0
+    mgr.report_track_update(1, boat, embedding=_unit_embedding(23))
+
+    assert identity.berth_in_ts == berth_in_before
+
+
+def test_visual_diag_rejects_track_on_far_edge_of_last_camera() -> None:
+    """Overlay leak repro: the `REID vis` diagnostic line compared the incoming
+    track's embedding against ANY adjacent-camera identity regardless of where
+    the track sat in the frame. A boat parked at the far-right edge of the last
+    camera (which can never overlap a boat on the first camera — the seam is on
+    its LEFT edge) showed `REID vis x/y ->#gid/<plate>` naming that first-camera
+    boat. The visual branch must apply the SAME seam-zone gate the real overlap
+    matcher uses, so it stays in sync and never names an impossible target.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    mgr.set_camera_layout({1: 0.0, 2: 1000.0})
+    emb = _unit_embedding(7)
+
+    # Identity A lives on cam1 (the "first" camera), OCR-confirmed.
+    boat_a = _track('trk_a', camera_id=1, box=(900.0, 100.0, 980.0, 200.0))
+    mgr.report_track_update(1, boat_a, embedding=emb, frame_shape=(360, 1000))
+    mgr.report_ocr_result(1, 'trk_a', 'SG-6047', 0.95)
+
+    # Track B on cam2 (the "last" camera) at its FAR-RIGHT edge — the opposite
+    # side from the cam1 seam (which is cam2's left edge). Near-identical
+    # embedding, so only geometry can reject it. Report it first (as the real
+    # pipeline does every frame) so cam2's frame width is known to the seam gate.
+    boat_b = _track('trk_b', camera_id=2, box=(930.0, 100.0, 990.0, 200.0))
+    similar_emb = emb * 0.99 + _unit_embedding(99) * 0.01
+    norm_emb = similar_emb / np.linalg.norm(similar_emb)
+    mgr.report_track_update(2, boat_b, embedding=norm_emb, frame_shape=(360, 1000))
+    diag = mgr.diagnose_track(2, boat_b, norm_emb, time.time())
+
+    # Seam-zone gate must drop A → no visual target, no leaked plate on overlay.
+    assert diag['visual']['target_gid'] is None
+    assert diag['visual']['target_ship_id'] is None
+
+
+def test_visual_diag_accepts_track_on_seam_edge() -> None:
+    """Complement to the far-edge repro: a track sitting in the seam-facing edge
+    zone (cam2's LEFT edge, bordering cam1) SHOULD surface the adjacent identity
+    as the visual target — the gate rejects only impossible geometry, not valid
+    seam comparisons.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    mgr.set_camera_layout({1: 0.0, 2: 1000.0})
+    emb = _unit_embedding(7)
+
+    boat_a = _track('trk_a', camera_id=1, box=(900.0, 100.0, 980.0, 200.0))
+    mgr.report_track_update(1, boat_a, embedding=emb, frame_shape=(360, 1000))
+    mgr.report_ocr_result(1, 'trk_a', 'SG-6047', 0.95)
+
+    # Track B at cam2's LEFT edge = the seam bordering cam1.
+    boat_b = _track('trk_b', camera_id=2, box=(10.0, 100.0, 70.0, 200.0))
+    similar_emb = emb * 0.99 + _unit_embedding(99) * 0.01
+    diag = mgr.diagnose_track(
+        2, boat_b, similar_emb / np.linalg.norm(similar_emb), time.time()
+    )
+
+    gid_a = mgr._track_to_global[(1, 'trk_a')]
+    assert diag['visual']['target_gid'] == gid_a
+    assert diag['visual']['target_ship_id'] == 'SG-6047'

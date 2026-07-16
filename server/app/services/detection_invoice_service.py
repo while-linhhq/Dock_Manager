@@ -11,13 +11,17 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.detection import Detection
 from app.models.invoice import Invoice
+from app.models.invoice_item import InvoiceItem
 from app.repositories.detection_repository import detection_repo
 from app.repositories.fee_config_repository import fee_config_repo
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.vessel_repository import vessel_repo
+from app.services.fee_resolution_service import resolve_billable_fees
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate
-from app.services.fee_penalty_service import build_penalty_items
-from app.services.invoice_service import invoice_service
+from app.services.berth_limit_service import compute_invoice_over_berth_limit
+from app.services.fee_penalty_service import build_penalty_items, compute_invoice_outside_operating_hours
+from app.services.invoice_service import compute_invoice_total, invoice_service
+from app.services.invoice_snapshot_service import is_invoice_financially_locked
 from app.services.ship_id_utils import is_unknown_ship_id
 from app.utils.fee_billing_unit import normalize_fee_billing_unit
 
@@ -121,6 +125,71 @@ def resolve_berth_window(
     return start, end
 
 
+def _line_sub(it: InvoiceItemCreate) -> Decimal:
+    if it.amount is not None:
+        return it.amount
+    q = it.quantity if it.quantity is not None else Decimal('1')
+    return (q * it.unit_price).quantize(Decimal('0.01'))
+
+
+def build_ai_invoice_items(db: Session, det: Detection, vessel, fees) -> list[InvoiceItemCreate]:
+    """Dựng danh sách line-item hóa đơn AI từ detection + fee config active.
+
+    Dùng chung cho tạo mới (ensure_) và tính lại khi sửa detection (recompute_).
+    Cột "neo đậu" hiển thị theo detection.start_time/end_time nên quantity tiền
+    dùng đúng window đó; berth_in/out chỉ là tín hiệu vào/ra vùng cho penalty.
+    """
+    hours = _berthing_hours(
+        cast(Optional[datetime], det.start_time),
+        cast(Optional[datetime], det.end_time),
+    )
+    items: list[InvoiceItemCreate] = []
+
+    for fee in fees:
+        unit = normalize_fee_billing_unit(fee.unit)
+        if unit == 'none':
+            continue
+        base = Decimal(str(fee.base_fee))
+        if unit == 'per_berth_visit':
+            items.append(
+                InvoiceItemCreate(
+                    fee_config_id=fee.id,
+                    description=f'{fee.fee_name} — 1 lượt cập bến (tự động)',
+                    quantity=Decimal('1'),
+                    unit_price=base,
+                )
+            )
+        elif unit == 'per_hour':
+            items.append(
+                InvoiceItemCreate(
+                    fee_config_id=fee.id,
+                    description=f'{fee.fee_name} — neo {hours} giờ (tự động)',
+                    quantity=hours,
+                    unit_price=base,
+                )
+            )
+        elif unit in ('per_month', 'per_year'):
+            label = 'tháng' if unit == 'per_month' else 'năm'
+            items.append(
+                InvoiceItemCreate(
+                    fee_config_id=fee.id,
+                    description=f'{fee.fee_name} — tham chiếu phí theo {label} (quản lý nhập tổng sau)',
+                    quantity=Decimal('1'),
+                    unit_price=base,
+                    amount=Decimal('0'),
+                )
+            )
+
+    penalty_items = build_penalty_items(
+        db,
+        detection=det,
+        vessel=vessel,
+        fees=fees,
+    )
+    items.extend(penalty_items)
+    return items
+
+
 def ensure_ai_invoice_for_detection(detection_id: int) -> None:
     """
     Tạo tối đa một hóa đơn AI cho detection_id.
@@ -139,9 +208,6 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             return
         if is_unknown_ship_id(vessel.ship_id):
             _log.info('Skip AI invoice detection_id=%s: unknown ship_id=%s', detection_id, vessel.ship_id)
-            return
-        if vessel.vessel_type_id is None:
-            _log.info('Skip AI invoice detection_id=%s: vessel_type_id missing ship_id=%s', detection_id, vessel.ship_id)
             return
 
         existing = invoice_repo.get_by_detection_id(db, detection_id)
@@ -170,77 +236,21 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             )
             return
 
-        fees = fee_config_repo.get_by_vessel_type(db, vessel.vessel_type_id)
+        fees = resolve_billable_fees(db, vessel)
         if not fees:
             _log.info(
-                'Skip AI invoice detection_id=%s: no active fee config for vessel_type_id=%s',
+                'Skip AI invoice detection_id=%s: no active fee config for vessel_id=%s ship_id=%s',
                 detection_id,
-                vessel.vessel_type_id,
+                vessel.id,
+                vessel.ship_id,
             )
             return
 
-        # Cột "neo đậu" trên trang hóa đơn hiển thị theo detection.start_time/end_time,
-        # nên quantity tính tiền phải dùng cùng một window này. berth_in/out chỉ là
-        # tín hiệu vào/ra vùng dùng cho duplicate/penalty, không được làm lệch số tiền
-        # so với thời gian neo đậu đang hiển thị cho người dùng.
-        hours = _berthing_hours(
-            cast(Optional[datetime], det.start_time),
-            cast(Optional[datetime], det.end_time),
-        )
-        items: list[InvoiceItemCreate] = []
-
-        for fee in fees:
-            unit = normalize_fee_billing_unit(fee.unit)
-            if unit == 'none':
-                continue
-            base = Decimal(str(fee.base_fee))
-            if unit == 'per_berth_visit':
-                items.append(
-                    InvoiceItemCreate(
-                        fee_config_id=fee.id,
-                        description=f'{fee.fee_name} — 1 lượt cập bến (tự động)',
-                        quantity=Decimal('1'),
-                        unit_price=base,
-                    )
-                )
-            elif unit == 'per_hour':
-                items.append(
-                    InvoiceItemCreate(
-                        fee_config_id=fee.id,
-                        description=f'{fee.fee_name} — neo {hours} giờ (tự động)',
-                        quantity=hours,
-                        unit_price=base,
-                    )
-                )
-            elif unit in ('per_month', 'per_year'):
-                label = 'tháng' if unit == 'per_month' else 'năm'
-                items.append(
-                    InvoiceItemCreate(
-                        fee_config_id=fee.id,
-                        description=f'{fee.fee_name} — tham chiếu phí theo {label} (quản lý nhập tổng sau)',
-                        quantity=Decimal('1'),
-                        unit_price=base,
-                        amount=Decimal('0'),
-                    )
-                )
-
-        penalty_items = build_penalty_items(
-            db,
-            detection=det,
-            vessel=vessel,
-            fees=fees,
-        )
-        items.extend(penalty_items)
+        items = build_ai_invoice_items(db, det, vessel, fees)
 
         if not items:
             _log.info('Skip AI invoice detection_id=%s: all fee items resolved to none', detection_id)
             return
-
-        def _line_sub(it: InvoiceItemCreate) -> Decimal:
-            if it.amount is not None:
-                return it.amount
-            q = it.quantity if it.quantity is not None else Decimal('1')
-            return (q * it.unit_price).quantize(Decimal('0.01'))
 
         inv_no = invoice_repo.generate_unique_invoice_number(db)
         notes_parts = [
@@ -275,6 +285,123 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def recompute_ai_invoice_for_detection(
+    detection_id: int,
+    *,
+    session: Session | None = None,
+    commit: bool = True,
+) -> dict:
+    """Tính lại hóa đơn AI của detection sau khi sửa detection.
+
+    - Không có invoice AI: tạo mới (ủy quyền cho ensure_).
+    - Có invoice AI chưa thanh toán: dựng lại line-items + subtotal/total theo
+      dữ liệu detection mới, xóa item cũ, ghi item mới.
+    - Invoice đã PAID (financial lock): giữ nguyên, không sửa tiền.
+
+    Trả dict {status, invoice_id?} để endpoint báo lại cho client.
+    """
+    owns_db = session is None
+    db: Session = session or SessionLocal()
+    try:
+        det = detection_repo.get(db, detection_id)
+        if not det:
+            return {'status': 'skipped_missing_detection'}
+
+        existing = invoice_repo.get_by_detection_id(db, detection_id)
+        if existing is not None and existing.creation_source not in ('AI', 'ORDER_AUTO'):
+            return {'status': 'skipped_not_ai', 'invoice_id': existing.id}
+
+        if existing is not None and is_invoice_financially_locked(existing):
+            _log.info(
+                'Skip recompute detection_id=%s: invoice %s đã PAID (khóa tài chính)',
+                detection_id,
+                existing.id,
+            )
+            return {'status': 'skipped_locked', 'invoice_id': existing.id}
+
+        def retire_unbillable(status: str) -> dict:
+            if existing is None:
+                return {'status': status}
+            existing.deleted_at = datetime.now(timezone.utc)
+            if commit:
+                db.commit()
+            else:
+                db.flush()
+            return {'status': 'retired_unbillable', 'invoice_id': existing.id}
+
+        if not det.vessel_id:
+            return retire_unbillable('skipped_no_vessel')
+
+        vessel = vessel_repo.get(db, det.vessel_id)
+        if not vessel or is_unknown_ship_id(vessel.ship_id):
+            return retire_unbillable('skipped_not_eligible')
+
+        fees = resolve_billable_fees(db, vessel)
+        if not fees:
+            return retire_unbillable('skipped_no_fee')
+
+        items = build_ai_invoice_items(db, det, vessel, fees)
+        if not items:
+            return retire_unbillable('skipped_no_items')
+
+        if existing is None:
+            if not commit:
+                return {'status': 'needs_create'}
+            ensure_ai_invoice_for_detection(detection_id)
+            created = invoice_repo.get_by_detection_id(db, detection_id)
+            if created is not None:
+                return {'status': 'created', 'invoice_id': created.id}
+            return {'status': 'skipped_not_eligible'}
+
+        subtotal = sum((_line_sub(it) for it in items), Decimal('0')).quantize(Decimal('0.01'))
+
+        # Xóa line-item cũ, ghi item mới theo dữ liệu detection hiện tại.
+        for old in list(existing.items):
+            db.delete(old)
+        db.flush()
+        for it in items:
+            data = it.model_dump()
+            data['invoice_id'] = existing.id
+            db.add(InvoiceItem(**data))
+
+        # AI invoice không cộng VAT. discount hiện có giữ nguyên, total = gross - discount.
+        existing.subtotal = subtotal
+        existing.tax_amount = Decimal('0')
+        existing.total_amount = compute_invoice_total(
+            subtotal,
+            Decimal('0'),
+            existing.discount_amount,
+        )
+        existing.vessel_id = vessel.id
+        db.flush()
+
+        refreshed = invoice_repo.get(db, existing.id)
+        if refreshed:
+            refreshed.is_over_berth_limit = compute_invoice_over_berth_limit(db, refreshed)
+            refreshed.is_outside_operating_hours = compute_invoice_outside_operating_hours(db, refreshed)
+
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        _log.info(
+            'Recomputed AI invoice %s for detection_id=%s subtotal=%s',
+            existing.invoice_number,
+            detection_id,
+            subtotal,
+        )
+        return {'status': 'recomputed', 'invoice_id': existing.id}
+    except Exception:
+        _log.exception('recompute_ai_invoice_for_detection failed detection_id=%s', detection_id)
+        if commit:
+            db.rollback()
+            return {'status': 'error'}
+        raise
+    finally:
+        if owns_db:
+            db.close()
 
 
 def backfill_missing_ai_invoices(limit: int = 200) -> dict:

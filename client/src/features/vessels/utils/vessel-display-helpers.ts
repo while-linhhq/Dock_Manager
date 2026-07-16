@@ -17,5 +17,6 @@ export function formatApplicableFee(v: VesselRead) {
   if (!f) {
     return '—';
   }
-  return `${f.fee_name} — ${formatFeeConfigDisplay(f.base_fee, f.unit)}`;
+  // Chỉ hiển thị mức phí (vd 1.000.000đ/giờ), bỏ tên phí cho gọn.
+  return formatFeeConfigDisplay(f.base_fee, f.unit);
 }

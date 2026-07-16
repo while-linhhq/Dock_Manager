@@ -421,6 +421,31 @@ class BoundaryCrossingTracker:
 
         return None
 
+    def finalize_leaving_for_missing(self, active_ids: set[str]) -> list[tuple[str, float]]:
+        """Commit OUT cho track đang ở phase 'leaving' nhưng sắp bị forget (không
+        còn trong active_ids). Trả list[(track_id, out_event_ts)].
+
+        Gọi TRƯỚC forget() để state chưa bị xóa. Sau khi commit, phase chuyển
+        'completed' để forget() dọn sạch mà không mất thông tin.
+
+        Cơ chế: track rời zone (overlap < threshold) → phase 'leaving' → bình
+        thường cần chờ grace. Nhưng nếu track chết (YOLO mất, track_max_lost_sec
+        hết) thì không còn frame nào để grace đếm tiếp. Lúc đó track đã ngoài zone
+        LIÊN TỤC từ leaving_since_ts tới khi chết — bằng chứng đủ mạnh tàu rời
+        thật. Commit OUT tại leaving_since_ts (mốc rời zone lần đầu).
+        """
+        results: list[tuple[str, float]] = []
+        for tid in list(self._states):
+            if tid in active_ids:
+                continue
+            st = self._states[tid]
+            if st.phase == 'leaving' and st.leaving_since_ts > 0:
+                st.phase = 'completed'
+                st.out_event_ts = st.leaving_since_ts
+                st.leaving_since_ts = 0.0
+                results.append((tid, st.out_event_ts))
+        return results
+
     def forget(self, active_ids: set[str]) -> None:
         for tid in list(self._states):
             if tid not in active_ids:

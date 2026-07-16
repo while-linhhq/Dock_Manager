@@ -12,13 +12,11 @@ from sqlalchemy.orm import Session
 from zoneinfo import ZoneInfo
 
 from app.models.detection import Detection
-from app.models.boundary_crossing_event import BoundaryCrossingEvent
 from app.models.fee import FeeConfig
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.vessel import Vessel
 from app.repositories.order_repository import order_repo
-from app.services.boundary_crossing_event_service import count_boundary_crossings
 
 TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
@@ -47,6 +45,45 @@ def _period_bounds_utc(period: Period) -> Tuple[datetime, datetime, datetime, da
     start_utc = start_local.astimezone(timezone.utc)
     end_utc = end_local.astimezone(timezone.utc)
     return start_utc, end_utc, start_local, end_local
+
+
+def _count_berthing_io(db: Session, start_utc: datetime, end_utc: datetime) -> Tuple[int, int]:
+    """Đếm IN/OUT theo LƯỢT NEO thật (detection đã coalesce), KHÔNG đếm thô
+    boundary_crossing_events.
+
+    Trước: count_boundary_crossings đếm mỗi dòng BCE — một lượt neo bị vỡ nhiều
+    track (fragmentation) ghi nhiều cặp IN/OUT → tổng IN phồng theo số MẢNH, và
+    IN (ghi cho mọi mảnh) ≠ OUT (chỉ ghi khi có OUT crossing thật) → lệch pha.
+
+    Giờ đếm trên bảng detections đã coalesce (deleted_at IS NULL): mỗi detection
+    = 1 lượt neo. IN = có berth_in_time trong kỳ; OUT = có berth_out_time trong
+    kỳ (kể cả suy diễn last_seen — vì một lượt neo hoàn tất luôn có mốc rời, dù
+    là crossing thật hay last_seen). Bám theo berth_in_time/berth_out_time nên
+    IN/OUT phản ánh đúng số lượt tàu vào/ra, khớp với danh sách detection.
+    """
+    in_count = int(
+        db.query(func.count(Detection.id))
+        .filter(
+            Detection.deleted_at.is_(None),
+            Detection.berth_in_time.isnot(None),
+            Detection.berth_in_time >= start_utc,
+            Detection.berth_in_time < end_utc,
+        )
+        .scalar()
+        or 0
+    )
+    out_count = int(
+        db.query(func.count(Detection.id))
+        .filter(
+            Detection.deleted_at.is_(None),
+            Detection.berth_out_time.isnot(None),
+            Detection.berth_out_time >= start_utc,
+            Detection.berth_out_time < end_utc,
+        )
+        .scalar()
+        or 0
+    )
+    return in_count, out_count
 
 
 def _distinct_ships_detected(db: Session, start_utc: datetime, end_utc: datetime) -> int:
@@ -179,15 +216,34 @@ def _boundary_crossing_volume_series(
     end_utc: datetime,
     start_local: datetime,
 ) -> Tuple[List[str], List[int], List[int]]:
-    """Chuỗi INPUT/OUTPUT theo kỳ (cùng bucket với lượt nhận diện)."""
-    rows = (
-        db.query(BoundaryCrossingEvent.crossed_at, BoundaryCrossingEvent.direction)
+    """Chuỗi INPUT/OUTPUT theo kỳ (cùng bucket với lượt nhận diện).
+
+    Đếm theo LƯỢT NEO thật (detections đã coalesce), không đếm thô BCE — nhất
+    quán với _count_berthing_io. Mỗi detection đóng góp 1 IN (berth_in_time) và
+    1 OUT (berth_out_time) vào bucket tương ứng.
+    """
+    rows: list[tuple] = []
+    in_rows = (
+        db.query(Detection.berth_in_time, literal('in'))
         .filter(
-            BoundaryCrossingEvent.crossed_at >= start_utc,
-            BoundaryCrossingEvent.crossed_at < end_utc,
+            Detection.deleted_at.is_(None),
+            Detection.berth_in_time.isnot(None),
+            Detection.berth_in_time >= start_utc,
+            Detection.berth_in_time < end_utc,
         )
         .all()
     )
+    out_rows = (
+        db.query(Detection.berth_out_time, literal('out'))
+        .filter(
+            Detection.deleted_at.is_(None),
+            Detection.berth_out_time.isnot(None),
+            Detection.berth_out_time >= start_utc,
+            Detection.berth_out_time < end_utc,
+        )
+        .all()
+    )
+    rows = list(in_rows) + list(out_rows)
 
     if period == 'day':
         labels = [f'{h:02d}h' for h in range(24)]
@@ -359,7 +415,7 @@ def build_dashboard_summary(db: Session, period: Period) -> dict[str, Any]:
     det_vol_labels, det_vol_counts = _detection_volume_series(
         db, period, start_utc, end_utc, start_local
     )
-    boundary_in_total, boundary_out_total = count_boundary_crossings(db, start_utc, end_utc)
+    boundary_in_total, boundary_out_total = _count_berthing_io(db, start_utc, end_utc)
     bnd_labels, bnd_in, bnd_out = _boundary_crossing_volume_series(
         db, period, start_utc, end_utc, start_local
     )

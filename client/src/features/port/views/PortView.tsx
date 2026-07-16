@@ -3,7 +3,12 @@ import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { usePortStore } from '../store/portStore';
-import type { CameraCreate, PortConfigCreate, PortConfigRead } from '../services/portApi';
+import type {
+  CameraCreate,
+  DetectionUpdate,
+  PortConfigCreate,
+  PortConfigRead,
+} from '../services/portApi';
 import {
   getDetectionDisplayTimeIso,
   getDetectionShipLabel,
@@ -62,6 +67,7 @@ export const PortView: React.FC = () => {
     fetchDetections,
     fetchConfigs,
     verifyDetection,
+    updateDetection,
     upsertCamera,
     upsertConfig,
     deleteConfig,
@@ -262,6 +268,10 @@ export const PortView: React.FC = () => {
     await deleteDetection(id);
   };
 
+  const handleUpdateDetection = async (id: string, data: DetectionUpdate) => {
+    await updateDetection(id, data);
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <PortMainTabs activeTab={activeTab} onTabChange={handleTabChange} />
@@ -292,6 +302,7 @@ export const PortView: React.FC = () => {
           vesselTypes={filterVesselTypes}
           onVerify={(id, data) => verifyDetection(id, data)}
           onDeleteDetection={handleDeleteDetection}
+          onUpdateDetection={handleUpdateDetection}
         />
       )}
 

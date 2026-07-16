@@ -31,10 +31,19 @@ class VesselRepository:
             .first()
         )
 
-    def get_all(self, db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[Vessel]:
+    def get_all(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        active_only: bool = False,
+        classification: Optional[str] = None,
+    ) -> List[Vessel]:
         q = db.query(Vessel).options(joinedload(Vessel.vessel_type))
         if active_only:
             q = q.filter(Vessel.is_active == True)
+        if classification:
+            q = q.filter(Vessel.classification == classification)
         return q.offset(skip).limit(limit).all()
 
     def create(self, db: Session, data) -> Vessel:
@@ -50,8 +59,7 @@ class VesselRepository:
         if not db_vessel:
             return None
         for key, value in data.items():
-            if value is not None:
-                setattr(db_vessel, key, value)
+            setattr(db_vessel, key, value)
         db.commit()
         db.refresh(db_vessel)
         return db_vessel
