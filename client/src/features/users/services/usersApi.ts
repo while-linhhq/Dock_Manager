@@ -18,16 +18,21 @@ export type UserUpdate = {
   is_active?: boolean;
 }
 
+export type RolePermissions = {
+  all?: boolean;
+  menus?: string[];
+}
+
 export type RoleCreate = {
   role_name: string;
   description?: string;
-  permissions?: Record<string, unknown>;
+  permissions?: RolePermissions;
 }
 
 export type RoleUpdate = {
   role_name?: string;
   description?: string;
-  permissions?: Record<string, unknown>;
+  permissions?: RolePermissions;
 }
 
 export const usersApi = {

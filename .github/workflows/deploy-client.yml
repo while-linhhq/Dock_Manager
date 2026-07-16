@@ -1,0 +1,61 @@
+name: Deploy client to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - '.github/workflows/deploy-client.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    defaults:
+      run:
+        working-directory: client
+    env:
+      VITE_API_BASE_URL: https://bason-server.aivo.io.vn/api/v1
+      VITE_API_PROXY_TARGET: https://bason-server.aivo.io.vn
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Ensure Cloudflare Pages project exists
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: client
+          command: pages project create dock-client --production-branch=main
+        continue-on-error: true
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: client
+          command: pages deploy dist --project-name=dock-client --branch=main --commit-dirty=true
