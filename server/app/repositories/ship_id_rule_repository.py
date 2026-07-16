@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 _PATTERN_UPDATE_FIELDS = frozenset({'name', 'pattern', 'priority', 'description', 'is_active'})
 _CONVERT_MAP_UPDATE_FIELDS = frozenset({'correct_value', 'reason'})
+_PREFIX_CONVERT_UPDATE_FIELDS = frozenset({'to_prefix', 'reason'})
 
 
 class ShipIdRuleRepository:
@@ -139,6 +140,52 @@ class ShipIdRuleRepository:
         db.commit()
         return result.rowcount > 0
 
+    # ── Prefix Convert Map ─────────────────────────────────────────────────
+
+    def get_all_prefix_convert(self, db: Session) -> list[dict]:
+        rows = db.execute(
+            text('SELECT * FROM ship_id_prefix_convert ORDER BY created_at DESC')
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+    def get_prefix_convert_entry(self, db: Session, entry_id: int) -> Optional[dict]:
+        row = db.execute(
+            text('SELECT * FROM ship_id_prefix_convert WHERE id = :id'), {'id': entry_id}
+        ).mappings().first()
+        return dict(row) if row else None
+
+    def create_prefix_convert(self, db: Session, data: dict) -> dict:
+        row = db.execute(
+            text("""
+                INSERT INTO ship_id_prefix_convert (from_prefix, to_prefix, reason)
+                VALUES (:from_prefix, :to_prefix, :reason)
+                RETURNING *
+            """),
+            data,
+        ).mappings().first()
+        db.commit()
+        return dict(row)
+
+    def update_prefix_convert(self, db: Session, entry_id: int, data: dict) -> Optional[dict]:
+        fields = self._pick_update_fields(data, _PREFIX_CONVERT_UPDATE_FIELDS)
+        if not fields:
+            return self.get_prefix_convert_entry(db, entry_id)
+        fields['id'] = entry_id
+        set_clause = ', '.join(f'{key} = :{key}' for key in fields if key != 'id')
+        row = db.execute(
+            text(f'UPDATE ship_id_prefix_convert SET {set_clause} WHERE id = :id RETURNING *'),
+            fields,
+        ).mappings().first()
+        db.commit()
+        return dict(row) if row else None
+
+    def delete_prefix_convert(self, db: Session, entry_id: int) -> bool:
+        result = db.execute(
+            text('DELETE FROM ship_id_prefix_convert WHERE id = :id'), {'id': entry_id}
+        )
+        db.commit()
+        return result.rowcount > 0
+
     # ── State hash for polling ─────────────────────────────────────────────
 
     def get_state_hash(self, db: Session) -> str:
@@ -150,7 +197,9 @@ class ShipIdRuleRepository:
                 (SELECT COUNT(*) FROM ship_id_blacklist) AS blacklist_count,
                 (SELECT COALESCE(CAST(MAX(created_at) AS TEXT), '0') FROM ship_id_blacklist) AS blacklist_ts,
                 (SELECT COUNT(*) FROM ship_id_convert_map) AS convert_count,
-                (SELECT COALESCE(CAST(MAX(created_at) AS TEXT), '0') FROM ship_id_convert_map) AS convert_ts
+                (SELECT COALESCE(CAST(MAX(created_at) AS TEXT), '0') FROM ship_id_convert_map) AS convert_ts,
+                (SELECT COUNT(*) FROM ship_id_prefix_convert) AS prefix_count,
+                (SELECT COALESCE(CAST(MAX(created_at) AS TEXT), '0') FROM ship_id_prefix_convert) AS prefix_ts
         """)).mappings().first()
 
         convert_rows = db.execute(text("""
@@ -170,6 +219,23 @@ class ShipIdRuleRepository:
             else '0'
         )
 
+        prefix_rows = db.execute(text("""
+            SELECT from_prefix, to_prefix, reason
+            FROM ship_id_prefix_convert
+            ORDER BY id
+        """)).mappings().all()
+        prefix_content = (
+            hashlib.md5(
+                '|'.join(
+                    f"{row['from_prefix']}:{row['to_prefix']}:{row['reason'] or ''}"
+                    for row in prefix_rows
+                ).encode(),
+                usedforsecurity=False,
+            ).hexdigest()
+            if prefix_rows
+            else '0'
+        )
+
         return '|'.join([
             str(stats['pattern_count']),
             str(stats['pattern_ts']),
@@ -178,6 +244,9 @@ class ShipIdRuleRepository:
             str(stats['convert_count']),
             str(stats['convert_ts']),
             convert_content,
+            str(stats['prefix_count']),
+            str(stats['prefix_ts']),
+            prefix_content,
         ])
 
 

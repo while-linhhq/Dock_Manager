@@ -236,6 +236,9 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
           berth_limit_unit: data.berth_limit_unit,
           over_limit_penalty_amount: data.over_limit_penalty_amount,
           outside_hours_penalty_amount: data.outside_hours_penalty_amount,
+          outside_hours_penalty_per_hour: data.outside_hours_penalty_per_hour,
+          max_berth_duration_minutes: data.max_berth_duration_minutes,
+          over_duration_penalty_amount: data.over_duration_penalty_amount,
           operating_hours: data.operating_hours,
         };
         await revenueApi.updateFeeConfig(id, patch);

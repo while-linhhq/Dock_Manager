@@ -40,6 +40,7 @@ export type BulkSepaySessionRead = {
 export type FeeConfigCreate = {
   fee_name: string;
   vessel_type_id?: number | null;
+  vessel_id?: number | null;
   base_fee: number;
   unit?: string | null;
   is_active?: boolean;
@@ -49,11 +50,16 @@ export type FeeConfigCreate = {
   berth_limit_unit?: 'day' | 'month' | null;
   over_limit_penalty_amount?: number | null;
   outside_hours_penalty_amount?: number | null;
+  outside_hours_penalty_per_hour?: number | null;
+  max_berth_duration_minutes?: number | null;
+  over_duration_penalty_amount?: number | null;
   operating_hours?: Record<string, unknown> | null;
 }
 
 export type FeeConfigUpdatePayload = {
   fee_name?: string;
+  vessel_type_id?: number | null;
+  vessel_id?: number | null;
   base_fee?: number;
   unit?: string | null;
   is_active?: boolean;
@@ -63,6 +69,9 @@ export type FeeConfigUpdatePayload = {
   berth_limit_unit?: 'day' | 'month' | null;
   over_limit_penalty_amount?: number | null;
   outside_hours_penalty_amount?: number | null;
+  outside_hours_penalty_per_hour?: number | null;
+  max_berth_duration_minutes?: number | null;
+  over_duration_penalty_amount?: number | null;
   operating_hours?: Record<string, unknown> | null;
 }
 
@@ -102,7 +111,7 @@ export const revenueApi = {
   getInvoices: async (params: InvoiceListParams = {}): Promise<InvoiceRead[]> => {
     const q = new URLSearchParams({
       skip: String(params.skip ?? 0),
-      limit: String(params.limit ?? 100),
+      limit: String(params.limit ?? 1000),
     });
     if (params.deletedOnly) {
       q.set('deleted_only', 'true');
@@ -176,6 +185,14 @@ export const revenueApi = {
   },
   getFeeConfigs: async (activeOnly: boolean = false): Promise<FeeConfigRead[]> => {
     return httpClient.get<FeeConfigRead[]>(`/fee-configs/?active_only=${activeOnly}`);
+  },
+  getFeeConfigsByVessel: async (
+    vesselId: number,
+    activeOnly: boolean = false,
+  ): Promise<FeeConfigRead[]> => {
+    return httpClient.get<FeeConfigRead[]>(
+      `/fee-configs/?vessel_id=${vesselId}&active_only=${activeOnly}`,
+    );
   },
   createFeeConfig: async (data: FeeConfigCreate): Promise<FeeConfigRead> => {
     return httpClient.post<FeeConfigRead>('/fee-configs/', data);

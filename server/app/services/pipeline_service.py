@@ -1307,6 +1307,38 @@ class PipelineService:
             # vì last_seen_ts chỉ cập nhật ở frame khớp cuối. Đánh dấu nguồn để phân
             # biệt với OUT crossing thật (billing/report có thể lọc/duyệt lại).
             berth_out_source = 'crossing' if berth_out_dt is not None else None
+            # Phương án A1 — IN suy diễn (đối xứng với OUT suy diễn ở dưới): track
+            # CÓ danh tính (ship_id thật hoặc OCR đọc được biển trong hist) nhưng
+            # thiếu berth_in crossing — do track sinh ra đã nằm trong berth_zone
+            # (seed-inside, boundary_crossing.py cố tình KHÔNG phát 'in' để tránh
+            # berth_in giả trên camera handoff), hoặc không camera nào bắt được
+            # cảnh băng line1→line2 lúc vào — thì suy ra berth_in = first_seen
+            # (start_dt_utc), mốc đầu tiên camera này thấy tàu. Đánh dấu nguồn
+            # 'inferred' để billing/report phân biệt với 'in' crossing thật (giống
+            # berth_out_source='last_seen'). KHÔNG suy cho track vô danh (UNKNOWN,
+            # không OCR) để tránh làm nặng phân mảnh: mỗi mảnh vô danh không có
+            # arrival thật sẽ thành 1 detection giả. Nếu sau đó có 'in' crossing
+            # thật đến qua ReID merge, _attach_track (earliest-wins) vẫn ghi đè.
+            berth_in_source = 'crossing' if berth_in_dt is not None else None
+            _has_known_id = not is_unknown_ship_id(ship_id)
+            _has_ocr_id = any(
+                not is_unknown_ship_id(str(candidate or '').strip().upper())
+                for candidate, _confidence in (hist or [])
+            )
+            if (
+                berth_in_dt is None
+                and start_dt_utc is not None
+                and (_has_known_id or _has_ocr_id)
+            ):
+                berth_in_dt = start_dt_utc
+                berth_in_source = 'inferred'
+                _log.info(
+                    'Inferred IN for track=%s ship=%s: berth_in=first_seen=%s '
+                    '(no IN crossing, track seeded inside zone / late handoff)',
+                    tb.track_id,
+                    ship_id,
+                    berth_in_dt,
+                )
             if (
                 berth_out_dt is None
                 and berth_in_dt is not None
@@ -1403,6 +1435,7 @@ class PipelineService:
                         berth_in_time=berth_in_dt,
                         berth_out_time=berth_out_dt,
                         berth_out_source=berth_out_source,
+                        berth_in_source=berth_in_source,
                         video_path=None,
                         audit_image_path=None,
                         ocr_results=[{'id': h[0], 'conf': h[1]} for h in hist],

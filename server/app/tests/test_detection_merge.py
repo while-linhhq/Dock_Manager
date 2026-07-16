@@ -726,3 +726,90 @@ def test_incremental_crossing_source_propagated_blocks_next():
     # C là lượt riêng — hàng rào crossing chặn nối, C sống độc lập.
     assert c.deleted_at is None
     assert winner_c == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 17 — a LATER last_seen fragment must NOT overwrite a real OUT crossing
+# ---------------------------------------------------------------------------
+
+def test_later_last_seen_does_not_overwrite_crossing():
+    """Bug det 2004 (SG-6898, 7/8): winner rời bằng OUT crossing THẬT 06:33:16,
+    một mảnh đuôi last_seen 06:33:33 (muộn hơn 17s) bị gộp vào. Phép NỚI cửa sổ
+    KHÔNG được kéo berth_out quá mốc crossing, cũng KHÔNG lật source thành
+    last_seen. cluster_end phải = mốc crossing muộn nhất khi cụm có crossing.
+    """
+    from app.services import detection_merge_service as svc
+
+    winner_det = _make_detection(
+        1, vessel_id=1,
+        berth_in=datetime(2026, 7, 8, 6, 16, 32, tzinfo=timezone.utc),
+        berth_out=datetime(2026, 7, 8, 6, 33, 16, tzinfo=timezone.utc),
+        ship_id='SG-6898', berth_out_source='crossing',
+    )
+    # Mảnh đuôi: overlap winner (bắt đầu 06:33:12 < 06:33:16), rời last_seen muộn hơn.
+    tail_det = _make_detection(
+        2, vessel_id=1,
+        berth_in=datetime(2026, 7, 8, 6, 33, 12, tzinfo=timezone.utc),
+        berth_out=datetime(2026, 7, 8, 6, 33, 33, tzinfo=timezone.utc),
+        ship_id='SG-6898', berth_out_source='last_seen',
+    )
+
+    repo = DetectionRepository()
+    db = MagicMock()
+
+    with (
+        patch.object(repo.__class__, 'get', side_effect=lambda sess, did: winner_det if did == 1 else tail_det),
+        patch.object(repo.__class__, 'get_overlapping_by_vessel', return_value=[winner_det]),
+        patch.object(repo.__class__, 'soft_delete') as mock_soft_delete,
+        patch('app.services.detection_merge_service.detection_repo', repo),
+        patch.object(svc, '_merge_gap_sec', return_value=1800.0),
+        patch.object(svc, '_window_hours', return_value=2.0),
+    ):
+        winner_id = svc.absorb_contained(db, 2)
+
+    # winner_det dài hơn (16'44 vs 21s) → thắng, nuốt tail.
+    assert winner_id == 1
+    mock_soft_delete.assert_called_once()
+    # berth_out GIỮ mốc crossing thật, KHÔNG bị kéo tới 06:33:33.
+    assert winner_det.berth_out_time == datetime(2026, 7, 8, 6, 33, 16, tzinfo=timezone.utc)
+    # source GIỮ 'crossing', KHÔNG bị lật thành 'last_seen'.
+    assert winner_det.berth_out_source == 'crossing'
+
+
+def test_crossing_fragment_caps_longer_last_seen_winner():
+    """OUT crossing survives even when the longest winner ends later via last_seen."""
+    from app.services import detection_merge_service as svc
+
+    winner_det = _make_detection(
+        1,
+        vessel_id=1,
+        berth_in=datetime(2026, 7, 8, 6, 0, tzinfo=timezone.utc),
+        berth_out=datetime(2026, 7, 8, 6, 40, tzinfo=timezone.utc),
+        ship_id='SG-6898',
+        berth_out_source='last_seen',
+    )
+    crossing_det = _make_detection(
+        2,
+        vessel_id=1,
+        berth_in=datetime(2026, 7, 8, 6, 30, tzinfo=timezone.utc),
+        berth_out=datetime(2026, 7, 8, 6, 35, tzinfo=timezone.utc),
+        ship_id='SG-6898',
+        berth_out_source='crossing',
+    )
+
+    repo = DetectionRepository()
+    db = MagicMock()
+    with (
+        patch.object(repo.__class__, 'get', side_effect=lambda sess, did: winner_det if did == 1 else crossing_det),
+        patch.object(repo.__class__, 'get_overlapping_by_vessel', return_value=[winner_det]),
+        patch.object(repo.__class__, 'soft_delete') as mock_soft_delete,
+        patch('app.services.detection_merge_service.detection_repo', repo),
+        patch.object(svc, '_merge_gap_sec', return_value=1800.0),
+        patch.object(svc, '_window_hours', return_value=2.0),
+    ):
+        winner_id = svc.absorb_contained(db, 2)
+
+    assert winner_id == 1
+    mock_soft_delete.assert_called_once()
+    assert winner_det.berth_out_time == datetime(2026, 7, 8, 6, 35, tzinfo=timezone.utc)
+    assert winner_det.berth_out_source == 'crossing'

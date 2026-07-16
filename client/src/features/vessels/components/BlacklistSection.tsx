@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { useShipIdRulesStore } from '../store/shipIdRulesStore';
 import { Button } from '../../../components/Button/Button';
+import type { BlacklistRead } from '../types/ship-id-rules.types';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 export const BlacklistSection: React.FC = () => {
   const { blacklist, createBlacklist, deleteBlacklist, convertMap } = useShipIdRulesStore();
@@ -11,6 +14,13 @@ export const BlacklistSection: React.FC = () => {
 
   const convertMapWrongs = new Set(convertMap.map((c) => c.wrong_value));
   const conflict = value.trim().toUpperCase() && convertMapWrongs.has(value.trim().toUpperCase());
+
+  const sortAccessors: SortAccessors<BlacklistRead> = {
+    value: (b) => b.value,
+    reason: (b) => b.reason ?? '',
+    created_at: (b) => (b.created_at ? new Date(b.created_at) : null),
+  };
+  const { sorted, sort, toggle } = useTableSort(blacklist, sortAccessors);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,9 +76,15 @@ export const BlacklistSection: React.FC = () => {
         <table className="w-full text-xs">
           <thead className="bg-gray-50 dark:bg-white/5 text-gray-500 uppercase tracking-wider">
             <tr>
-              <th className="px-3 py-2 text-left">Giá trị bị chặn</th>
-              <th className="px-3 py-2 text-left">Lý do</th>
-              <th className="px-3 py-2 text-left">Ngày thêm</th>
+              <SortableTh sortKey="value" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Giá trị bị chặn
+              </SortableTh>
+              <SortableTh sortKey="reason" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Lý do
+              </SortableTh>
+              <SortableTh sortKey="created_at" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Ngày thêm
+              </SortableTh>
               <th className="px-3 py-2 text-right">Xóa</th>
             </tr>
           </thead>
@@ -80,7 +96,7 @@ export const BlacklistSection: React.FC = () => {
                 </td>
               </tr>
             ) : null}
-            {blacklist.map((b) => (
+            {sorted.map((b) => (
               <tr key={b.id} className="hover:bg-gray-50 dark:hover:bg-white/[0.02]">
                 <td className="px-3 py-2 font-mono font-semibold text-red-600 dark:text-red-400">
                   {b.value}

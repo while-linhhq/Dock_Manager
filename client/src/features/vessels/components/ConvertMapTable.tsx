@@ -4,6 +4,8 @@ import { useShipIdRulesStore } from '../store/shipIdRulesStore';
 import type { ConvertMapCreate, ConvertMapRead } from '../types/ship-id-rules.types';
 import { Button } from '../../../components/Button/Button';
 import { Modal } from '../../../components/Modal/Modal';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 type FormValues = { wrong_value: string; correct_value: string; reason: string };
 const DEFAULT_FORM: FormValues = { wrong_value: '', correct_value: '', reason: '' };
@@ -14,6 +16,13 @@ export const ConvertMapTable: React.FC = () => {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormValues>(DEFAULT_FORM);
   const [isSaving, setIsSaving] = useState(false);
+
+  const sortAccessors: SortAccessors<ConvertMapRead> = {
+    wrong_value: (c) => c.wrong_value,
+    correct_value: (c) => c.correct_value,
+    reason: (c) => c.reason ?? '',
+  };
+  const { sorted, sort, toggle } = useTableSort(convertMap, sortAccessors);
 
   const sameError =
     form.wrong_value.trim() &&
@@ -75,10 +84,16 @@ export const ConvertMapTable: React.FC = () => {
         <table className="w-full text-xs">
           <thead className="bg-gray-50 dark:bg-white/5 text-gray-500 uppercase tracking-wider">
             <tr>
-              <th className="px-3 py-2 text-left">OCR nhận diện sai</th>
+              <SortableTh sortKey="wrong_value" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                OCR nhận diện sai
+              </SortableTh>
               <th className="px-3 py-2 text-center"></th>
-              <th className="px-3 py-2 text-left">Kết quả đúng</th>
-              <th className="px-3 py-2 text-left">Lý do</th>
+              <SortableTh sortKey="correct_value" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Kết quả đúng
+              </SortableTh>
+              <SortableTh sortKey="reason" sort={sort} onSort={toggle} className="px-3 py-2 sm:px-3 sm:py-2">
+                Lý do
+              </SortableTh>
               <th className="px-3 py-2 text-right">Hành động</th>
             </tr>
           </thead>
@@ -90,7 +105,7 @@ export const ConvertMapTable: React.FC = () => {
                 </td>
               </tr>
             ) : null}
-            {convertMap.map((c) => (
+            {sorted.map((c) => (
               <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-white/[0.02]">
                 <td className="px-3 py-2 font-mono font-semibold text-amber-600 dark:text-amber-400">
                   {c.wrong_value}

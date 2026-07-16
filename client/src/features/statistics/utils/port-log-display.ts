@@ -1,7 +1,7 @@
 import type { PortLogRead } from '../../../types/api.types';
 import { formatDateTimeVN } from '../../../utils/date-time';
 
-export const PORT_LOG_TABLE_COL_COUNT = 10;
+export const PORT_LOG_TABLE_COL_COUNT = 11;
 
 export function portLogShip(log: PortLogRead) {
   return log.voted_ship_id ?? log.ship_id ?? '';

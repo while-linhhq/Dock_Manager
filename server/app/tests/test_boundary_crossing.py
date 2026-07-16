@@ -335,3 +335,48 @@ def test_resolve_bbox_cross_threshold_coerces_legacy_percent_payload():
 def test_resolve_bbox_cross_threshold_defaults_when_missing():
     assert resolve_bbox_cross_threshold(None) == 0.30
     assert resolve_bbox_cross_threshold({}) == 0.30
+
+
+# ---------------------------------------------------------------------------
+# finalize_leaving_for_missing — commit-OUT-on-death
+# ---------------------------------------------------------------------------
+
+def test_finalize_leaving_commits_out_for_dead_track():
+    """Track đang 'leaving' (grace chưa xong) bị mất khỏi active_ids →
+    finalize_leaving_for_missing chốt OUT tại leaving_since_ts."""
+    trk = BoundaryCrossingTracker(_cfg_grace(30.0))
+    # IN
+    trk.update('t', (25, 45, 35, 55), 1.0, 100, 100)
+    assert trk.update('t', (45, 45, 65, 55), 2.0, 100, 100) == 'in'
+    # Rời zone → leaving @10.0
+    assert trk.update('t', (5, 45, 20, 55), 10.0, 100, 100) is None
+    assert trk.get_phase('t') == 'leaving'
+    # Track chết (không còn trong active_ids) → commit OUT
+    results = trk.finalize_leaving_for_missing(set())  # empty = all dead
+    assert results == [('t', 10.0)]
+    assert trk.get_phase('t') == 'completed'
+    assert trk.get_out_event_ts('t') == 10.0
+
+
+def test_finalize_leaving_skips_inside_track():
+    """Track ở phase 'inside' (track vỡ GIỮA zone) → KHÔNG commit OUT."""
+    trk = BoundaryCrossingTracker(_cfg_grace(30.0))
+    trk.update('i', (25, 45, 35, 55), 1.0, 100, 100)
+    assert trk.update('i', (45, 45, 65, 55), 2.0, 100, 100) == 'in'
+    assert trk.get_phase('i') == 'inside'
+    results = trk.finalize_leaving_for_missing(set())
+    assert results == []
+    # Phase unchanged
+    assert trk.get_phase('i') == 'inside'
+
+
+def test_finalize_leaving_skips_active_track():
+    """Track còn trong active_ids (vẫn sống) → KHÔNG commit dù đang leaving."""
+    trk = BoundaryCrossingTracker(_cfg_grace(30.0))
+    trk.update('a', (25, 45, 35, 55), 1.0, 100, 100)
+    trk.update('a', (45, 45, 65, 55), 2.0, 100, 100)
+    trk.update('a', (5, 45, 20, 55), 10.0, 100, 100)
+    assert trk.get_phase('a') == 'leaving'
+    results = trk.finalize_leaving_for_missing({'a'})  # still active
+    assert results == []
+    assert trk.get_phase('a') == 'leaving'

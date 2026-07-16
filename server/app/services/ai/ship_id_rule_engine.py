@@ -19,6 +19,10 @@ _DEFAULT_PATTERN = re.compile(r'([A-Z50]{2})[-\s]?(\d{4})')
 # Numeric suffix of a ship ID split from prefix, e.g. 'TT-0000' -> '0000'.
 _SUFFIX_RE = re.compile(r'-(\d+)$')
 
+# Split a normalized ship ID into (prefix, rest), e.g. 'SC-8168' -> ('SC', '-8168').
+# Prefix = the leading alphabetic run before the first digit or dash.
+_PREFIX_RE = re.compile(r'^([A-Z]+)([-\d].*)$')
+
 
 def _is_degenerate_number(candidate_id: str) -> bool:
     """True when the numeric suffix is all zeros (e.g. TT-0000, NC-00000).
@@ -39,6 +43,7 @@ class ShipIdRuleEngine:
         self._compiled_patterns: list[dict] = []
         self._blacklist: set[str] = set()
         self._convert_map: dict[str, str] = {}
+        self._prefix_convert_map: dict[str, str] = {}
         self._state_hash: str = ''
         self._lock = threading.RLock()
 
@@ -56,11 +61,34 @@ class ShipIdRuleEngine:
         with self._lock:
             if normalized in self._blacklist:
                 return None
-            corrected = self._convert_map.get(normalized, normalized)
+            # 1) Exact convert map (highest specificity) wins.
+            corrected = self._convert_map.get(normalized)
+            if corrected is None:
+                # 2) Prefix convert map: rewrite the leading alpha prefix only
+                #    (e.g. SC-8168 -> SG-8168), keeping the numeric suffix intact.
+                corrected = self._apply_prefix_convert(normalized)
         # A convert-map target must also survive the degenerate check.
         if _is_degenerate_number(corrected):
             return None
         return corrected
+
+    def _apply_prefix_convert(self, normalized: str) -> str:
+        """Rewrite the alphabetic prefix via _prefix_convert_map, keep suffix.
+
+        Caller must hold self._lock. Returns normalized unchanged when no
+        prefix rule matches. Only the leading letters are replaced, so
+        'SC-8168' with rule SC->SG becomes 'SG-8168'.
+        """
+        if not self._prefix_convert_map:
+            return normalized
+        m = _PREFIX_RE.match(normalized)
+        if not m:
+            return normalized
+        prefix, rest = m.group(1), m.group(2)
+        new_prefix = self._prefix_convert_map.get(prefix)
+        if new_prefix is None:
+            return normalized
+        return f'{new_prefix}{rest}'
 
     def extract_ship_ids(self, text: str) -> list[dict]:
         """
@@ -68,7 +96,11 @@ class ShipIdRuleEngine:
         Normalize prefix (5→S, 0→O), apply blacklist + convert map.
         Returns list of {id, confidence, raw_text}.
         """
-        clean = text.upper().strip().replace(' ', '')
+        # Do NOT strip spaces: the space between an ID and its trailing
+        # tonnage token (e.g. 'SG-8188 24K') is the boundary that stops the
+        # 5-digit pattern from swallowing the '2' of '24K'. Collapse runs of
+        # whitespace to a single space instead.
+        clean = re.sub(r'\s+', ' ', text.upper().strip())
         results: list[dict] = []
 
         with self._lock:
@@ -122,6 +154,7 @@ class ShipIdRuleEngine:
             raw_patterns = ship_id_rule_repo.get_active_patterns(db)
             raw_blacklist = ship_id_rule_repo.get_all_blacklist(db)
             raw_convert = ship_id_rule_repo.get_all_convert_map(db)
+            raw_prefix_convert = ship_id_rule_repo.get_all_prefix_convert(db)
         except Exception as exc:
             logger.warning('ShipIdRuleEngine: reload failed: %s', exc)
             return False
@@ -138,16 +171,21 @@ class ShipIdRuleEngine:
             r['wrong_value'].strip().upper(): r['correct_value'].strip().upper()
             for r in raw_convert
         }
+        prefix_convert_map = {
+            r['from_prefix'].strip().upper(): r['to_prefix'].strip().upper()
+            for r in raw_prefix_convert
+        }
 
         with self._lock:
             self._compiled_patterns = compiled
             self._blacklist = blacklist
             self._convert_map = convert_map
+            self._prefix_convert_map = prefix_convert_map
             self._state_hash = new_hash
 
         logger.info(
-            'ShipIdRuleEngine: reloaded %d patterns, %d blacklist, %d convert entries',
-            len(compiled), len(blacklist), len(convert_map),
+            'ShipIdRuleEngine: reloaded %d patterns, %d blacklist, %d convert, %d prefix-convert entries',
+            len(compiled), len(blacklist), len(convert_map), len(prefix_convert_map),
         )
         return True
 

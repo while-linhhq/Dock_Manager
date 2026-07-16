@@ -13,18 +13,47 @@ import {
   portLogTimeIso,
 } from '../utils/port-log-display';
 import { StatisticsLogTd, StatisticsLogTh } from './statistics-log-table-cells';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 export type StatisticsLogsTableProps = {
   isLoading: boolean;
   logs: PortLogRead[];
   displayLogs: PortLogRead[];
+  /** Map 'SHIP_ID|YYYY-MM-DD' (ngày VN) → số lượt neo ngoài giờ trong ngày đó. */
+  outsideCountByShipDate: Map<string, number>;
 };
+
+// Ngày VN 'YYYY-MM-DD' của một thời điểm ISO (dùng để khớp với summary theo ngày).
+function vnDateKey(iso: string | null | undefined): string | null {
+  if (!iso) {
+    return null;
+  }
+  const d = new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(iso.trim()) ? iso.trim() : `${iso.trim()}Z`);
+  if (Number.isNaN(d.getTime())) {
+    return null;
+  }
+  // en-CA cho định dạng YYYY-MM-DD; timeZone ép về giờ VN.
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
+}
+
+// Header sort dùng SortableTh nhưng vẫn giữ dáng của StatisticsLogTh (nền/viền/uppercase).
+const logThSort =
+  'px-4 py-3.5 sm:px-4 sm:py-3.5 align-bottom text-xs sm:text-sm font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide border-b border-gray-200 dark:border-white/5 bg-gray-50 dark:bg-white/[0.02] whitespace-nowrap';
 
 export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
   isLoading,
   logs,
   displayLogs,
+  outsideCountByShipDate,
 }) => {
+  // Sắp xếp client-side trên chính mảng đang render (displayLogs). Bảng không phân trang.
+  const sortAccessors: SortAccessors<PortLogRead> = {
+    time: (log) => portLogTimeIso(log),
+    voted_ship_id: (log) => log.voted_ship_id ?? '',
+  };
+  const { sorted, sort, toggle } = useTableSort(displayLogs, sortAccessors);
+
   return (
     <div className="bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl shadow-2xl overflow-hidden">
       <div className="p-4 md:p-6 border-b border-gray-200 dark:border-white/5 flex justify-between items-center flex-wrap gap-2">
@@ -43,12 +72,19 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
               <StatisticsLogTh title="ships_completed_today — tàu hoàn thành trong ngày (OCR audit)">
                 ships_today
               </StatisticsLogTh>
-              <StatisticsLogTh title="logged_at">logged_at</StatisticsLogTh>
+              <SortableTh sortKey="time" sort={sort} onSort={toggle} className={logThSort}>
+                logged_at
+              </SortableTh>
               <StatisticsLogTh title="track_id">track_id</StatisticsLogTh>
               <StatisticsLogTh title="first_seen_at">first_seen</StatisticsLogTh>
               <StatisticsLogTh title="last_seen_at">last_seen</StatisticsLogTh>
               <StatisticsLogTh title="confidence (YOLO / track)">confidence</StatisticsLogTh>
-              <StatisticsLogTh title="voted_ship_id (kết quả bỏ phiếu OCR)">voted_ship_id</StatisticsLogTh>
+              <SortableTh sortKey="voted_ship_id" sort={sort} onSort={toggle} className={logThSort}>
+                voted_ship_id
+              </SortableTh>
+              <StatisticsLogTh title="Số lượt tàu này neo NGOÀI khung giờ cho phép trong ngày (theo mã tàu · ngày VN)">
+                lượt neo ngoài giờ (ngày)
+              </StatisticsLogTh>
               <StatisticsLogTh title="ocr_attempts">ocr_attempts</StatisticsLogTh>
               <StatisticsLogTh
                 title="vote_summary — { ship_id: { count, total_conf } }"
@@ -68,10 +104,16 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
                   <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                 </td>
               </tr>
-            ) : displayLogs.length > 0 ? (
-              displayLogs.map((log) => {
+            ) : sorted.length > 0 ? (
+              sorted.map((log) => {
                 const shipsToday = log.ships_completed_today ?? log.seq;
                 const voteText = formatVoteSummary(log);
+                const shipKey = (log.voted_ship_id ?? log.ship_id ?? '').trim().toUpperCase();
+                const dayKey = vnDateKey(portLogTimeIso(log));
+                const outsideCount =
+                  shipKey && dayKey
+                    ? outsideCountByShipDate.get(`${shipKey}|${dayKey}`) ?? 0
+                    : 0;
                 return (
                   <tr
                     key={log.id}
@@ -94,6 +136,15 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
                     <StatisticsLogTd mono>{fmtConf(log.confidence)}</StatisticsLogTd>
                     <StatisticsLogTd mono className="font-bold text-blue-600 dark:text-blue-400">
                       {fmtNullableStr(log.voted_ship_id ?? undefined)}
+                    </StatisticsLogTd>
+                    <StatisticsLogTd mono>
+                      {outsideCount > 0 ? (
+                        <span className="inline-flex items-center rounded-full bg-fuchsia-100 dark:bg-fuchsia-500/15 px-2 py-0.5 font-bold text-fuchsia-700 dark:text-fuchsia-300">
+                          {outsideCount}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 dark:text-gray-600">0</span>
+                      )}
                     </StatisticsLogTd>
                     <StatisticsLogTd mono>{fmtInt(log.ocr_attempts)}</StatisticsLogTd>
                     <StatisticsLogTd mono className="max-w-md">

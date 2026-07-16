@@ -12,6 +12,7 @@ class DetectionBase(BaseModel):
     berth_in_time: Optional[datetime] = None
     berth_out_time: Optional[datetime] = None
     berth_out_source: Optional[str] = None
+    berth_in_source: Optional[str] = None
     video_path: Optional[str] = None
     audit_image_path: Optional[str] = None
     ocr_results: Optional[List[Dict[str, Any]]] = None
@@ -21,6 +22,17 @@ class DetectionBase(BaseModel):
 
 class DetectionCreate(DetectionBase):
     vessel_id: Optional[int] = None
+
+
+class DetectionUpdate(BaseModel):
+    """Sửa thông tin detection. Chỉ field gửi lên (exclude_unset) mới được ghi."""
+    vessel_id: Optional[int] = None
+    track_id: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    berth_in_time: Optional[datetime] = None
+    berth_out_time: Optional[datetime] = None
+    confidence: Optional[float] = None
 
 
 class DetectionVerify(BaseModel):

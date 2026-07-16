@@ -24,6 +24,8 @@ import {
   statusLabels,
 } from '../utils/order-status-display';
 import { OrdersActivityIndicator } from './OrdersActivityIndicator';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 export type OrdersListSectionProps = {
   orderQ: string;
@@ -82,6 +84,16 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
   onEdit,
   onDelete,
 }) => {
+  // Sắp xếp client-side theo cột dữ liệu.
+  const sortAccessors: SortAccessors<OrderRead> = {
+    order_code: (order) => String(order.id),
+    vessel: (order) => order.vessel?.ship_id ?? '',
+    created_at: (order) => order.created_at ?? '',
+    status: (order) => normOrderStatus(String(order.status ?? 'pending')),
+    total_amount: (order) => Number(order.total_amount ?? 0),
+  };
+  const { sorted, sort, toggle } = useTableSort(filteredOrders, sortAccessors);
+
   return (
     <>
       <TableFilterPanel onReset={resetOrderFilters} activeCount={orderFilterCount}>
@@ -190,11 +202,21 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={dt.headRow}>
-                <th className={dt.pad}>Mã Đơn</th>
-                <th className={dt.pad}>Tàu / Hàng Hóa</th>
-                <th className={dt.pad}>Thời Gian</th>
-                <th className={dt.pad}>Trạng Thái</th>
-                <th className={dt.pad}>Số Tiền</th>
+                <SortableTh sortKey="order_code" sort={sort} onSort={toggle}>
+                  Mã Đơn
+                </SortableTh>
+                <SortableTh sortKey="vessel" sort={sort} onSort={toggle}>
+                  Tàu / Hàng Hóa
+                </SortableTh>
+                <SortableTh sortKey="created_at" sort={sort} onSort={toggle}>
+                  Thời Gian
+                </SortableTh>
+                <SortableTh sortKey="status" sort={sort} onSort={toggle}>
+                  Trạng Thái
+                </SortableTh>
+                <SortableTh sortKey="total_amount" sort={sort} onSort={toggle}>
+                  Số Tiền
+                </SortableTh>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
               </tr>
             </thead>
@@ -206,8 +228,8 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
                     <span className={cn('font-mono uppercase', dt.empty)}>Đang tải dữ liệu...</span>
                   </td>
                 </tr>
-              ) : filteredOrders.length > 0 ? (
-                filteredOrders.map((order) => {
+              ) : sorted.length > 0 ? (
+                sorted.map((order) => {
                   const st = normOrderStatus(String(order.status ?? 'pending'));
                   return (
                     <tr

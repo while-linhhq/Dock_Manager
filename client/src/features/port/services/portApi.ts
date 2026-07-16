@@ -12,6 +12,16 @@ export type DetectionVerify = {
   rejection_reason?: string;
 }
 
+export type DetectionUpdate = {
+  vessel_id?: number | null;
+  track_id?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  berth_in_time?: string | null;
+  berth_out_time?: string | null;
+  confidence?: number | null;
+}
+
 export type CameraCreate = {
   name: string;
   rtsp_url: string;
@@ -70,6 +80,9 @@ export const portApi = {
   },
   verifyDetection: async (id: string, data: DetectionVerify): Promise<DetectionRead> => {
     return httpClient.post<DetectionRead>(`/detections/${id}/verify`, data);
+  },
+  updateDetection: async (id: string, data: DetectionUpdate): Promise<DetectionRead> => {
+    return httpClient.patch<DetectionRead>(`/detections/${id}`, data);
   },
   getDetectionMedia: async (id: string): Promise<DetectionMediaRead[]> => {
     return httpClient.get<DetectionMediaRead[]>(`/detections/${id}/media`);

@@ -190,6 +190,11 @@ def _out_source(det) -> str:
     return str(getattr(det, 'berth_out_source', '') or '')
 
 
+def _in_source(det) -> str:
+    """berth_in_source của detection ('crossing' / 'inferred' / '')."""
+    return str(getattr(det, 'berth_in_source', '') or '')
+
+
 def _cluster_containing_new(new_det, candidates, gap_sec: float) -> list:
     """Single-linkage clustering theo trục thời gian; trả về cụm chứa new_det.
 
@@ -318,22 +323,53 @@ def absorb_contained(db: Session, detection_id: int) -> int:
     starts = [s for s in (_berth_start(d) for d in pool) if s is not None]
     ends = [e for e in (_effective_end(d) for d in pool) if e is not None]
     cluster_start = min(starts) if starts else None
-    cluster_end = max(ends) if ends else None
-    # Detection cấp cluster_end (mốc rời muộn nhất) — dùng để propagate
-    # berth_out_source cho winner. KHÔNG propagate mất crossing info thì
-    # incremental lần sau (mảnh mới persist) sẽ thấy winner src='last_seen' và
-    # hàng rào OUT-crossing KHÔNG kích hoạt → nối oan lượt sau lượt-rời-thật.
-    cluster_end_src = ''
-    if cluster_end is not None:
-        for d in pool:
-            de = _effective_end(d)
-            if de is not None and de == cluster_end:
-                # Ưu tiên 'crossing' nếu nhiều mảnh cùng mốc end.
-                if _out_source(d) == 'crossing':
-                    cluster_end_src = 'crossing'
-                    break
-                if not cluster_end_src:
+    # cluster_end: mốc RỜI của cụm. OUT crossing là bằng chứng CỨNG tàu đã rời
+    # bến — một mảnh 'last_seen' MUỘN HƠN (đuôi track, hoặc re-touch camera khác
+    # vài giây sau khi vạch OUT đã nổ) KHÔNG được kéo berth_out quá mốc crossing
+    # thật, cũng KHÔNG được xoá provenance 'crossing'. Nên: nếu cụm có BẤT KỲ
+    # mảnh 'crossing', cluster_end = mốc crossing MUỘN NHẤT (src='crossing'),
+    # mọi last_seen sau đó bị bỏ. Chỉ khi cụm KHÔNG có crossing nào mới dùng
+    # effective_end muộn nhất (last_seen). Đây chính là lỗi det 2004 (SG-6898,
+    # 7/8): mảnh đuôi last_seen 06:33:33 từng đè OUT crossing thật 06:33:16 →
+    # cột berth_out_source bị lật 'crossing'→'last_seen', dwell cộng dôi 17s, và
+    # hàng rào OUT-crossing incremental (chống nối oan lượt kế) mất hiệu lực.
+    #
+    # Lưu ý phạm vi: chỉ chi phối phép NỚI cửa sổ (không kéo berth_out VƯỢT mốc
+    # crossing). KHÔNG tự động RÚT ngắn berth_out của winner khi winner rời bằng
+    # last_seen mà một mảnh KHÁC có crossing SỚM hơn — trường hợp đó không xuất
+    # hiện trong dữ liệu thật và rút ngắn berth_out có rủi ro thiếu cước.
+    crossing_ends = [
+        e
+        for e in (
+            _effective_end(d) for d in pool if _out_source(d) == 'crossing'
+        )
+        if e is not None
+    ]
+    if crossing_ends:
+        cluster_end = max(crossing_ends)
+        cluster_end_src = 'crossing'
+    else:
+        cluster_end = max(ends) if ends else None
+        cluster_end_src = ''
+        if cluster_end is not None:
+            for d in pool:
+                de = _effective_end(d)
+                if de is not None and de == cluster_end:
                     cluster_end_src = _out_source(d)
+                    break
+    # Detection cấp cluster_start (mốc vào sớm nhất) — dùng để propagate
+    # berth_in_source cho winner (đối xứng cluster_end_src). Ưu tiên 'crossing'
+    # để mốc IN thật thắng 'inferred' khi nhiều mảnh cùng mốc start.
+    cluster_start_src = ''
+    if cluster_start is not None:
+        for d in pool:
+            ds = _berth_start(d)
+            if ds is not None and ds == cluster_start:
+                if _in_source(d) == 'crossing':
+                    cluster_start_src = 'crossing'
+                    break
+                if not cluster_start_src:
+                    cluster_start_src = _in_source(d)
 
     for det in pool:
         if det.id == winner.id:
@@ -361,15 +397,19 @@ def absorb_contained(db: Session, detection_id: int) -> int:
         w_end = _effective_end(winner)
         if cluster_start is not None and (w_start is None or cluster_start < w_start):
             winner.berth_in_time = cluster_start
-        if cluster_end is not None and (w_end is None or cluster_end > w_end):
-            # Chỉ nới berth_out nếu winner đang có berth_out (giữ nguyên semantics
-            # last_seen/crossing của winner; không bịa berth_out khi vốn NULL).
+            # Propagate source của mốc vào sớm nhất (đối xứng cluster_end_src).
+            # Nếu mảnh cấp cluster_start vào bằng IN crossing thật, winner mang
+            # src='crossing'; nếu suy diễn thì 'inferred'. Giữ đúng semantics IN.
+            if cluster_start_src:
+                winner.berth_in_source = cluster_start_src
+        crossing_caps_last_seen = (
+            cluster_end_src == 'crossing' and _out_source(winner) != 'crossing'
+        )
+        if cluster_end is not None and (w_end is None or cluster_end > w_end or crossing_caps_last_seen):
+            # OUT crossing là hard evidence. Nó có thể cắt ngắn mốc last_seen
+            # muộn hơn; không để fragment crossing bị xóa rồi mất hàng rào OUT.
             if winner.berth_out_time is not None:
                 winner.berth_out_time = cluster_end
-                # Propagate luôn source của mốc rời muộn nhất. Nếu mảnh cấp
-                # cluster_end rời bằng OUT crossing thật, winner phải mang
-                # src='crossing' để hàng rào OUT-crossing kích hoạt đúng ở lần
-                # incremental sau (chống nối oan lượt kế tiếp lượt-rời-thật).
                 if cluster_end_src:
                     winner.berth_out_source = cluster_end_src
 

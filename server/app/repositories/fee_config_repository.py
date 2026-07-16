@@ -7,13 +7,13 @@ class FeeConfigRepository:
     def get(self, db: Session, fee_id: int) -> Optional[FeeConfig]:
         return (
             db.query(FeeConfig)
-            .options(joinedload(FeeConfig.vessel_type))
+            .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
             .filter(FeeConfig.id == fee_id)
             .first()
         )
 
     def get_all(self, db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[FeeConfig]:
-        q = db.query(FeeConfig).options(joinedload(FeeConfig.vessel_type))
+        q = db.query(FeeConfig).options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
         if active_only:
             q = q.filter(FeeConfig.is_active == True)
         return q.offset(skip).limit(limit).all()
@@ -31,16 +31,35 @@ class FeeConfigRepository:
         rows.sort(key=lambda row: order.get(row.id, 10**9))
         return rows
 
-    def get_by_vessel_type(self, db: Session, vessel_type_id: int) -> List[FeeConfig]:
-        return (
+    def get_by_vessel_type(
+        self, db: Session, vessel_type_id: int, *, active_only: bool = True
+    ) -> List[FeeConfig]:
+        """Fee config gắn theo loại tàu — đường chính cho tàu tháng (monthly)."""
+        q = (
             db.query(FeeConfig)
-            .options(joinedload(FeeConfig.vessel_type))
+            .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
             .filter(
                 FeeConfig.vessel_type_id == vessel_type_id,
-                FeeConfig.is_active == True,
+                FeeConfig.vessel_id.is_(None),
             )
-            .all()
         )
+        if active_only:
+            q = q.filter(FeeConfig.is_active == True)
+        return q.all()
+
+    def get_by_vessel(self, db: Session, vessel_id: int, *, active_only: bool = True) -> List[FeeConfig]:
+        """Fee config gắn trực tiếp mã tàu (thay cho resolve theo loại tàu)."""
+        q = (
+            db.query(FeeConfig)
+            .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
+            .filter(
+                FeeConfig.vessel_id == vessel_id,
+                FeeConfig.vessel_type_id.is_(None),
+            )
+        )
+        if active_only:
+            q = q.filter(FeeConfig.is_active == True)
+        return q.all()
 
     def create(self, db: Session, data: dict) -> FeeConfig:
         db_obj = FeeConfig(**data)

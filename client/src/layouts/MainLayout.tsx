@@ -5,7 +5,6 @@ import { useAuthStore } from '../features/auth/store/authStore';
 import { useThemeStore } from '../store/themeStore';
 import { 
   LayoutDashboard, 
-  ClipboardList, 
   Wallet,
   BadgePercent,
   Anchor,
@@ -31,7 +30,6 @@ import { ALL_MENU_KEYS, getAccessibleMenus, type MenuKey } from '../utils/rbac';
 
 const navItems: Array<{ key: MenuKey; path: string; label: string; icon: LucideIcon }> = [
   { key: 'dashboard', path: PATHS.HOME, label: 'Bảng Điều Khiển', icon: LayoutDashboard },
-  { key: 'orders', path: PATHS.ORDERS, label: 'Quản Lý Đơn Hàng', icon: ClipboardList },
   { key: 'revenue', path: PATHS.REVENUE, label: 'Quản Lý Thu Nhập', icon: Wallet },
   { key: 'discount_approval', path: PATHS.DISCOUNT_APPROVAL, label: 'Duyệt Giảm Giá', icon: BadgePercent },
   { key: 'vessels', path: PATHS.VESSELS, label: 'Mã Tàu', icon: Ship },

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.vessel import Vessel
 from app.repositories.fee_config_repository import fee_config_repo
 from app.schemas.vessel import ApplicableFeeRead, VesselRead
+from app.services.fee_resolution_service import resolve_billable_fees
 from app.services.vessel_visual_reference_service import count_visual_references_by_ship_ids
 
 
@@ -15,10 +16,9 @@ def vessel_to_read(
     """Build VesselRead with nested type and first active fee config for that type."""
     base = VesselRead.model_validate(vessel)
     fee_obj = None
-    if vessel.vessel_type_id:
-        confs = fee_config_repo.get_by_vessel_type(db, vessel.vessel_type_id)
-        if confs:
-            fee_obj = ApplicableFeeRead.model_validate(confs[0])
+    confs = resolve_billable_fees(db, vessel)
+    if confs:
+        fee_obj = ApplicableFeeRead.model_validate(confs[0])
 
     visual_count = 0
     if visual_reference_counts is not None:

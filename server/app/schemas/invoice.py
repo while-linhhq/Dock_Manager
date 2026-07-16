@@ -16,8 +16,9 @@ class InvoiceItemCreate(BaseModel):
         if self.amount is not None:
             return self
         q = self.quantity if self.quantity is not None else Decimal('1')
-        amt = (q * self.unit_price).quantize(Decimal('0.01'))
-        return self.model_copy(update={'amount': amt, 'quantity': q})
+        object.__setattr__(self, 'quantity', q)
+        object.__setattr__(self, 'amount', (q * self.unit_price).quantize(Decimal('0.01')))
+        return self
 
 
 class FeeConfigOnLineItem(BaseModel):

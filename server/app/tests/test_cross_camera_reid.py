@@ -64,6 +64,65 @@ def test_ocr_on_second_track_shows_plate_only_after_read() -> None:
     assert mgr.get_global_ship_id(2, 'trk_2') == 'SG-7082'
 
 
+def test_repeated_track_updates_do_not_ballot_stuff_ship_id() -> None:
+    """Per-frame report_track_update must NOT inject synthetic conf=1.0 votes.
+
+    Regression for the self-reinforcing phantom identity: a track seeded with a
+    wrong provisional ship_id (from a noisy embedding) used to append
+    (ship_id, 1.0) into identity.ocr_history on EVERY frame via _attach_track.
+    After N frames that ID accumulated N synthetic 1.0 votes and buried the real
+    fractional OCR reads in _best_ship_id — e.g. SG-8853 winning 196x1.0 over the
+    correct SG-9190. Real OCR reads must decide the winner regardless of how many
+    frames the wrong provisional guess was carried.
+    """
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(21)
+
+    boat = _track('trk_x', camera_id=1)
+    # First frame: track carries a wrong provisional guess (no real OCR yet).
+    boat.ship_id = 'SG-8853'
+    mgr.report_track_update(1, boat, embedding=emb)
+
+    # A real OCR read votes the CORRECT plate once, at true fractional confidence.
+    mgr.report_ocr_result(1, 'trk_x', 'SG-9190', 0.87)
+
+    # Now the wrong provisional guess rides along for 200 more frames (identity
+    # propagates ship_id back onto the track, which _attach_track would re-vote).
+    for _ in range(200):
+        boat.ship_id = 'SG-8853'
+        mgr.report_track_update(1, boat, embedding=emb)
+
+    gid = mgr.get_global_id(1, 'trk_x')
+    assert gid is not None
+    identity = mgr._identities[gid]
+    # Only the single genuine OCR read should be in the vote pool.
+    assert identity.ocr_history == [('SG-9190', 0.87)]
+    assert mgr.get_global_ship_id(1, 'trk_x') == 'SG-9190'
+
+
+def test_seed_ship_id_when_no_ocr_evidence() -> None:
+    """When identity has no OCR evidence at all, a track's provisional ship_id
+    still seeds identity.ship_id so the overlay shows something — but it is NOT
+    written into ocr_history, so a later real OCR read overrides it cleanly."""
+    mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
+    emb = _unit_embedding(33)
+
+    boat = _track('trk_seed', camera_id=1)
+    boat.ship_id = 'SG-1000'
+    mgr.report_track_update(1, boat, embedding=emb)
+
+    gid = mgr.get_global_id(1, 'trk_seed')
+    assert gid is not None
+    identity = mgr._identities[gid]
+    assert identity.ship_id == 'SG-1000'
+    assert identity.ocr_history == []  # seeded, not voted
+
+    # A real OCR read of a different plate must win — no synthetic votes to fight.
+    mgr.report_ocr_result(1, 'trk_seed', 'SG-2000', 0.80)
+    assert identity.ocr_history == [('SG-2000', 0.80)]
+    assert mgr.get_global_ship_id(1, 'trk_seed') == 'SG-2000'
+
+
 def test_handoff_inherits_plate_after_source_track_removed() -> None:
     mgr = CrossCameraReIdManager([1, 2], visual_threshold=0.5, handoff_window_sec=60.0)
     emb = _unit_embedding(11)

@@ -6,7 +6,10 @@ export const userSchema = z.object({
   password: z.string().min(6, 'Mật khẩu ít nhất 6 ký tự').optional(),
   full_name: z.string().min(1, 'Họ tên là bắt buộc'),
   role_id: z.string().min(1, 'Vai trò là bắt buộc'),
-  is_active: z.boolean().default(true),
+  // .optional() thay .default(true): zod4 .default làm input optional/output required
+  // → resolver TFieldValues (input) lệch UserFormValues (output) → useForm mismatch.
+  // Giá trị mặc định true đặt qua useForm defaultValues trong UsersView.
+  is_active: z.boolean().optional(),
 });
 
 export const roleSchema = z.object({

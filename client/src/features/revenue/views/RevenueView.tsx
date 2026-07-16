@@ -20,8 +20,14 @@ import { BulkPaymentMethodChoiceModal } from '../components/BulkPaymentMethodCho
 import { BulkSepayPaymentModal } from '../components/BulkSepayPaymentModal';
 import { normalizeFeeBillingUnit } from '../../../utils/fee-billing-unit';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
-import { invoiceSchema, paymentSchema, feeSchema, type FeeFormValues } from '../revenue-schemas';
-import { feeConfigVesselTypeLabel } from '../utils/revenue-fee-helpers';
+import {
+  invoiceSchema,
+  paymentSchema,
+  feeSchemaByType,
+  type MonthlyFeeFormInput,
+  type MonthlyFeeFormValues,
+} from '../revenue-schemas';
+import { feeConfigVesselLabel, feeConfigVesselTypeLabel } from '../utils/revenue-fee-helpers';
 import { RevenueMainTabs, type RevenueMainTab } from '../components/RevenueMainTabs';
 import { RevenueInvoiceSection } from '../components/RevenueInvoiceSection';
 import { RevenueFeesSection } from '../components/RevenueFeesSection';
@@ -64,6 +70,8 @@ export const RevenueView: React.FC = () => {
   const [invMaxTotal, setInvMaxTotal] = useState('');
   const [feeQ, setFeeQ] = useState('');
   const [feeTypeId, setFeeTypeId] = useState('');
+  // Menu chia phạm vi phí hiển thị: tàu lẻ (gắn vessel_id) vs loại tàu tháng (gắn vessel_type_id).
+  const [feeScope, setFeeScope] = useState<'spot' | 'monthly'>('spot');
   const [feeActive, setFeeActive] = useState<'all' | 'on' | 'off'>('all');
   const [feeDateFrom, setFeeDateFrom] = useState('');
   const [feeDateTo, setFeeDateTo] = useState('');
@@ -90,7 +98,7 @@ export const RevenueView: React.FC = () => {
     deleteFeeConfig,
   } = useRevenueStore();
 
-  const { vesselTypes, fetchVesselTypes } = useVesselStore();
+  const { vessels, vesselTypes, fetchVessels, fetchVesselTypes } = useVesselStore();
   const { vessels: filterVessels, vesselTypes: filterVesselTypes } = useFilterOptions();
   const { orders, fetchOrders } = useOrderStore();
 
@@ -103,8 +111,8 @@ export const RevenueView: React.FC = () => {
     resolver: zodResolver(paymentSchema),
   });
 
-  const feeForm = useForm<FeeFormValues>({
-    resolver: zodResolver(feeSchema),
+  const feeForm = useForm<MonthlyFeeFormInput, unknown, MonthlyFeeFormValues>({
+    resolver: zodResolver(feeSchemaByType),
     defaultValues: {
       is_active: true,
       fee_name: '',
@@ -115,6 +123,7 @@ export const RevenueView: React.FC = () => {
       berth_limit_unit: undefined,
       over_limit_penalty_amount: undefined,
       outside_hours_penalty_amount: undefined,
+      outside_hours_penalty_per_hour: undefined,
       operating_hours: {},
     },
   });
@@ -144,6 +153,7 @@ export const RevenueView: React.FC = () => {
     } else {
       void fetchFeeConfigs();
       void fetchVesselTypes();
+      void fetchVessels();
     }
   }, [
     activeTab,
@@ -152,6 +162,7 @@ export const RevenueView: React.FC = () => {
     fetchFeeConfigs,
     fetchOrders,
     fetchVesselTypes,
+    fetchVessels,
   ]);
 
   const filteredInvoices = useMemo(() => {
@@ -215,10 +226,24 @@ export const RevenueView: React.FC = () => {
 
   const filteredFeeConfigs = useMemo(() => {
     return feeConfigs.filter((fee) => {
-      if (!matchesAnyField(feeQ, fee.fee_name, feeConfigVesselTypeLabel(fee, vesselTypes))) {
+      // Chia phạm vi: tàu lẻ (gắn vessel_id) vs loại tàu tháng (gắn vessel_type_id, không có vessel_id).
+      const isSpotFee = fee.vessel_id != null;
+      if (feeScope === 'spot' && !isSpotFee) {
         return false;
       }
-      if (feeTypeId && String(fee.vessel_type_id ?? '') !== feeTypeId) {
+      if (feeScope === 'monthly' && isSpotFee) {
+        return false;
+      }
+      // Tìm kiếm: spot theo mã tàu, monthly theo loại tàu.
+      const searchLabel =
+        feeScope === 'spot'
+          ? feeConfigVesselLabel(fee, vessels)
+          : feeConfigVesselTypeLabel(fee, vesselTypes);
+      if (!matchesAnyField(feeQ, fee.fee_name, searchLabel)) {
+        return false;
+      }
+      // Lọc theo loại tàu chỉ áp dụng cho monthly; spot không có vessel_type_id.
+      if (feeScope === 'monthly' && feeTypeId && String(fee.vessel_type_id ?? '') !== feeTypeId) {
         return false;
       }
       if (feeActive === 'on' && !fee.is_active) {
@@ -233,7 +258,21 @@ export const RevenueView: React.FC = () => {
       }
       return true;
     });
-  }, [feeConfigs, feeQ, feeTypeId, feeActive, feeDateFrom, feeDateTo, vesselTypes]);
+  }, [feeConfigs, feeQ, feeScope, feeTypeId, feeActive, feeDateFrom, feeDateTo, vessels, vesselTypes]);
+
+  // Đếm phí mỗi phạm vi để hiển thị badge trên menu.
+  const feeScopeCounts = useMemo(() => {
+    let spot = 0;
+    let monthly = 0;
+    for (const fee of feeConfigs) {
+      if (fee.vessel_id != null) {
+        spot += 1;
+      } else {
+        monthly += 1;
+      }
+    }
+    return { spot, monthly };
+  }, [feeConfigs]);
 
   const isAutoInvoiceTab = activeTab === 'auto_invoices';
 
@@ -345,7 +384,7 @@ export const RevenueView: React.FC = () => {
     }
   };
 
-  const onFeeSubmit = async (data: FeeFormValues) => {
+  const onFeeSubmit = async (data: MonthlyFeeFormValues) => {
     try {
       const hasBerthLimit =
         data.berth_limit_count != null &&
@@ -358,6 +397,7 @@ export const RevenueView: React.FC = () => {
         base_fee: data.unit === 'none' ? 0 : data.base_fee,
         unit: data.unit,
         is_active: data.is_active,
+        // Cấu hình phí Doanh Thu gắn theo loại tàu (áp cho tàu tháng cùng loại).
         vessel_type_id: data.vessel_type_id ? Number(data.vessel_type_id) : undefined,
         berth_limit_count: hasBerthLimit ? data.berth_limit_count : null,
         berth_limit_unit: hasBerthLimit ? data.berth_limit_unit : null,
@@ -365,9 +405,22 @@ export const RevenueView: React.FC = () => {
           data.over_limit_penalty_amount != null && data.over_limit_penalty_amount > 0
             ? data.over_limit_penalty_amount
             : null,
-        outside_hours_penalty_amount:
-          data.outside_hours_penalty_amount != null && data.outside_hours_penalty_amount > 0
-            ? data.outside_hours_penalty_amount
+        // Tàu tháng dùng duy nhất đơn giá ngoài giờ theo giờ; xóa mức cố định/lượt cũ khi lưu.
+        outside_hours_penalty_amount: null,
+        outside_hours_penalty_per_hour:
+          data.outside_hours_penalty_per_hour != null &&
+          data.outside_hours_penalty_per_hour > 0
+            ? data.outside_hours_penalty_per_hour
+            : null,
+        max_berth_duration_minutes:
+          data.max_berth_duration_minutes != null &&
+          Number.isFinite(data.max_berth_duration_minutes) &&
+          data.max_berth_duration_minutes > 0
+            ? data.max_berth_duration_minutes
+            : null,
+        over_duration_penalty_amount:
+          data.over_duration_penalty_amount != null && data.over_duration_penalty_amount > 0
+            ? data.over_duration_penalty_amount
             : null,
         operating_hours: operatingHoursToApi(data.operating_hours ?? emptyOperatingHours()),
       };
@@ -403,9 +456,23 @@ export const RevenueView: React.FC = () => {
         fee.over_limit_penalty_amount != null && Number(fee.over_limit_penalty_amount) > 0
           ? Number(fee.over_limit_penalty_amount)
           : undefined,
-      outside_hours_penalty_amount:
-        fee.outside_hours_penalty_amount != null && Number(fee.outside_hours_penalty_amount) > 0
-          ? Number(fee.outside_hours_penalty_amount)
+      outside_hours_penalty_amount: undefined,
+      // Tương thích cấu hình tàu tháng cũ: số tiền/lượt trở thành đơn giá/giờ khi mở sửa.
+      outside_hours_penalty_per_hour:
+        fee.outside_hours_penalty_per_hour != null &&
+        Number(fee.outside_hours_penalty_per_hour) > 0
+          ? Number(fee.outside_hours_penalty_per_hour)
+          : fee.outside_hours_penalty_amount != null &&
+              Number(fee.outside_hours_penalty_amount) > 0
+            ? Number(fee.outside_hours_penalty_amount)
+            : undefined,
+      max_berth_duration_minutes:
+        fee.max_berth_duration_minutes != null && fee.max_berth_duration_minutes > 0
+          ? fee.max_berth_duration_minutes
+          : undefined,
+      over_duration_penalty_amount:
+        fee.over_duration_penalty_amount != null && Number(fee.over_duration_penalty_amount) > 0
+          ? Number(fee.over_duration_penalty_amount)
           : undefined,
       operating_hours: operatingHoursFromApi(fee.operating_hours),
     });
@@ -427,13 +494,14 @@ export const RevenueView: React.FC = () => {
         feeForm.reset({
           is_active: true,
           fee_name: '',
-          vessel_type_id: '',
+          vessel_id: '',
           unit: 'per_month',
           base_fee: 0,
           berth_limit_count: undefined,
           berth_limit_unit: undefined,
           over_limit_penalty_amount: undefined,
           outside_hours_penalty_amount: undefined,
+          outside_hours_penalty_per_hour: undefined,
           operating_hours: emptyOperatingHours(),
         });
       }
@@ -455,6 +523,7 @@ export const RevenueView: React.FC = () => {
       berth_limit_unit: undefined,
       over_limit_penalty_amount: undefined,
       outside_hours_penalty_amount: undefined,
+      outside_hours_penalty_per_hour: undefined,
       operating_hours: emptyOperatingHours(),
     });
     setIsFeeModalOpen(true);
@@ -582,6 +651,9 @@ export const RevenueView: React.FC = () => {
         <RevenueFeesSection
           feeQ={feeQ}
           setFeeQ={setFeeQ}
+          feeScope={feeScope}
+          setFeeScope={setFeeScope}
+          feeScopeCounts={feeScopeCounts}
           feeTypeId={feeTypeId}
           setFeeTypeId={setFeeTypeId}
           feeActive={feeActive}

@@ -108,7 +108,6 @@ def stream_minio_media(
                     yield chunk
             finally:
                 response.close()
-                response.release_conn()
 
         return StreamingResponse(
             iter_chunks(),
@@ -140,7 +139,6 @@ def stream_minio_media(
                 yield chunk
         finally:
             response.close()
-            response.release_conn()
 
     headers = _preview_headers(
         content_type=content_type,

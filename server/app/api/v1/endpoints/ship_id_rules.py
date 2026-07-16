@@ -14,6 +14,9 @@ from app.schemas.ship_id_rules import (
     PatternCreate,
     PatternRead,
     PatternUpdate,
+    PrefixConvertCreate,
+    PrefixConvertRead,
+    PrefixConvertUpdate,
 )
 
 router = APIRouter()
@@ -101,6 +104,42 @@ def update_convert_map(
 def delete_convert_map(entry_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
     if not ship_id_rule_repo.delete_convert_map(db, entry_id):
         raise HTTPException(status_code=404, detail='Convert map entry not found')
+
+
+@router.get('/prefix-convert', response_model=list[PrefixConvertRead])
+def list_prefix_convert(db: Session = Depends(get_db), _=Depends(get_current_user)):
+    return ship_id_rule_repo.get_all_prefix_convert(db)
+
+
+@router.post('/prefix-convert', response_model=PrefixConvertRead, status_code=201)
+def create_prefix_convert(
+    body: PrefixConvertCreate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    try:
+        return ship_id_rule_repo.create_prefix_convert(db, body.model_dump())
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail='from_prefix already in prefix convert map') from exc
+
+
+@router.put('/prefix-convert/{entry_id}', response_model=PrefixConvertRead)
+def update_prefix_convert(
+    entry_id: int,
+    body: PrefixConvertUpdate,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    result = ship_id_rule_repo.update_prefix_convert(db, entry_id, body.model_dump(exclude_none=True))
+    if result is None:
+        raise HTTPException(status_code=404, detail='Prefix convert entry not found')
+    return result
+
+
+@router.delete('/prefix-convert/{entry_id}', status_code=204)
+def delete_prefix_convert(entry_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+    if not ship_id_rule_repo.delete_prefix_convert(db, entry_id):
+        raise HTTPException(status_code=404, detail='Prefix convert entry not found')
 
 
 @router.post('/reload', status_code=200)

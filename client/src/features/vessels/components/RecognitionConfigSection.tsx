@@ -4,9 +4,51 @@ import { useShipIdRulesStore } from '../store/shipIdRulesStore';
 import { PatternTable } from './PatternTable';
 import { BlacklistSection } from './BlacklistSection';
 import { ConvertMapTable } from './ConvertMapTable';
+import { PrefixConvertTable } from './PrefixConvertTable';
 import { Button } from '../../../components/Button/Button';
 
-type CardKey = 'patterns' | 'blacklist' | 'convert';
+type CardKey = 'patterns' | 'blacklist' | 'convert' | 'prefix';
+
+type RecognitionCardProps = {
+  id: CardKey;
+  title: string;
+  badge?: string;
+  expanded: boolean;
+  onToggle: (id: CardKey) => void;
+  children: React.ReactNode;
+};
+
+const RecognitionCard: React.FC<RecognitionCardProps> = ({
+  id,
+  title,
+  badge,
+  expanded,
+  onToggle,
+  children,
+}) => (
+  <div className="rounded-xl border border-gray-200 dark:border-white/10 overflow-hidden">
+    <button
+      type="button"
+      onClick={() => onToggle(id)}
+      className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
+    >
+      <span className="text-sm font-semibold flex items-center gap-2">
+        {title}
+        {badge ? (
+          <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-[10px] font-bold">
+            {badge}
+          </span>
+        ) : null}
+      </span>
+      {expanded ? (
+        <ChevronUp className="w-4 h-4 text-gray-400" />
+      ) : (
+        <ChevronDown className="w-4 h-4 text-gray-400" />
+      )}
+    </button>
+    {expanded ? <div className="p-4">{children}</div> : null}
+  </div>
+);
 
 export const RecognitionConfigSection: React.FC = () => {
   const { patterns, fetchAll, isLoading, forceReload } = useShipIdRulesStore();
@@ -14,6 +56,7 @@ export const RecognitionConfigSection: React.FC = () => {
     patterns: true,
     blacklist: false,
     convert: false,
+    prefix: false,
   });
   const [reloading, setReloading] = useState(false);
   const [reloadMsg, setReloadMsg] = useState<string | null>(null);
@@ -40,36 +83,6 @@ export const RecognitionConfigSection: React.FC = () => {
 
   const activePatterns = patterns.filter((p) => p.is_active).length;
 
-  const Card: React.FC<{
-    id: CardKey;
-    title: string;
-    badge?: string;
-    children: React.ReactNode;
-  }> = ({ id, title, badge, children }) => (
-    <div className="rounded-xl border border-gray-200 dark:border-white/10 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => toggle(id)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-white/5 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
-      >
-        <span className="text-sm font-semibold flex items-center gap-2">
-          {title}
-          {badge ? (
-            <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-[10px] font-bold">
-              {badge}
-            </span>
-          ) : null}
-        </span>
-        {expanded[id] ? (
-          <ChevronUp className="w-4 h-4 text-gray-400" />
-        ) : (
-          <ChevronDown className="w-4 h-4 text-gray-400" />
-        )}
-      </button>
-      {expanded[id] ? <div className="p-4">{children}</div> : null}
-    </div>
-  );
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -93,17 +106,21 @@ export const RecognitionConfigSection: React.FC = () => {
         </div>
       </div>
 
-      <Card id="patterns" title="Regex Patterns" badge={`${activePatterns} active`}>
+      <RecognitionCard id="patterns" title="Regex Patterns" badge={`${activePatterns} active`} expanded={expanded.patterns} onToggle={toggle}>
         <PatternTable />
-      </Card>
+      </RecognitionCard>
 
-      <Card id="blacklist" title="Blacklist">
+      <RecognitionCard id="blacklist" title="Blacklist" expanded={expanded.blacklist} onToggle={toggle}>
         <BlacklistSection />
-      </Card>
+      </RecognitionCard>
 
-      <Card id="convert" title="Convert Map">
+      <RecognitionCard id="convert" title="Convert Map" expanded={expanded.convert} onToggle={toggle}>
         <ConvertMapTable />
-      </Card>
+      </RecognitionCard>
+
+      <RecognitionCard id="prefix" title="Convert tiền tố (prefix)" expanded={expanded.prefix} onToggle={toggle}>
+        <PrefixConvertTable />
+      </RecognitionCard>
     </div>
   );
 };

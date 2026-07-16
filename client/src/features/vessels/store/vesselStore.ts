@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { VesselRead, VesselTypeRead } from '../../../types/api.types';
+import type { VesselClassification, VesselRead, VesselTypeRead } from '../../../types/api.types';
 import { vesselsApi } from '../services/vesselsApi';
 import { enrichVesselReferenceCounts } from '../services/enrichVesselReferenceCounts';
 import type { VesselCreate, VesselTypeCreate } from '../services/vesselsApi';
@@ -9,7 +9,12 @@ interface VesselState {
   vesselTypes: VesselTypeRead[];
   isLoading: boolean;
   error: string | null;
-  fetchVessels: (skip?: number, limit?: number, activeOnly?: boolean) => Promise<void>;
+  fetchVessels: (
+    skip?: number,
+    limit?: number,
+    activeOnly?: boolean,
+    classification?: VesselClassification,
+  ) => Promise<void>;
   fetchVesselTypes: () => Promise<void>;
   upsertVessel: (id: string | null, data: VesselCreate) => Promise<void>;
   upsertVesselType: (id: string | null, data: VesselTypeCreate) => Promise<void>;
@@ -22,10 +27,10 @@ export const useVesselStore = create<VesselState>((set, get) => ({
   vesselTypes: [],
   isLoading: false,
   error: null,
-  fetchVessels: async (skip, limit, activeOnly) => {
+  fetchVessels: async (skip, limit, activeOnly, classification) => {
     set({ isLoading: true, error: null });
     try {
-      const vessels = await vesselsApi.getVessels(skip, limit, activeOnly);
+      const vessels = await vesselsApi.getVessels(skip, limit, activeOnly, classification);
       const withCounts = await enrichVesselReferenceCounts(vessels);
       set({ vessels: withCounts, isLoading: false });
     } catch (err: any) {

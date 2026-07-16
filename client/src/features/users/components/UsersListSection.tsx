@@ -18,6 +18,8 @@ import {
   TableFilterPanel,
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
+import { SortableTh } from '../../../components/SortableTh/SortableTh';
+import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 
 export type UsersListSectionProps = {
   userQ: string;
@@ -62,6 +64,16 @@ export const UsersListSection: React.FC<UsersListSectionProps> = ({
 }) => {
   const isSelf = (u: UserRead) =>
     currentUserId != null && String(u.id) === String(currentUserId);
+
+  // Sắp xếp client-side theo cột dữ liệu.
+  const sortAccessors: SortAccessors<UserRead> = {
+    full_name: (u) => u.full_name ?? '',
+    email: (u) => u.email ?? '',
+    role: (u) => u.role?.name ?? '',
+    status: (u) => u.is_active,
+  };
+  const { sorted, sort, toggle } = useTableSort(filteredUsers, sortAccessors);
+
   return (
     <div className="space-y-6">
       <TableFilterPanel onReset={resetUserFilters} activeCount={userFilterCount}>
@@ -117,10 +129,18 @@ export const UsersListSection: React.FC<UsersListSectionProps> = ({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={dt.headRow}>
-                <th className={dt.pad}>Họ Tên</th>
-                <th className={dt.pad}>Email</th>
-                <th className={dt.pad}>Vai Trò</th>
-                <th className={dt.pad}>Trạng Thái</th>
+                <SortableTh sortKey="full_name" sort={sort} onSort={toggle}>
+                  Họ Tên
+                </SortableTh>
+                <SortableTh sortKey="email" sort={sort} onSort={toggle}>
+                  Email
+                </SortableTh>
+                <SortableTh sortKey="role" sort={sort} onSort={toggle}>
+                  Vai Trò
+                </SortableTh>
+                <SortableTh sortKey="status" sort={sort} onSort={toggle}>
+                  Trạng Thái
+                </SortableTh>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
               </tr>
             </thead>
@@ -131,8 +151,8 @@ export const UsersListSection: React.FC<UsersListSectionProps> = ({
                     <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
-              ) : filteredUsers.length > 0 ? (
-                filteredUsers.map((u) => (
+              ) : sorted.length > 0 ? (
+                sorted.map((u) => (
                   <tr
                     key={u.id}
                     className="hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-colors group"

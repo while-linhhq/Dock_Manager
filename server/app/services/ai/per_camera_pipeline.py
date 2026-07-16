@@ -379,6 +379,20 @@ class PerCameraPipeline(threading.Thread):
                     track.berth_in_ts = now_ts
                 elif phase == 'completed' and track.berth_out_ts is None:
                     track.berth_out_ts = now_ts
+            # Commit-OUT-on-death: track đang ở phase 'leaving' (đã rời zone,
+            # grace chưa kịp hoàn tất) mà sắp bị forget (track chết / mất YOLO)
+            # → chốt OUT tại leaving_since_ts. Giải race grace > track_max_lost.
+            leaving_outs = self._boundary_tracker.finalize_leaving_for_missing(
+                active_ids
+            )
+            for tid, out_ts in leaving_outs:
+                boundary_crossings.append((tid, 'out'))
+                self._reid_manager.report_boundary_crossing(
+                    int(self.config.camera_id),
+                    tid,
+                    'out',
+                    out_ts,
+                )
             self._boundary_tracker.forget(active_ids)
         else:
             for track in tracked_boats:

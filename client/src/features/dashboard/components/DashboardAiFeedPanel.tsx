@@ -129,10 +129,19 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
       }
       const viewW = Math.max(1, container.clientWidth);
       const viewH = Math.max(1, container.clientHeight);
-      if (canvas.width !== viewW || canvas.height !== viewH) {
-        canvas.width = viewW;
-        canvas.height = viewH;
+      // Backing store phải scale theo devicePixelRatio, nếu không trên màn DPR>1
+      // (điện thoại/iPad ~2-3x) canvas vẽ ở độ phân giải CSS thấp rồi bị phóng to → bể nét.
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const pixelW = Math.round(viewW * dpr);
+      const pixelH = Math.round(viewH * dpr);
+      if (canvas.width !== pixelW || canvas.height !== pixelH) {
+        canvas.width = pixelW;
+        canvas.height = pixelH;
       }
+      // Vẽ theo toạ độ CSS; DPR do transform xử lý để nét trên màn hình mật độ cao.
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       const scale = Math.min(viewW / bitmap.width, viewH / bitmap.height);
       const drawW = bitmap.width * scale;
       const drawH = bitmap.height * scale;

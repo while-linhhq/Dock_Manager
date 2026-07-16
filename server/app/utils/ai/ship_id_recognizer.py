@@ -203,7 +203,10 @@ class ShipIdRecognizer:
             if not line or len(line) < 2:
                 continue
             text, prob = line[1]
-            clean_text = text.upper().strip().replace(' ', '')
+            # Do NOT strip spaces: the gap before a trailing tonnage token
+            # (e.g. 'SG-8188 24K') is the boundary that prevents the 5-digit
+            # pattern from swallowing the '2' of '24K'. Collapse whitespace runs.
+            clean_text = re.sub(r'\s+', ' ', text.upper().strip())
 
             if self._rule_engine is not None:
                 candidates = self._rule_engine.extract_ship_ids(clean_text)

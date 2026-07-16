@@ -55,3 +55,22 @@ export interface ConvertMapUpdate {
   correct_value?: string;
   reason?: string;
 }
+
+export interface PrefixConvertRead {
+  id: number;
+  from_prefix: string;
+  to_prefix: string;
+  reason: string | null;
+  created_at: string | null;
+}
+
+export interface PrefixConvertCreate {
+  from_prefix: string;
+  to_prefix: string;
+  reason?: string;
+}
+
+export interface PrefixConvertUpdate {
+  to_prefix?: string;
+  reason?: string;
+}

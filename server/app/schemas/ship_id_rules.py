@@ -159,3 +159,55 @@ class ConvertMapRead(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+def _validate_prefix(*, value: object, field_name: str) -> str:
+    """Prefix must be 1-10 letters only (A-Z), normalized upper-case."""
+    normalized = _validate_and_normalize_upper_trim(value=value, field_name=field_name)
+    if not re.fullmatch(r'[A-Z]{1,10}', normalized):
+        raise ValueError(f'{field_name} must be 1-10 letters (A-Z) only')
+    return normalized
+
+
+class PrefixConvertCreate(BaseModel):
+    from_prefix: str
+    to_prefix: str
+    reason: Optional[str] = None
+
+    @field_validator('from_prefix', mode='before')
+    @classmethod
+    def normalize_from_prefix(cls, v: object) -> str:
+        return _validate_prefix(value=v, field_name='from_prefix')
+
+    @field_validator('to_prefix', mode='before')
+    @classmethod
+    def normalize_to_prefix(cls, v: object) -> str:
+        return _validate_prefix(value=v, field_name='to_prefix')
+
+    @model_validator(mode='after')
+    def ensure_to_prefix_differs(self) -> 'PrefixConvertCreate':
+        if self.from_prefix == self.to_prefix:
+            raise ValueError('to_prefix must differ from from_prefix')
+        return self
+
+
+class PrefixConvertUpdate(BaseModel):
+    to_prefix: Optional[str] = None
+    reason: Optional[str] = None
+
+    @field_validator('to_prefix', mode='before')
+    @classmethod
+    def normalize_to_prefix(cls, v: Optional[object]) -> Optional[str]:
+        if v is None:
+            return None
+        return _validate_prefix(value=v, field_name='to_prefix')
+
+
+class PrefixConvertRead(BaseModel):
+    id: int
+    from_prefix: str
+    to_prefix: str
+    reason: Optional[str]
+    created_at: Optional[datetime]
+
+    model_config = ConfigDict(from_attributes=True)
+

@@ -283,9 +283,30 @@ def _schedule_vessel_invoice_backfill(background_tasks: BackgroundTasks, vessel_
     background_tasks.add_task(run_vessel_backfill_task, vessel_id)
 
 
+def normalize_vessel_classification_fields(
+    classification: str,
+    vessel_type_id: int | None,
+) -> tuple[str, int | None]:
+    """Enforce billing scope invariant for one vessel."""
+    if classification == 'monthly':
+        if vessel_type_id is None:
+            raise ValueError('monthly vessel requires vessel_type_id')
+        return classification, vessel_type_id
+    return classification, None
+
+
 @router.get('/', response_model=List[VesselRead])
-def list_vessels(skip: int = 0, limit: int = 100, active_only: bool = False, db: Session = Depends(get_db)):
-    vessels = vessel_repo.get_all(db, skip=skip, limit=limit, active_only=active_only)
+def list_vessels(
+    skip: int = 0,
+    limit: int = 100,
+    active_only: bool = False,
+    classification: str | None = None,
+    db: Session = Depends(get_db),
+):
+    # classification: 'spot' | 'monthly' | 'unclassified' — lọc theo tab UI. None = tất cả.
+    vessels = vessel_repo.get_all(
+        db, skip=skip, limit=limit, active_only=active_only, classification=classification
+    )
     return vessels_to_read(db, vessels)
 
 
@@ -341,7 +362,19 @@ def update_vessel(
         raise HTTPException(status_code=404, detail='Vessel not found')
 
     old_type_id = before.vessel_type_id
-    payload = data.model_dump(exclude_none=True)
+    old_classification = before.classification
+    payload = data.model_dump(exclude_unset=True)
+    classification = payload.get('classification', old_classification)
+    vessel_type_id = payload.get('vessel_type_id', old_type_id)
+    try:
+        classification, vessel_type_id = normalize_vessel_classification_fields(
+            classification,
+            vessel_type_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload['classification'] = classification
+    payload['vessel_type_id'] = vessel_type_id
     updated = vessel_repo.update(db, vessel_id, payload)
     if not updated:
         raise HTTPException(status_code=404, detail='Vessel not found')
@@ -349,8 +382,10 @@ def update_vessel(
     if not loaded:
         raise HTTPException(status_code=404, detail='Vessel not found')
 
-    type_changed = 'vessel_type_id' in payload and payload['vessel_type_id'] != old_type_id
-    if type_changed and vessel_ready_for_ai_invoice(db, vessel_id):
+    billing_scope_changed = (
+        loaded.classification != old_classification or loaded.vessel_type_id != old_type_id
+    )
+    if billing_scope_changed and vessel_ready_for_ai_invoice(db, vessel_id):
         _schedule_vessel_invoice_backfill(background_tasks, vessel_id)
 
     return vessel_to_read(db, loaded)

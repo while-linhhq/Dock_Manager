@@ -708,12 +708,18 @@ class CrossCameraReIdManager:
         if vel is not None:
             identity.vx_history.append(float(vel[0]))
             identity.vx_history = identity.vx_history[-10:]
-        if track.ship_id or track.last_known_ship_id:
-            _append_ocr_history(
-                identity.ocr_history,
-                (track.ship_id or track.last_known_ship_id or '', 1.0),
-            )
-            identity.ship_id = self._best_ship_id(identity)
+        # Seed identity.ship_id from the track ONLY when the identity has no
+        # evidence of its own yet. Do NOT push this into ocr_history: track.ship_id
+        # is frequently just a reflection of identity.ship_id (propagated back at
+        # report_track_update:306 / update_track_metadata), so appending it as a
+        # conf=1.0 "vote" every frame stuffs the ballot — a single provisional guess
+        # accumulates hundreds of synthetic 1.0 votes and buries the real fractional
+        # OCR reads in _best_ship_id (self-reinforcing phantom identity; e.g. SG-8853
+        # winning 196×1.0 over the correct SG-9190). Genuine votes enter with their
+        # true confidence via report_ocr_result / report_track_removed.
+        track_ship_id = (track.ship_id or track.last_known_ship_id or '').strip().upper()
+        if track_ship_id and identity.ship_id is None and not identity.ocr_history:
+            identity.ship_id = track_ship_id
 
     def _match_existing_identity(
         self,

@@ -13,6 +13,7 @@ from app.models.vessel import Vessel
 from app.repositories.fee_config_repository import fee_config_repo
 from app.repositories.vessel_repository import vessel_repo
 from app.services.detection_invoice_service import ensure_ai_invoice_for_detection
+from app.services.fee_resolution_service import resolve_billable_fees
 from app.services.ship_id_utils import is_unknown_ship_id
 from app.utils.fee_billing_unit import normalize_fee_billing_unit
 
@@ -22,7 +23,13 @@ DEFAULT_LIMIT = 500
 
 
 def vessel_type_has_billable_fees(db: Session, vessel_type_id: int) -> bool:
+    """DEPRECATED: fee giờ gắn theo mã tàu. Giữ để tương thích ngược."""
     fees = fee_config_repo.get_by_vessel_type(db, vessel_type_id)
+    return any(normalize_fee_billing_unit(f.unit) != 'none' for f in fees)
+
+
+def vessel_has_billable_fees(db: Session, vessel_id: int) -> bool:
+    fees = resolve_billable_fees(db, vessel_id)
     return any(normalize_fee_billing_unit(f.unit) != 'none' for f in fees)
 
 
@@ -32,9 +39,18 @@ def vessel_ready_for_ai_invoice(db: Session, vessel_id: int) -> bool:
         return False
     if is_unknown_ship_id(vessel.ship_id):
         return False
-    if vessel.vessel_type_id is None:
-        return False
-    return vessel_type_has_billable_fees(db, vessel.vessel_type_id)
+    return vessel_has_billable_fees(db, vessel.id)
+
+
+def fee_backfill_target(fee) -> tuple[str, int] | None:
+    """Return vessel or vessel-type scope for one active billable fee."""
+    if not fee.is_active or normalize_fee_billing_unit(fee.unit) == 'none':
+        return None
+    if fee.vessel_id is not None and fee.vessel_type_id is None:
+        return ('vessel', int(fee.vessel_id))
+    if fee.vessel_type_id is not None and fee.vessel_id is None:
+        return ('vessel_type', int(fee.vessel_type_id))
+    return None
 
 
 def _missing_detection_ids_for_vessel(db: Session, vessel_id: int, *, limit: int) -> list[int]:
@@ -154,9 +170,7 @@ def run_vessel_type_backfill_task(vessel_type_id: int, *, limit_per_vessel: int 
 
 def fee_config_triggers_backfill(fee) -> bool:
     """True when an active fee can generate AI invoice line items."""
-    if not fee.is_active or fee.vessel_type_id is None:
-        return False
-    return normalize_fee_billing_unit(fee.unit) != 'none'
+    return fee_backfill_target(fee) is not None
 
 
 def should_backfill_after_fee_update(old_fee, updated_fee) -> bool:
@@ -164,7 +178,7 @@ def should_backfill_after_fee_update(old_fee, updated_fee) -> bool:
         return False
     if not fee_config_triggers_backfill(old_fee):
         return True
-    if old_fee.vessel_type_id != updated_fee.vessel_type_id:
+    if fee_backfill_target(old_fee) != fee_backfill_target(updated_fee):
         return True
     if (
         normalize_fee_billing_unit(old_fee.unit) == 'none'
