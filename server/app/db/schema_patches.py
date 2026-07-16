@@ -1552,6 +1552,43 @@ def _ensure_fee_configs_penalty_fields() -> None:
         raise
 
 
+def _ensure_fee_configs_max_berth_duration() -> None:
+    """Add maximum duration for one berth visit."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('fee_configs'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('fee_configs')}
+        if 'max_berth_duration_minutes' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect fee_configs table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text(
+            'ALTER TABLE fee_configs ADD COLUMN IF NOT EXISTS '
+            'max_berth_duration_minutes INTEGER'
+        )
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE fee_configs ADD COLUMN max_berth_duration_minutes INTEGER')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add max berth duration manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('ensured fee_configs.max_berth_duration_minutes')
+    except Exception as err:
+        logger.error('schema_patches: failed to add max berth duration: %s', err)
+        raise
+
+
 def _ensure_invoices_is_outside_operating_hours() -> None:
     try:
         inspector = inspect(engine)
@@ -2040,10 +2077,11 @@ def _ensure_zalo_notifications() -> None:
                 detection_id     INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
                 chat_id          VARCHAR(100),
                 status           VARCHAR(20) DEFAULT 'sent',
+                kind             VARCHAR(24) NOT NULL DEFAULT 'unknown',
                 resolved_ship_id VARCHAR(100),
                 created_at       TIMESTAMP DEFAULT NOW(),
                 resolved_at      TIMESTAMP,
-                CONSTRAINT uq_zalo_notifications_detection_id UNIQUE (detection_id)
+                CONSTRAINT uq_zalo_notifications_detection_kind UNIQUE (detection_id, kind)
             )
             """
         )
@@ -2058,10 +2096,11 @@ def _ensure_zalo_notifications() -> None:
                 detection_id     INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
                 chat_id          VARCHAR(100),
                 status           VARCHAR(20) DEFAULT 'sent',
+                kind             VARCHAR(24) NOT NULL DEFAULT 'unknown',
                 resolved_ship_id VARCHAR(100),
                 created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 resolved_at      TIMESTAMP,
-                UNIQUE (detection_id)
+                UNIQUE (detection_id, kind)
             )
             """
         )
@@ -2152,6 +2191,43 @@ def _ensure_zalo_notifications_kind() -> None:
     except Exception as err:
         logger.error('schema_patches: failed to add zalo_notifications.kind: %s', err)
         raise
+
+
+def _ensure_zalo_notifications_kind_unique() -> None:
+    """Migrate notification idempotency from detection-only to detection + kind."""
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        'ALTER TABLE zalo_notifications '
+                        'DROP CONSTRAINT IF EXISTS uq_zalo_notifications_detection_id'
+                    )
+                )
+                exists = conn.execute(
+                    text(
+                        "SELECT 1 FROM pg_constraint "
+                        "WHERE conname = 'uq_zalo_notifications_detection_kind'"
+                    )
+                ).first()
+                if not exists:
+                    conn.execute(
+                        text(
+                            'ALTER TABLE zalo_notifications '
+                            'ADD CONSTRAINT uq_zalo_notifications_detection_kind '
+                            'UNIQUE (detection_id, kind)'
+                        )
+                    )
+            _patch_done('migrated zalo_notifications unique -> (detection_id, kind)')
+        except Exception as err:
+            logger.error('schema_patches: failed to migrate zalo_notifications unique: %s', err)
+            raise
+    elif dialect == 'sqlite':
+        # SQLite test DBs create the composite constraint from the DDL above.
+        logger.info('schema_patches: sqlite — skip in-place notification unique migration')
+    else:
+        logger.warning('schema_patches: unknown dialect %s — migrate Zalo unique manually', dialect)
 
 
 def _ensure_media_short_links() -> None:
@@ -2606,6 +2682,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_cameras_detection_settings()
     _ensure_fee_configs_berth_limit()
     _ensure_fee_configs_penalty_fields()
+    _ensure_fee_configs_max_berth_duration()
     _ensure_invoices_is_over_berth_limit()
     _ensure_invoices_is_outside_operating_hours()
     _ensure_invoices_discount_amount()
@@ -2635,11 +2712,13 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_zalo_notifications()
     _ensure_zalo_notifications_message_ids()
     _ensure_zalo_notifications_kind()
+    _ensure_zalo_notifications_kind_unique()
     _ensure_media_short_links()
     _ensure_boundary_crossing_events()
     _ensure_ship_id_rules_tables()
     _ensure_detections_deleted_at()
     _ensure_anchored_identities_berth_columns()
+    _ensure_vessels_registry_expiry()
     return list(_patch_applied)
 
 
@@ -2682,4 +2761,38 @@ def _ensure_anchored_identities_berth_columns() -> None:
         _patch_done('ensured anchored_identities berth columns')
     except Exception as err:
         logger.error('schema_patches: failed to add anchored_identities berth columns: %s', err)
+        raise
+
+
+def _ensure_vessels_registry_expiry() -> None:
+    """Add registry expiry date to existing vessel tables."""
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('vessels'):
+            return
+        cols = {c['name'] for c in inspector.get_columns('vessels')}
+        if 'registry_expiry' in cols:
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect vessels table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect == 'postgresql':
+        stmt = text('ALTER TABLE vessels ADD COLUMN IF NOT EXISTS registry_expiry DATE')
+    elif dialect == 'sqlite':
+        stmt = text('ALTER TABLE vessels ADD COLUMN registry_expiry DATE')
+    else:
+        logger.warning(
+            'schema_patches: unknown dialect %s — add vessels.registry_expiry manually',
+            dialect,
+        )
+        return
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('ensured vessels.registry_expiry')
+    except Exception as err:
+        logger.error('schema_patches: failed to add vessels.registry_expiry: %s', err)
         raise

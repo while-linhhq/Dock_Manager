@@ -19,6 +19,7 @@ class FeeConfig(Base):
     berth_limit_unit = Column(String(10), nullable=True)  # day | month
     over_limit_penalty_amount = Column(Numeric(12, 2), nullable=True)
     outside_hours_penalty_amount = Column(Numeric(12, 2), nullable=True)
+    max_berth_duration_minutes = Column(Integer, nullable=True)
     operating_hours = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -68,7 +68,15 @@ class FeeConfigBase(BaseModel):
     berth_limit_unit: Optional[BerthLimitUnitLiteral] = None
     over_limit_penalty_amount: Optional[Decimal] = None
     outside_hours_penalty_amount: Optional[Decimal] = None
+    max_berth_duration_minutes: Optional[int] = None
     operating_hours: Optional[dict[str, Any]] = None
+
+    @field_validator('max_berth_duration_minutes')
+    @classmethod
+    def validate_max_berth_duration(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and value <= 0:
+            raise ValueError('max_berth_duration_minutes must be > 0 when set')
+        return value
 
     @field_validator('operating_hours', mode='before')
     @classmethod
@@ -118,7 +126,15 @@ class FeeConfigUpdate(BaseModel):
     berth_limit_unit: Optional[BerthLimitUnitLiteral] = None
     over_limit_penalty_amount: Optional[Decimal] = None
     outside_hours_penalty_amount: Optional[Decimal] = None
+    max_berth_duration_minutes: Optional[int] = None
     operating_hours: Optional[dict[str, Any]] = None
+
+    @field_validator('max_berth_duration_minutes')
+    @classmethod
+    def validate_max_berth_duration(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and value <= 0:
+            raise ValueError('max_berth_duration_minutes must be > 0 when set')
+        return value
 
     @field_validator('operating_hours', mode='before')
     @classmethod

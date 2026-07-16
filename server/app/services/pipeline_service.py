@@ -1655,6 +1655,19 @@ class PipelineService:
                     det_id_for_invoice,
                 )
 
+            # Cảnh báo Zalo nghiệp vụ: quá hạn đăng kiểm, ngoài giờ, quá thời gian/lượt.
+            try:
+                from app.services.registry_expiry_alert_service import (
+                    schedule_berthing_alerts,
+                )
+
+                schedule_berthing_alerts(det_id_for_invoice)
+            except Exception:
+                _log.exception(
+                    'berthing alert scheduling failed for detection_id=%s',
+                    det_id_for_invoice,
+                )
+
     def _on_track_removed_db(self, tb: Any, hist: list[tuple[str, float]]):
         """Callback khi một tàu rời khỏi khung hình, lưu vào DB."""
         db = SessionLocal()

@@ -197,6 +197,9 @@ class Settings(BaseSettings):
     # Zalo Bot (unknown ship identity notifications)
     ZALO_BOT_TOKEN: str = ''
     ZALO_CHAT_ID: str = ''
+    # Bot cảnh báo nghiệp vụ riêng; chat ID phải thuộc bot này.
+    ZALO_ALERT_BOT_TOKEN: str = ''
+    ZALO_ALERT_CHAT_ID: str = ''
     ZALO_WEBHOOK_SECRET: str = ''
     ZALO_ENABLED: bool = False
     ZALO_PUBLIC_BASE_URL: str = ''

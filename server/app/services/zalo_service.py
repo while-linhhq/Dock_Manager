@@ -24,6 +24,7 @@ _log = logging.getLogger('app.services.zalo')
 
 ZALO_API_BASE = 'https://bot-api.zaloplatforms.com/bot'
 ZALO_CHAT_ID_CONFIG_KEY = 'zalo_chat_id'
+ZALO_ALERT_CHAT_ID_CONFIG_KEY = 'zalo_alert_chat_id'
 ZALO_WEBHOOK_PATH = '/api/v1/zalo/webhook'
 ZALO_WEBHOOK_ORIGIN_PATH = '/api/v1/zalo/webhook-origin'
 # Zalo Bot fetches sendPhoto URLs with the same Java UA as webhooks — often blocked by Cloudflare.
@@ -44,6 +45,8 @@ def build_webhook_url(*, use_origin_path: bool = False) -> str:
         return ''
     path = ZALO_WEBHOOK_ORIGIN_PATH if use_origin_path else ZALO_WEBHOOK_PATH
     return f'{base}{path}'
+
+
 _SET_COMMAND_RE = re.compile(r'^SET\s+(\d+)\s+(.+)$', re.IGNORECASE)
 _SKIP_COMMAND_RE = re.compile(r'^(?:SKIP|BOQUA|BỎ\s*QUA|Bỏ\s*qua)\s+#?(\d+)$', re.IGNORECASE)
 _GOIY_COMMAND_RE = re.compile(r'^(?:GOIY|GOI\s*Y|GỢI\s*Ý|HINT)\s+#?(\d+)$', re.IGNORECASE)
@@ -76,17 +79,27 @@ def _save_chat_id(db: Session, chat_id: str) -> None:
     )
 
 
-def _call_zalo_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
-    token = str(settings.ZALO_BOT_TOKEN or '').strip()
+def _call_zalo_api_with_token(
+    token: str,
+    method: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    token = str(token or '').strip()
     if not token:
-        raise ValueError('ZALO_BOT_TOKEN is not configured')
+        raise ValueError('Zalo bot token is not configured')
     url = f'{ZALO_API_BASE}{token}/{method}'
     response = requests.post(url, json=payload, timeout=30)
-    response.raise_for_status()
+    if not response.ok:
+        # Không dùng raise_for_status(): exception của requests chứa URL có bot token.
+        raise RuntimeError(f'Zalo API {method} HTTP {response.status_code}')
     data = response.json()
     if not data.get('ok', False):
         raise RuntimeError(f'Zalo API {method} failed: {data}')
     return data
+
+
+def _call_zalo_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _call_zalo_api_with_token(settings.ZALO_BOT_TOKEN, method, payload)
 
 
 def _call_zalo_api_allow_timeout(method: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -264,10 +277,13 @@ def _extract_message_id(result: Any) -> Optional[str]:
     return str(mid).strip() if mid else None
 
 
-def _notification_exists(db: Session, detection_id: int) -> bool:
+def _notification_exists(
+    db: Session, detection_id: int, kind: str = 'unknown'
+) -> bool:
     return (
         db.query(ZaloNotification)
         .filter(ZaloNotification.detection_id == detection_id)
+        .filter(ZaloNotification.kind == kind)
         .first()
         is not None
     )
@@ -401,6 +417,7 @@ def _deliver_unknown_detection(
         existing = (
             db.query(ZaloNotification)
             .filter(ZaloNotification.detection_id == detection_id)
+            .filter(ZaloNotification.kind == kind)
             .first()
         )
         if existing and not force_resend:
@@ -438,6 +455,7 @@ def _deliver_unknown_detection(
             notif = (
                 db.query(ZaloNotification)
                 .filter(ZaloNotification.detection_id == detection_id)
+                .filter(ZaloNotification.kind == kind)
                 .first()
             )
             if notif is not None:
@@ -471,6 +489,7 @@ def _deliver_unknown_detection(
         notif = (
             db.query(ZaloNotification)
             .filter(ZaloNotification.detection_id == detection_id)
+            .filter(ZaloNotification.kind == kind)
             .first()
         )
 
@@ -655,6 +674,7 @@ def schedule_unknown_detection_notify(**kwargs) -> None:
         existing = (
             db.query(ZaloNotification)
             .filter(ZaloNotification.detection_id == detection_id)
+            .filter(ZaloNotification.kind == kind)
             .first()
         )
         if existing:
@@ -719,6 +739,8 @@ def _reassign_vessel_identity(db: Session, detection_id: int, new_ship_id: str) 
     notif = (
         db.query(ZaloNotification)
         .filter(ZaloNotification.detection_id == detection_id)
+        .filter(ZaloNotification.kind.in_(('unknown', 'embedding_confirm')))
+        .order_by(ZaloNotification.id.desc())
         .first()
     )
     if notif is not None:
@@ -778,6 +800,7 @@ def _handle_action(chat_id: str, detection_id: int, action: str, ship_id: str = 
             notif = (
                 db.query(ZaloNotification)
                 .filter(ZaloNotification.detection_id == detection_id)
+                .filter(ZaloNotification.kind == 'embedding_confirm')
                 .first()
             )
             if notif is None:
@@ -796,6 +819,8 @@ def _handle_action(chat_id: str, detection_id: int, action: str, ship_id: str = 
             notif = (
                 db.query(ZaloNotification)
                 .filter(ZaloNotification.detection_id == detection_id)
+                .filter(ZaloNotification.kind.in_(('unknown', 'embedding_confirm')))
+                .order_by(ZaloNotification.id.desc())
                 .first()
             )
             kind = str(getattr(notif, 'kind', 'unknown') or 'unknown') if notif else 'unknown'
@@ -823,6 +848,7 @@ def _handle_action(chat_id: str, detection_id: int, action: str, ship_id: str = 
             notif = (
                 db.query(ZaloNotification)
                 .filter(ZaloNotification.detection_id == detection_id)
+                .filter(ZaloNotification.kind == 'unknown')
                 .first()
             )
             if notif is not None:
@@ -1045,6 +1071,28 @@ def get_resolved_chat_id() -> str:
         return _resolve_chat_id(db)
     finally:
         db.close()
+
+
+def get_resolved_alert_chat_id() -> str:
+    """Chat nhận cảnh báo, tách riêng vì Zalo không cho dùng chat ID chéo bot."""
+    explicit = str(settings.ZALO_ALERT_CHAT_ID or '').strip()
+    if explicit:
+        return explicit
+    db = SessionLocal()
+    try:
+        row = port_config_repo.get_by_key(db, ZALO_ALERT_CHAT_ID_CONFIG_KEY)
+        return str(row.value or '').strip() if row else ''
+    finally:
+        db.close()
+
+
+def send_alert_text_message(chat_id: str, text: str) -> None:
+    """Gửi từ bot cảnh báo riêng; không ảnh hưởng bot xác nhận danh tính."""
+    _call_zalo_api_with_token(
+        settings.ZALO_ALERT_BOT_TOKEN,
+        'sendMessage',
+        {'chat_id': chat_id, 'text': text},
+    )
 
 
 def get_bot_info() -> dict[str, Any]:

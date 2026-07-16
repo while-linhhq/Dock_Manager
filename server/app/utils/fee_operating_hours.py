@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -69,6 +70,93 @@ def is_within_operating_hours(start_vn: datetime, day_schedule: Optional[dict[st
     if open_t <= close_t:
         return open_t <= t < close_t
     return t >= open_t or t < close_t
+
+
+def _as_vn(dt: datetime) -> datetime:
+    """Đưa về tz Asia/Ho_Chi_Minh (naive coi như đã là giờ VN)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=VN_TZ)
+    return dt.astimezone(VN_TZ)
+
+
+def _instant_is_outside(moment_vn: datetime, operating_hours: Optional[dict[str, Any]]) -> bool:
+    """Một thời điểm có nằm NGOÀI khung giờ cho phép không (theo weekday của nó)."""
+    weekday = weekday_key_vn(moment_vn)
+    day_schedule = day_schedule_for_weekday(
+        operating_hours if isinstance(operating_hours, dict) else None, weekday
+    )
+    if day_schedule is None:
+        # Không cấu hình cho ngày này -> không giới hạn -> coi như trong giờ.
+        return False
+    return not is_within_operating_hours(moment_vn, day_schedule)
+
+
+def outside_operating_hours_for_interval(
+    start: Optional[datetime],
+    end: Optional[datetime],
+    operating_hours: Optional[dict[str, Any]],
+) -> Decimal:
+    """Số GIỜ của khoảng [start, end] rơi NGOÀI khung giờ cho phép (chính xác, không làm tròn).
+
+    Cùng ngữ nghĩa với is_within_operating_hours dùng cho phạt phẳng: mỗi thời
+    điểm được phân loại theo weekday + giờ-trong-ngày của chính nó, nên hỗ trợ tự
+    nhiên khung qua đêm (open>close) và khoảng neo trải nhiều ngày.
+
+    Thuật toán: dồn các mốc ranh giới (nửa đêm mỗi ngày + open/close mỗi ngày)
+    rồi với từng đoạn liên tiếp, phân loại theo điểm giữa (predicate hằng trên
+    đoạn) và cộng thời lượng nếu ngoài giờ.
+    """
+    if start is None or end is None:
+        return Decimal('0')
+    s = _as_vn(start)
+    e = _as_vn(end)
+    if e <= s:
+        return Decimal('0')
+    if not operating_hours_has_enforced_day(
+        operating_hours if isinstance(operating_hours, dict) else None
+    ):
+        # Không ép ngày nào -> không giới hạn -> 0 giờ ngoài.
+        return Decimal('0')
+
+    boundaries: set[datetime] = {s, e}
+    day_cursor: date = s.date()
+    last_day: date = e.date()
+    while day_cursor <= last_day:
+        midnight = datetime.combine(day_cursor, time(0, 0), tzinfo=VN_TZ)
+        if s <= midnight <= e:
+            boundaries.add(midnight)
+        weekday = _WEEKDAY_KEYS[day_cursor.weekday()]
+        day_schedule = day_schedule_for_weekday(
+            operating_hours if isinstance(operating_hours, dict) else None, weekday
+        )
+        if isinstance(day_schedule, dict):
+            for key in ('open', 'close'):
+                raw = day_schedule.get(key)
+                if raw:
+                    t = parse_hhmm(str(raw))
+                    edge = datetime.combine(day_cursor, t, tzinfo=VN_TZ)
+                    if s <= edge <= e:
+                        boundaries.add(edge)
+        day_cursor = day_cursor + timedelta(days=1)
+
+    ordered = sorted(boundaries)
+    outside_seconds = Decimal('0')
+    for left, right in zip(ordered, ordered[1:]):
+        if right <= left:
+            continue
+        mid = left + (right - left) / 2
+        if _instant_is_outside(mid, operating_hours):
+            outside_seconds += Decimal(str((right - left).total_seconds()))
+    return outside_seconds / Decimal('3600')
+
+
+def is_interval_outside_operating_hours(
+    start: Optional[datetime],
+    end: Optional[datetime],
+    operating_hours: Optional[dict[str, Any]],
+) -> bool:
+    """True nếu khoảng neo có BẤT KỲ phần nào rơi ngoài khung giờ cho phép."""
+    return outside_operating_hours_for_interval(start, end, operating_hours) > 0
 
 
 def validate_operating_hours(value: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:

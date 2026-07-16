@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, field_validator
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 from decimal import Decimal
 
@@ -35,6 +35,7 @@ class VesselBase(BaseModel):
     vessel_type_id: Optional[int] = None
     owner: Optional[str] = None
     registration_number: Optional[str] = None
+    registry_expiry: Optional[date] = None
     is_active: bool = True
 
 
@@ -47,6 +48,7 @@ class VesselUpdate(BaseModel):
     vessel_type_id: Optional[int] = None
     owner: Optional[str] = None
     registration_number: Optional[str] = None
+    registry_expiry: Optional[date] = None
     is_active: Optional[bool] = None
 
 
