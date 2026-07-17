@@ -216,14 +216,15 @@ def test_invoice_soft_deleted_for_absorbed():
 # Test 6 — PAID invoice on absorbed detection is NOT soft-deleted
 # ---------------------------------------------------------------------------
 
-def test_paid_invoice_not_deleted():
-    """Absorbed detection has PAID invoice → invoice kept (deleted_at stays None)."""
+@pytest.mark.parametrize('payment_status', ['PAID', 'PARTIAL'])
+def test_financial_invoice_detection_is_not_absorbed(payment_status):
+    """Detection có hóa đơn đã thu tiền là audit record, không soft-delete khi merge."""
     from app.services.detection_merge_service import absorb_contained
 
     new_det = _make_detection(2, vessel_id=1, berth_in=_dt(21, 40), berth_out=_dt(22, 0))
     old_det = _make_detection(1, vessel_id=1, berth_in=_dt(21, 50), berth_out=_dt(21, 55))
-    paid_inv = _make_invoice(11, detection_id=1, payment_status='PAID')
-    old_det.invoices = [paid_inv]
+    financial_inv = _make_invoice(11, detection_id=1, payment_status=payment_status)
+    old_det.invoices = [financial_inv]
 
     repo = DetectionRepository()
     db = MagicMock()
@@ -231,12 +232,36 @@ def test_paid_invoice_not_deleted():
     with (
         patch.object(repo.__class__, 'get', side_effect=lambda sess, did: new_det if did == 2 else old_det),
         patch.object(repo.__class__, 'get_overlapping_by_vessel', return_value=[old_det]),
-        patch.object(repo.__class__, 'soft_delete'),
+        patch.object(repo.__class__, 'soft_delete') as mock_soft_delete,
         patch('app.services.detection_merge_service.detection_repo', repo),
     ):
-        absorb_contained(db, 2)
+        winner_id = absorb_contained(db, 2)
 
-    assert paid_inv.deleted_at is None
+    assert financial_inv.deleted_at is None
+    assert winner_id == 2
+    mock_soft_delete.assert_not_called()
+
+
+def test_crossing_inside_cluster_blocks_later_fragment():
+    """Crossing nằm giữa cụm vẫn chặn fragment bắt đầu sau mốc OUT thật."""
+    from app.services.detection_merge_service import _cluster_containing_new
+
+    long_tail = _make_detection(
+        1, vessel_id=1, berth_in=_dt(0, 0), berth_out=_dt(1, 0),
+        berth_out_source='last_seen',
+    )
+    crossing = _make_detection(
+        2, vessel_id=1, berth_in=_dt(0, 50), berth_out=_dt(0, 55),
+        berth_out_source='crossing',
+    )
+    later = _make_detection(
+        3, vessel_id=1, berth_in=_dt(1, 10), berth_out=_dt(1, 20),
+        berth_out_source='last_seen',
+    )
+
+    cluster = _cluster_containing_new(later, [long_tail, crossing], gap_sec=1800)
+
+    assert [d.id for d in cluster] == [3]
 
 
 # ---------------------------------------------------------------------------

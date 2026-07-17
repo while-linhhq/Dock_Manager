@@ -1,4 +1,4 @@
-"""Paid-invoice guard — chỉ khóa khi payment_status = PAID."""
+"""Paid-invoice guard — khóa snapshot sau khi hóa đơn đã thanh toán đủ."""
 from __future__ import annotations
 
 from sqlalchemy.orm import Session

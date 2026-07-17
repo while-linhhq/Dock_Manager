@@ -227,6 +227,8 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
       if (id != null && id !== '') {
         const patch: FeeConfigUpdatePayload = {
           fee_name: data.fee_name,
+          vessel_type_id: data.vessel_type_id,
+          vessel_id: data.vessel_id,
           base_fee: data.base_fee,
           is_active: data.is_active,
           unit: data.unit,

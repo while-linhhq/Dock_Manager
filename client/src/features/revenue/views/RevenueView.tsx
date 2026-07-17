@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useForm, type Resolver } from 'react-hook-form';
+import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRevenueStore } from '../store/revenueStore';
 import { useVesselStore } from '../../vessels/store/vesselStore';
@@ -111,8 +111,8 @@ export const RevenueView: React.FC = () => {
     resolver: zodResolver(paymentSchema),
   });
 
-  const feeForm = useForm<FeeFormValues>({
-    resolver: zodResolver(feeSchema) as Resolver<FeeFormValues>,
+  const feeForm = useForm<MonthlyFeeFormInput, unknown, MonthlyFeeFormValues>({
+    resolver: zodResolver(feeSchemaByType),
     defaultValues: {
       is_active: true,
       fee_name: '',
@@ -227,11 +227,12 @@ export const RevenueView: React.FC = () => {
   const filteredFeeConfigs = useMemo(() => {
     return feeConfigs.filter((fee) => {
       // Chia phạm vi: tàu lẻ (gắn vessel_id) vs loại tàu tháng (gắn vessel_type_id, không có vessel_id).
-      const isSpotFee = fee.vessel_id != null;
+      const isSpotFee = fee.vessel_id != null && fee.vessel_type_id == null;
+      const isMonthlyFee = fee.vessel_id == null && fee.vessel_type_id != null;
       if (feeScope === 'spot' && !isSpotFee) {
         return false;
       }
-      if (feeScope === 'monthly' && isSpotFee) {
+      if (feeScope === 'monthly' && !isMonthlyFee) {
         return false;
       }
       // Tìm kiếm: spot theo mã tàu, monthly theo loại tàu.
@@ -265,9 +266,9 @@ export const RevenueView: React.FC = () => {
     let spot = 0;
     let monthly = 0;
     for (const fee of feeConfigs) {
-      if (fee.vessel_id != null) {
+      if (fee.vessel_id != null && fee.vessel_type_id == null) {
         spot += 1;
-      } else {
+      } else if (fee.vessel_id == null && fee.vessel_type_id != null) {
         monthly += 1;
       }
     }
@@ -494,7 +495,7 @@ export const RevenueView: React.FC = () => {
         feeForm.reset({
           is_active: true,
           fee_name: '',
-          vessel_id: '',
+          vessel_type_id: '',
           unit: 'per_month',
           base_fee: 0,
           berth_limit_count: undefined,

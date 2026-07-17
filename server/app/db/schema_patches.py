@@ -2855,6 +2855,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_vessels_classification()
     _ensure_fee_configs_vessel_id()
     _migrate_vessel_classification_data()
+    _ensure_billing_invariants()
     return list(_patch_applied)
 
 
@@ -3058,6 +3059,7 @@ def _migrate_vessel_classification_data() -> None:
                       SELECT 1 FROM fee_configs existing
                       WHERE existing.vessel_id = v.id
                         AND existing.fee_name = f.fee_name
+                        AND existing.is_active = TRUE
                   )
             """))
             conn.execute(text("""
@@ -3067,6 +3069,11 @@ def _migrate_vessel_classification_data() -> None:
                     SELECT v.vessel_type_id FROM vessels v WHERE v.classification = 'spot'
                 )
                   AND vessel_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM vessels monthly
+                      WHERE monthly.vessel_type_id = fee_configs.vessel_type_id
+                        AND monthly.classification = 'monthly'
+                  )
             """))
             conn.execute(text("""
                 UPDATE vessels
@@ -3139,4 +3146,75 @@ def _ensure_fee_configs_vessel_id() -> None:
         _patch_done('ensured fee_configs.vessel_id + index + FK')
     except Exception as err:
         logger.error('schema_patches: failed to ensure fee_configs.vessel_id: %s', err)
+        raise
+
+
+def _ensure_billing_invariants() -> None:
+    """Enforce new billing writes; validate constraints after legacy rows are clean."""
+    if engine.dialect.name != 'postgresql':
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'vessels'::regclass
+                          AND conname = 'chk_vessels_classification_scope'
+                    ) THEN
+                        ALTER TABLE vessels ADD CONSTRAINT chk_vessels_classification_scope
+                        CHECK (
+                            (classification = 'monthly' AND vessel_type_id IS NOT NULL)
+                            OR (classification IN ('spot', 'unclassified') AND vessel_type_id IS NULL)
+                        ) NOT VALID;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'fee_configs'::regclass
+                          AND conname = 'chk_fee_configs_exactly_one_scope'
+                    ) THEN
+                        ALTER TABLE fee_configs ADD CONSTRAINT chk_fee_configs_exactly_one_scope
+                        CHECK (
+                            is_active = FALSE OR
+                            (vessel_id IS NOT NULL AND vessel_type_id IS NULL) OR
+                            (vessel_id IS NULL AND vessel_type_id IS NOT NULL)
+                        ) NOT VALID;
+                    END IF;
+                END $$
+            """))
+
+            invalid_vessels = conn.execute(text("""
+                SELECT count(*) FROM vessels
+                WHERE NOT (
+                    (classification = 'monthly' AND vessel_type_id IS NOT NULL)
+                    OR (classification IN ('spot', 'unclassified') AND vessel_type_id IS NULL)
+                )
+            """)).scalar_one()
+            invalid_fees = conn.execute(text("""
+                SELECT count(*) FROM fee_configs
+                WHERE is_active = TRUE AND NOT (
+                    (vessel_id IS NOT NULL AND vessel_type_id IS NULL)
+                    OR (vessel_id IS NULL AND vessel_type_id IS NOT NULL)
+                )
+            """)).scalar_one()
+            if not invalid_vessels:
+                conn.execute(text(
+                    'ALTER TABLE vessels VALIDATE CONSTRAINT chk_vessels_classification_scope'
+                ))
+            if not invalid_fees:
+                conn.execute(text(
+                    'ALTER TABLE fee_configs VALIDATE CONSTRAINT chk_fee_configs_exactly_one_scope'
+                ))
+
+        # Avoid blocking invoice writes while building the index on upgraded databases.
+        with engine.connect().execution_options(isolation_level='AUTOCOMMIT') as conn:
+            conn.execute(text("""
+                CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_invoices_active_detection_id
+                ON invoices(detection_id)
+                WHERE detection_id IS NOT NULL AND deleted_at IS NULL
+            """))
+        _patch_done('ensured billing scope constraints + active invoice uniqueness')
+    except Exception as err:
+        logger.error('schema_patches: failed to ensure billing invariants: %s', err)
         raise

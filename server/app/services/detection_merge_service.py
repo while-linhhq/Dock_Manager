@@ -225,6 +225,7 @@ def _cluster_containing_new(new_det, candidates, gap_sec: float) -> list:
     current: list = []
     current_end = None  # effective_end lớn nhất trong cụm đang mở
     current_end_src = ''  # berth_out_source của mảnh định biên current_end
+    current_crossing_end = None  # OUT crossing thật mới nhất trong cụm
 
     for det in pool:
         d_start = _berth_start(det)
@@ -233,6 +234,7 @@ def _cluster_containing_new(new_det, candidates, gap_sec: float) -> list:
             current = [det]
             current_end = d_end
             current_end_src = _out_source(det)
+            current_crossing_end = d_end if _out_source(det) == 'crossing' else None
             continue
         # Gap giữa mốc kết thúc xa nhất của cụm và mốc bắt đầu det hiện tại.
         # <=0 nghĩa là chồng lấn/liền kề.
@@ -246,8 +248,15 @@ def _cluster_containing_new(new_det, candidates, gap_sec: float) -> list:
             # 2 lượt tách biệt.
             if linked and gap > 0 and current_end_src == 'crossing':
                 linked = False
+            # Crossing nằm giữa cụm vẫn là biên rời cứng. Không để một đuôi
+            # last_seen dài che mốc đó rồi nối lượt bắt đầu sau crossing.
+            if linked and current_crossing_end is not None and d_start > current_crossing_end:
+                linked = False
         if linked:
             current.append(det)
+            if _out_source(det) == 'crossing' and d_end is not None:
+                if current_crossing_end is None or d_end > current_crossing_end:
+                    current_crossing_end = d_end
             if d_end is not None and (current_end is None or d_end > current_end):
                 current_end = d_end
                 current_end_src = _out_source(det)
@@ -256,6 +265,7 @@ def _cluster_containing_new(new_det, candidates, gap_sec: float) -> list:
             current = [det]
             current_end = d_end
             current_end_src = _out_source(det)
+            current_crossing_end = d_end if _out_source(det) == 'crossing' else None
     if current:
         clusters.append(current)
 
@@ -286,6 +296,16 @@ def absorb_contained(db: Session, detection_id: int) -> int:
     if new_det.berth_in_time is None or new_det.berth_out_time is None:
         return detection_id
 
+    def has_financial_invoice(det) -> bool:
+        return any(
+            inv.payment_status in {'PARTIAL', 'PAID'} and inv.deleted_at is None
+            for inv in list(getattr(det, 'invoices', []) or [])
+        )
+
+    # Detection đã thu tiền là audit record tài chính, không absorb.
+    if has_financial_invoice(new_det):
+        return detection_id
+
     # Ngoại lệ UNKNOWN: tàu chưa định danh KHÔNG gộp. Mọi detection UNKNOWN trỏ
     # về CÙNG một vessel 'UNKNOWN', nên coalesce theo vessel_id sẽ trộn nhiều con
     # tàu khác nhau thành một lượt sai. Giữ nguyên từng detection cho tới khi
@@ -307,6 +327,7 @@ def absorb_contained(db: Session, detection_id: int) -> int:
         exclude_id=new_det.id,
         window_hours=effective_window_hours,
     )
+    candidates = [det for det in candidates if not has_financial_invoice(det)]
 
     # Gom cụm bắc cầu (single-linkage) theo trục thời gian: nối các mảnh KỀ nhau
     # khi khoảng trống kề < berth_merge_gap_sec (hoặc chồng lấn). Chỉ giữ cụm

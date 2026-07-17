@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional, cast
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
@@ -190,30 +191,61 @@ def build_ai_invoice_items(db: Session, det: Detection, vessel, fees) -> list[In
     return items
 
 
-def ensure_ai_invoice_for_detection(detection_id: int) -> None:
-    """
-    Tạo tối đa một hóa đơn AI cho detection_id.
-    Chỉ khi xác định được tàu hợp lệ, có vessel_type_id và có phí active.
-    """
-    db: Session = SessionLocal()
+def _replace_ai_invoice_items(
+    db: Session,
+    invoice: Invoice,
+    vessel,
+    items: list[InvoiceItemCreate],
+) -> None:
+    """Replace unlocked AI invoice content inside caller's transaction."""
+    subtotal = sum((_line_sub(item) for item in items), Decimal('0')).quantize(Decimal('0.01'))
+    for old in list(invoice.items):
+        db.delete(old)
+    db.flush()
+    for item in items:
+        data = item.model_dump()
+        data['invoice_id'] = invoice.id
+        db.add(InvoiceItem(**data))
+
+    invoice.subtotal = subtotal
+    invoice.tax_amount = Decimal('0')
+    invoice.total_amount = compute_invoice_total(
+        subtotal,
+        Decimal('0'),
+        invoice.discount_amount,
+    )
+    invoice.vessel_id = vessel.id
+    db.flush()
+
+    refreshed = invoice_repo.get(db, invoice.id)
+    if refreshed:
+        refreshed.is_over_berth_limit = compute_invoice_over_berth_limit(db, refreshed)
+        refreshed.is_outside_operating_hours = compute_invoice_outside_operating_hours(db, refreshed)
+
+
+def ensure_ai_invoice_for_detection(
+    detection_id: int,
+    *,
+    session: Session | None = None,
+    commit: bool = True,
+) -> dict:
+    """Tạo tối đa một invoice AI, dùng transaction của caller khi được truyền vào."""
+    owns_db = session is None
+    db: Session = session or SessionLocal()
     try:
         det = detection_repo.get(db, detection_id)
         if not det or not det.vessel_id:
-            _log.info('Skip AI invoice detection_id=%s: no detection or vessel_id', detection_id)
-            return
+            return {'status': 'skipped_no_vessel'}
 
         vessel = vessel_repo.get(db, det.vessel_id)
         if not vessel:
-            _log.info('Skip AI invoice detection_id=%s: vessel not found id=%s', detection_id, det.vessel_id)
-            return
+            return {'status': 'skipped_no_vessel'}
         if is_unknown_ship_id(vessel.ship_id):
-            _log.info('Skip AI invoice detection_id=%s: unknown ship_id=%s', detection_id, vessel.ship_id)
-            return
+            return {'status': 'skipped_not_eligible'}
 
         existing = invoice_repo.get_by_detection_id(db, detection_id)
         if existing:
-            _log.info('Skip AI invoice detection_id=%s: invoice already exists id=%s', detection_id, existing.id)
-            return
+            return {'status': 'exists', 'invoice_id': existing.id}
 
         berth_in, _berth_out = resolve_berth_window(
             det.start_time,
@@ -227,30 +259,15 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             berth_in=berth_in,
         )
         if duplicate is not None:
-            _log.warning(
-                'Skip AI invoice detection_id=%s: duplicate visit invoice_id=%s vessel_id=%s berth_in=%s',
-                detection_id,
-                duplicate.id,
-                vessel.id,
-                berth_in,
-            )
-            return
+            return {'status': 'duplicate_visit', 'invoice_id': duplicate.id}
 
         fees = resolve_billable_fees(db, vessel)
         if not fees:
-            _log.info(
-                'Skip AI invoice detection_id=%s: no active fee config for vessel_id=%s ship_id=%s',
-                detection_id,
-                vessel.id,
-                vessel.ship_id,
-            )
-            return
+            return {'status': 'skipped_no_fee'}
 
         items = build_ai_invoice_items(db, det, vessel, fees)
-
         if not items:
-            _log.info('Skip AI invoice detection_id=%s: all fee items resolved to none', detection_id)
-            return
+            return {'status': 'skipped_no_items'}
 
         inv_no = invoice_repo.generate_unique_invoice_number(db)
         notes_parts = [
@@ -258,8 +275,6 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             f'Track: {det.track_id or "—"}',
         ]
         subtotal = sum((_line_sub(it) for it in items), Decimal('0')).quantize(Decimal('0.01'))
-        # AI invoice không cộng VAT/tax. Phí tháng/năm chỉ là dòng tham chiếu amount=0;
-        # nếu có per_hour/per_berth_visit/penalty thì subtotal vẫn là tiền thật cần thu.
         payload = InvoiceCreate(
             invoice_number=inv_no,
             vessel_id=vessel.id,
@@ -273,18 +288,39 @@ def ensure_ai_invoice_for_detection(detection_id: int) -> None:
             items=items,
         )
 
-        invoice_service.create_with_items(db, payload)
+        try:
+            with db.begin_nested():
+                created = invoice_service.create_with_items(db, payload, commit=False)
+        except IntegrityError:
+            existing = invoice_repo.get_by_detection_id(db, detection_id)
+            if existing is not None:
+                if (
+                    existing.creation_source in ('AI', 'ORDER_AUTO')
+                    and existing.payment_status == 'UNPAID'
+                    and not is_invoice_financially_locked(existing)
+                ):
+                    _replace_ai_invoice_items(db, existing, vessel, items)
+                    return {'status': 'recomputed_race', 'invoice_id': existing.id}
+                return {'status': 'exists', 'invoice_id': existing.id}
+            raise
+        if commit:
+            db.commit()
         _log.info(
             'Created AI invoice %s for detection_id=%s vessel=%s',
             inv_no,
             detection_id,
             vessel.ship_id,
         )
+        return {'status': 'created', 'invoice_id': created.id}
     except Exception:
         _log.exception('ensure_ai_invoice_for_detection failed detection_id=%s', detection_id)
-        db.rollback()
+        if commit:
+            db.rollback()
+            return {'status': 'error'}
+        raise
     finally:
-        db.close()
+        if owns_db:
+            db.close()
 
 
 def recompute_ai_invoice_for_detection(
@@ -298,7 +334,7 @@ def recompute_ai_invoice_for_detection(
     - Không có invoice AI: tạo mới (ủy quyền cho ensure_).
     - Có invoice AI chưa thanh toán: dựng lại line-items + subtotal/total theo
       dữ liệu detection mới, xóa item cũ, ghi item mới.
-    - Invoice đã PAID (financial lock): giữ nguyên, không sửa tiền.
+    - Invoice đã PARTIAL/PAID (financial lock): giữ nguyên, không sửa tiền.
 
     Trả dict {status, invoice_id?} để endpoint báo lại cho client.
     """
@@ -313,9 +349,12 @@ def recompute_ai_invoice_for_detection(
         if existing is not None and existing.creation_source not in ('AI', 'ORDER_AUTO'):
             return {'status': 'skipped_not_ai', 'invoice_id': existing.id}
 
-        if existing is not None and is_invoice_financially_locked(existing):
+        if existing is not None and (
+            existing.payment_status in {'PARTIAL', 'PAID'}
+            or is_invoice_financially_locked(existing)
+        ):
             _log.info(
-                'Skip recompute detection_id=%s: invoice %s đã PAID (khóa tài chính)',
+                'Skip recompute detection_id=%s: invoice %s đã nhận thanh toán (khóa tài chính)',
                 detection_id,
                 existing.id,
             )
@@ -347,40 +386,13 @@ def recompute_ai_invoice_for_detection(
             return retire_unbillable('skipped_no_items')
 
         if existing is None:
-            if not commit:
-                return {'status': 'needs_create'}
-            ensure_ai_invoice_for_detection(detection_id)
-            created = invoice_repo.get_by_detection_id(db, detection_id)
-            if created is not None:
-                return {'status': 'created', 'invoice_id': created.id}
-            return {'status': 'skipped_not_eligible'}
+            return ensure_ai_invoice_for_detection(
+                detection_id,
+                session=db,
+                commit=commit,
+            )
 
-        subtotal = sum((_line_sub(it) for it in items), Decimal('0')).quantize(Decimal('0.01'))
-
-        # Xóa line-item cũ, ghi item mới theo dữ liệu detection hiện tại.
-        for old in list(existing.items):
-            db.delete(old)
-        db.flush()
-        for it in items:
-            data = it.model_dump()
-            data['invoice_id'] = existing.id
-            db.add(InvoiceItem(**data))
-
-        # AI invoice không cộng VAT. discount hiện có giữ nguyên, total = gross - discount.
-        existing.subtotal = subtotal
-        existing.tax_amount = Decimal('0')
-        existing.total_amount = compute_invoice_total(
-            subtotal,
-            Decimal('0'),
-            existing.discount_amount,
-        )
-        existing.vessel_id = vessel.id
-        db.flush()
-
-        refreshed = invoice_repo.get(db, existing.id)
-        if refreshed:
-            refreshed.is_over_berth_limit = compute_invoice_over_berth_limit(db, refreshed)
-            refreshed.is_outside_operating_hours = compute_invoice_outside_operating_hours(db, refreshed)
+        _replace_ai_invoice_items(db, existing, vessel, items)
 
         if commit:
             db.commit()
@@ -390,7 +402,7 @@ def recompute_ai_invoice_for_detection(
             'Recomputed AI invoice %s for detection_id=%s subtotal=%s',
             existing.invoice_number,
             detection_id,
-            subtotal,
+            existing.subtotal,
         )
         return {'status': 'recomputed', 'invoice_id': existing.id}
     except Exception:

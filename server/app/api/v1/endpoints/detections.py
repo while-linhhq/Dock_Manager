@@ -148,7 +148,7 @@ def update_detection(
 ):
     """Sửa thông tin detection, sau đó tính lại hóa đơn AI liên kết.
 
-    Hóa đơn AI đã PAID (khóa tài chính) không bị tính lại tiền.
+    Hóa đơn AI đã PARTIAL/PAID (khóa tài chính) không bị tính lại tiền.
     Response header X-Invoice-Recompute cho biết kết quả tính lại.
     """
     obj = detection_repo.get(db, detection_id)
@@ -180,11 +180,6 @@ def update_detection(
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail='Detection/invoice update failed') from exc
-
-    # No prior invoice: create only after detection commit. Failure cannot leave an
-    # existing invoice stale; service logs and returns status without reverting data.
-    if invoice_result.get('status') == 'needs_create':
-        recompute_ai_invoice_for_detection(detection_id)
 
     fresh = detection_repo.get(db, detection_id) or updated
     camera_map = resolve_camera_in_out(db, [str(fresh.track_id or '')])

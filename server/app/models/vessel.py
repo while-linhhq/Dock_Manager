@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Date, Numeric, ForeignKey
+from sqlalchemy import CheckConstraint, Column, Integer, String, Boolean, DateTime, Date, Numeric, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -6,6 +6,13 @@ from app.db.session import Base
 
 class Vessel(Base):
     __tablename__ = 'vessels'
+    __table_args__ = (
+        CheckConstraint(
+            "(classification = 'monthly' AND vessel_type_id IS NOT NULL) OR "
+            "(classification IN ('spot', 'unclassified') AND vessel_type_id IS NULL)",
+            name='chk_vessels_classification_scope',
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     ship_id = Column(String(50), unique=True, nullable=False, index=True)

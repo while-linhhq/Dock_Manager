@@ -1,11 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useUserStore } from '../store/userStore';
 import type { RoleCreate } from '../services/usersApi';
 import type { RoleRead, UserRead } from '../../../types/api.types';
 import { matchesAnyField } from '../../../utils/table-filters';
-import { roleSchema, userSchema, type UserFormValues } from '../users-schemas';
+import {
+  roleSchema,
+  userCreateSchema,
+  userUpdateSchema,
+  type UserFormValues,
+} from '../users-schemas';
 import { UsersMainTabs, type UsersMainTab } from '../components/UsersMainTabs';
 import { UsersListSection } from '../components/UsersListSection';
 import { RolesSection } from '../components/RolesSection';
@@ -37,7 +42,7 @@ export const UsersView: React.FC = () => {
   } = useUserStore();
 
   const userForm = useForm<UserFormValues>({
-    resolver: zodResolver(userSchema),
+    resolver: zodResolver(editingId ? userUpdateSchema : userCreateSchema) as Resolver<UserFormValues>,
     defaultValues: { is_active: true, username: '' },
   });
 

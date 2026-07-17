@@ -54,7 +54,13 @@ def compute_invoice_total(
 
 
 class InvoiceService:
-    def create_with_items(self, db: Session, data: InvoiceCreate) -> Invoice:
+    def create_with_items(
+        self,
+        db: Session,
+        data: InvoiceCreate,
+        *,
+        commit: bool = True,
+    ) -> Invoice:
         # Fetch tax rate from port_configs (default 10%)
         tax_cfg = port_config_repo.get_by_key(db, 'invoice_tax_rate')
         tax_rate = Decimal(tax_cfg.value) if tax_cfg else Decimal('0.1')
@@ -102,7 +108,10 @@ class InvoiceService:
                 refreshed,
             )
 
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(invoice)
         return invoice_repo.get(db, invoice.id) or invoice
 

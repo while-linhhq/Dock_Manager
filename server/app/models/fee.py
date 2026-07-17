@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, Date, DateTime, ForeignKey, JSON
+from sqlalchemy import CheckConstraint, Column, Integer, String, Numeric, Boolean, Date, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -6,6 +6,14 @@ from app.db.session import Base
 
 class FeeConfig(Base):
     __tablename__ = 'fee_configs'
+    __table_args__ = (
+        CheckConstraint(
+            'is_active = FALSE OR '
+            '(vessel_id IS NOT NULL AND vessel_type_id IS NULL) OR '
+            '(vessel_id IS NULL AND vessel_type_id IS NOT NULL)',
+            name='chk_fee_configs_exactly_one_scope',
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     # DEPRECATED: fee giờ gắn trực tiếp vessel_id. Giữ cột để rollback an toàn, không dùng để resolve.

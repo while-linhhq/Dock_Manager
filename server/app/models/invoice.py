@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Text, Boolean, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -6,6 +6,15 @@ from app.db.session import Base
 
 class Invoice(Base):
     __tablename__ = 'invoices'
+    __table_args__ = (
+        Index(
+            'uq_invoices_active_detection_id',
+            'detection_id',
+            unique=True,
+            postgresql_where=text('detection_id IS NOT NULL AND deleted_at IS NULL'),
+            sqlite_where=text('detection_id IS NOT NULL AND deleted_at IS NULL'),
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     invoice_number = Column(String(50), unique=True, nullable=False)
