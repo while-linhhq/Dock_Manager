@@ -1,0 +1,9 @@
+# bason VPS: enable GPU RTSP decode (jellyfin-ffmpeg NVDEC).
+# - mount vendor/ so /app/vendor/ffmpeg (CUDA build) resolves inside container
+# - add 'video' driver capability so libnvcuvid/cuvid decoders are usable
+services:
+  app:
+    volumes:
+      - ./vendor:/app/vendor
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video

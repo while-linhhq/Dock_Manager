@@ -1,4 +1,5 @@
 # Install BEFORE torch (separate index). See Dockerfile + gpu-pytorch-conda-setup skill.
---index-url https://www.paddlepaddle.org.cn/packages/stable/cu120/
+# cu126 wheel: paddle 3.x lives on cu12x index (cu120 tops out at 2.6.2). Runs under CUDA 12.8.
+--index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/
 --extra-index-url https://pypi.org/simple
 paddlepaddle-gpu==3.3.0
