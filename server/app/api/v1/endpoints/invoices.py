@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -47,6 +48,15 @@ def _invoice_to_read(db: Session, inv) -> InvoiceRead:
     )
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @router.get('/', response_model=List[InvoiceRead])
 def list_invoices(
     response: Response,
@@ -63,29 +73,55 @@ def list_invoices(
         None,
         description='Loại trừ nguồn (VD: AI để tab hóa đơn thủ công/đơn hàng)',
     ),
+    q: Optional[str] = Query(
+        None,
+        description='Tìm không phân biệt hoa thường: số hoá đơn, order/vessel/detection id, ship_id, nhãn người tạo',
+    ),
+    vessel_id: Optional[int] = None,
+    vessel_type_id: Optional[int] = None,
+    created_from: Optional[datetime] = Query(None, description='Instant UTC (ISO-8601) so với created_at'),
+    created_to: Optional[datetime] = Query(None, description='Instant UTC (ISO-8601) so với created_at'),
+    min_total: Optional[Decimal] = None,
+    max_total: Optional[Decimal] = None,
+    min_berth_minutes: Optional[float] = Query(
+        None,
+        description='Số phút neo tối thiểu, tính từ (end_time - start_time) của detection',
+    ),
+    sort: str = Query('time', description='time | invoice_number | ship_order | created_at | deleted_at | payment_status | total_amount'),
+    order: str = Query('desc', description='asc | desc'),
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
+    """Danh sách hoá đơn — 8 bộ lọc của trang thu nhập chạy ở SQL, kèm sắp xếp cột.
+
+    `q` tìm không phân biệt hoa thường trên số hoá đơn, order/vessel/detection id,
+    ship_id và nhãn người tạo; wildcard trong `q` bị escape.
+    `created_from`/`created_to` là instant UTC so với `created_at`;
+    `min_berth_minutes` tính từ `(end_time - start_time)` của detection.
+    `sort` chỉ nhận các khóa trong whitelist, giá trị lạ rơi về mặc định
+    (không bao giờ được nội suy vào SQL).
+    """
     skip, limit = resolve_page(skip, limit)
-    total = invoice_repo.count_filtered(
-        db,
-        payment_status=payment_status,
-        awaiting_payment=awaiting_payment,
-        deleted_only=deleted_only,
-        creation_source=creation_source,
-        exclude_creation_source=exclude_creation_source,
-    )
+    filters = {
+        'payment_status': payment_status,
+        'awaiting_payment': awaiting_payment,
+        'deleted_only': deleted_only,
+        'creation_source': creation_source,
+        'exclude_creation_source': exclude_creation_source,
+        'q': q,
+        'vessel_id': vessel_id,
+        'vessel_type_id': vessel_type_id,
+        'created_from': _as_utc(created_from),
+        'created_to': _as_utc(created_to),
+        'min_total': min_total,
+        'max_total': max_total,
+        'min_berth_minutes': min_berth_minutes,
+        'sort': sort,
+        'order': order,
+    }
+    total = invoice_repo.count_filtered(db, **filters)
     set_total_header(response, total)
-    rows = invoice_repo.get_all(
-        db,
-        skip=skip,
-        limit=limit,
-        payment_status=payment_status,
-        awaiting_payment=awaiting_payment,
-        deleted_only=deleted_only,
-        creation_source=creation_source,
-        exclude_creation_source=exclude_creation_source,
-    )
+    rows = invoice_repo.get_all(db, skip=skip, limit=limit, **filters)
     return [_invoice_to_read(db, inv) for inv in rows]
 
 
