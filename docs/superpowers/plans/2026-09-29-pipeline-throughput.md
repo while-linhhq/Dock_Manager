@@ -211,3 +211,43 @@ xử lý trần mới ở `GroupFrameHub`.
 - [ ] A/B app thật 60 s: `make stop`, `make start`, lấy mẫu CPU/VRAM/GPU, đọc `fps_per_camera` từ status → so với baseline (114.3 % CPU, 23.3 % GPU, 2.5-3 fps/camera)
 - [ ] Chạy `detect_scale=0.5` (đặt qua DB, không sửa .env) → đo lại 60 s + `make ab-detect` → rồi trả `detect_scale` về 1.0
 - [ ] Cập nhật `git status`, liệt kê commit trên nhánh; báo cáo số liệu và đề xuất bước tiếp theo (merge/tạo PR)
+
+## Task 7: CLAHE sau letterbox (spec §12.1)
+
+**Vấn đề:** CLAHE đang chạy ở full-res 2560×1440 (3.7 MP) rồi `predict_boxes` letterbox ảnh đó
+xuống 960×960 (0.9 MP) — chi tiết CLAHE tạo ra bị chính bước resize xoá đi, và ultralytics còn
+tốn ~47 ms để tự letterbox ảnh full-res mỗi frame.
+
+**Thiết kế (đã kiểm chứng bằng probe, xem số bên dưới):** letterbox **phần nội dung** trước →
+CLAHE ở kích thước detector → pad viền xám 114 cho đủ `imgsz×imgsz` → `predict_boxes` → map
+ngược box (trừ pad, chia tỉ lệ) tại **đúng điểm quy đổi duy nhất** hiện có.
+
+- `server/app/utils/ai/letterbox.py` (mới): `letterbox_frame(frame, imgsz)` trả `Letterbox`
+  (nội dung đã resize, tỉ lệ, pad_x, pad_y, cạnh canvas) + `unletterbox_boxes(boxes, scale,
+  pad_x, pad_y)`. Giữ đúng hình học của `ultralytics.utils.ops.LetterBox`: `scaleup=True`,
+  pad căn giữa `int(round(d/2 - 0.1))` / `int(round(d/2 + 0.1))`, `INTER_LINEAR`, viền 114.
+- `per_camera_pipeline.py`: cờ `clahe_after_letterbox`; khi bật, bỏ `detect_scale`/resize và đi
+  đường mới; `imgsz` lấy từ `self._detector.imgsz`.
+- Cấu hình: `CLAHE_AFTER_LETTERBOX` (env) + khoá `clahe_after_letterbox` (DB > env), mặc định
+  **bật** vì A/B đạt cổng; đặt `false` để quay lại nguyên trạng không cần sửa code.
+- `scripts/ab_detect.py`: thêm ứng viên `clahe-after-letterbox` **dùng lại chính hàm sản xuất**
+  (`letterbox_frame` + `unletterbox_boxes`) để harness kiểm đúng code sẽ chạy.
+
+**Cổng:** A/B `--candidate clahe-after-letterbox --iou-gate 0.98 --conf-gate 0.03` → cùng số box,
+0 box lệch, IoU min ≥ 0.98; `process_ms_per_frame` giảm; fps/camera không đổi (đang chặn ở
+`record_fps`); `make test` + `make check` xanh.
+
+**Kết quả (đã xong):** hệ số 1.5 → 8→8 box · khớp 8 · 0 lệch · IoU min **0.9858** · conf lệch
+0.0054 · 58→27 ms/frame (harness) · `make test` 336 pass · `make check` 32/0/0. Chạy thật:
+ms/frame **73.6/69.0 → 34.2/39.3**, CPU **140 % → 79 %**, fps 5.0/camera.
+Phát hiện khi làm: hệ số 1.0 **mất 1 box conf 0.966** (frame cam6) → mặc định 1.5.
+
+**Số probe (4 frame thật, pipeline đã dừng, đổi thứ tự đo):**
+
+| | CLAHE | predict | tổng/frame | IoU min vs hiện tại | conf lệch max |
+|---|---|---|---|---|---|
+| A hiện tại (CLAHE full-res) | 53.5 ms | 53.3 ms | 53.6 ms | — | — |
+| B CLAHE trên ảnh đã pad 960×960 | 11.7 ms | 6.7 ms | 20.3 ms | 0.9820 | 0.0034 |
+| **C CLAHE nội dung 960×540 rồi pad** | **6.0 ms** | **6.7 ms** | **14.8 ms** | **0.9935** | **0.0005** |
+
+→ Chọn C (vừa chính xác hơn vừa rẻ hơn B); tiết kiệm ~39 ms/frame cho CLAHE+detect.

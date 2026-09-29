@@ -166,12 +166,13 @@ Cổng:
 
 Số đo ở `record_fps=15` cho thấy trần fps hiện tại không còn ở detector mà ở vòng lặp khung:
 
-1. **CLAHE chạy ở full-res rồi bị letterbox thu nhỏ** — ở cấu hình production (gray-world
-   tắt) CLAHE vẫn tốn **28.4 ms/frame** (4 frame thật 2560×1440) trong khi detector chỉ nhận
-   ảnh 960×544; phần chi tiết CLAHE tạo ra bị chính bước resize xoá đi. Làm CLAHE **sau** khi
-   thu nhỏ về kích thước detector (~0.2 MP thay vì 3.7 MP) ước tính còn ~4 ms/frame, tức bỏ
-   được ~24 ms/frame (~1/3 ngân sách frame hiện tại ~70 ms) — cần A/B vì CLAHE ở hai độ phân
-   giải cho kết quả không giống nhau (cổng IoU ≥ 0.98 như P1).
+1. ~~CLAHE chạy ở full-res rồi bị letterbox thu nhỏ~~ — **ĐÃ LÀM** (Task 7, commit
+   `feat(ai): CLAHE chạy ở kích thước detector`). Kết quả đo: hệ số letterbox 1.5, cổng A/B
+   8→8 box · 0 lệch · IoU min **0.9858** · conf lệch 0.0054; chạy thật 2 camera ms/frame
+   **73.6/69.0 → 34.2/39.3**, CPU backend **~140 % → 79 %**, fps vẫn 5.0 (chặn ở `record_fps`).
+   Bài học giữ lại: ở hệ số **1.0** đường này **mất hẳn 1 box conf 0.966** trên frame cam6 —
+   chỉ harness (8 frame) bắt được, probe 4 frame đầu không thấy; nên hệ số mặc định là 1.5 và
+   mọi thay đổi kiểu này phải qua harness trên **toàn bộ** frame có sẵn.
 2. **Reader đọc rồi vứt frame** — `MultiFrameReaderThread.run()` đọc frame ở đầu vòng lặp rồi `continue` khi chưa tới nhịp phát (`multi_frame_reader.py:167-172`), không sleep; hub lại đặt `reader_fps = 2 × record_fps` nên ở `record_fps=15` mỗi reader kéo ~20 fps từ nguồn và vứt ~2/3. Bằng chứng: CPU backend 140 % → 433 % khi nâng `record_fps` 5 → 15 mà fps xử lý không đổi. Hướng sửa: sleep tới `next_emit` thay vì đọc lại.
 3. **Coordinator `GroupFrameHub` là trần thật** — mỗi batch còn: fuse 2 camera, vẽ overlay + boundary lên canvas, JPEG + push preview dashboard, `_last_aligned_batch` copy, và copy thêm một lần cho mỗi queue per-camera (`group_frame_hub.py:378-400`). Hướng sửa: bỏ copy thừa, chỉ dựng/encode preview khi có client WS đang mở.
 4. **`_enqueue_media_sample` copy canvas fused trước khi kiểm tra track CONFIRMED** (`pipeline_service.py:877-882`) — bỏ được khi không có track, cùng lập luận với ruling ở Task 3.
