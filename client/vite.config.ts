@@ -17,6 +17,8 @@ export default defineConfig(({ mode }) => {
           target: API_PROXY_TARGET,
           changeOrigin: true,
           secure: true,
+          // Live preview là WebSocket: thiếu ws:true thì bắt tay qua proxy sẽ timeout.
+          ws: true,
         },
       },
     },

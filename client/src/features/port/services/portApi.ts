@@ -76,6 +76,9 @@ export const portApi = {
   getDetections: async (skip: number = 0, limit: number = 100, vesselId?: string): Promise<DetectionRead[]> => {
     const params = new URLSearchParams({ skip: skip.toString(), limit: limit.toString() });
     if (vesselId) params.append('vessel_id', vesselId);
+    // include_presigned_paths: đổi s3://... thành URL media qua API để modal đối chiếu
+    // (nhánh fallback khi detection không có bản ghi media) mở được từ trình duyệt ở xa.
+    params.append('include_presigned_paths', 'true');
     return httpClient.get<DetectionRead[]>(`/detections/?${params.toString()}`);
   },
   verifyDetection: async (id: string, data: DetectionVerify): Promise<DetectionRead> => {
