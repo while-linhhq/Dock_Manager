@@ -1,7 +1,8 @@
 """Test CLAHE: đường nhanh uint8 phải xấp xỉ đường tham chiếu float32 và lùi được.
 
 Ngưỡng sai lệch lấy từ số đo thật trên frame camera 2560×1440 và ảnh tổng hợp:
-lệch trung bình 1.24-1.33 mức uint8, max 8-16, ~98-99 % pixel lệch ≤ 4.
+lệch trung bình 1.21-1.70 mức uint8, max 8-16, 98.85-99.20 % pixel lệch ≤ 4 (4 frame thật
+`/tmp/opt-test/boats`, gray-world bật). Cổng đặt ở 98 % để có biên mà vẫn chặt.
 """
 from __future__ import annotations
 
@@ -58,7 +59,7 @@ def test_fast_close_to_reference_with_gray_world() -> None:
 
     assert delta.mean() <= 2.0
     assert delta.max() <= 24
-    assert (delta <= 4).mean() >= 0.95
+    assert (delta <= 4).mean() >= 0.98  # đo thật: 98.85 % (tổng hợp) … 99.20 % (frame thật)
 
 
 def test_fast_keeps_gray_world_balancing() -> None:
