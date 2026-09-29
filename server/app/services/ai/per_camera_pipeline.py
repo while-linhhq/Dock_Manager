@@ -401,81 +401,82 @@ class PerCameraPipeline(threading.Thread):
                 track.berth_zone_overlap = None
                 track.berth_zone_threshold = None
 
-        annotated = raw_frame.copy()
-        draw_berth_state_bbox_overlays(annotated, tracked_boats)
-        for track in tracked_boats:
-            color = _color_for_track(track)
-            box = track.box
-            cv2.rectangle(
-                annotated,
-                (int(box[0]), int(box[1])),
-                (int(box[2]), int(box[3])),
-                color,
-                2,
+        if self._needs_overlay_frame(tracked_boats):
+            annotated = raw_frame.copy()
+            draw_berth_state_bbox_overlays(annotated, tracked_boats)
+            for track in tracked_boats:
+                color = _color_for_track(track)
+                box = track.box
+                cv2.rectangle(
+                    annotated,
+                    (int(box[0]), int(box[1])),
+                    (int(box[2]), int(box[3])),
+                    color,
+                    2,
+                )
+            overlay_scale = (
+                self.config.resize_scale
+                if self.config.resize_scale != 1.0
+                else 1.0
             )
-        overlay_scale = (
-            self.config.resize_scale
-            if self.config.resize_scale != 1.0
-            else 1.0
-        )
-        overlay_zone_threshold = resolve_bbox_cross_threshold(self._boundary_lines_payload)
-        overlay_frame = draw_ship_detection_overlay(
-            annotated,
-            tracked_boats,
-            self._ocr_cache,
-            self._ocr_lock,
-            self.config.ocr_label_ttl_sec,
-            fps_est,
-            overlay_scale,
-            frame_captured_mono=captured_mono,
-            camera_id=int(self.config.camera_id),
-            zone_threshold=overlay_zone_threshold,
-        )
-        overlay_cfg = BoundaryConfig.for_overlay(self._boundary_lines_payload)
-        if overlay_cfg is not None:
-            from app.utils.ai.draw_boundary import draw_boundary_lines
+            overlay_zone_threshold = resolve_bbox_cross_threshold(self._boundary_lines_payload)
+            overlay_frame = draw_ship_detection_overlay(
+                annotated,
+                tracked_boats,
+                self._ocr_cache,
+                self._ocr_lock,
+                self.config.ocr_label_ttl_sec,
+                fps_est,
+                overlay_scale,
+                frame_captured_mono=captured_mono,
+                camera_id=int(self.config.camera_id),
+                zone_threshold=overlay_zone_threshold,
+            )
+            overlay_cfg = BoundaryConfig.for_overlay(self._boundary_lines_payload)
+            if overlay_cfg is not None:
+                from app.utils.ai.draw_boundary import draw_boundary_lines
 
-            overlay_frame = draw_boundary_lines(overlay_frame, overlay_cfg)
-        if self._on_overlay_media_sample is not None:
-            try:
-                self._on_overlay_media_sample(
-                    int(self.config.camera_id),
-                    overlay_frame,
-                    tracked_boats,
-                )
-            except Exception:
-                import logging
+                overlay_frame = draw_boundary_lines(overlay_frame, overlay_cfg)
+            if self._on_overlay_media_sample is not None:
+                try:
+                    self._on_overlay_media_sample(
+                        int(self.config.camera_id),
+                        overlay_frame,
+                        tracked_boats,
+                    )
+                except Exception:
+                    import logging
 
-                logging.getLogger(__name__).exception(
-                    'on_overlay_media_sample failed for camera_id=%s',
-                    self.config.camera_id,
-                )
-        if self._on_boundary_media_sample is not None:
-            try:
-                self._on_boundary_media_sample(
-                    int(self.config.camera_id),
-                    overlay_frame,
-                    tracked_boats,
-                    boundary_crossings,
-                )
-            except Exception:
-                import logging
+                    logging.getLogger(__name__).exception(
+                        'on_overlay_media_sample failed for camera_id=%s',
+                        self.config.camera_id,
+                    )
+            if self._on_boundary_media_sample is not None:
+                try:
+                    self._on_boundary_media_sample(
+                        int(self.config.camera_id),
+                        overlay_frame,
+                        tracked_boats,
+                        boundary_crossings,
+                    )
+                except Exception:
+                    import logging
 
-                logging.getLogger(__name__).exception(
-                    'on_boundary_media_sample failed for camera_id=%s',
-                    self.config.camera_id,
-                )
-        if self.config.enable_preview_stream:
-            pipeline_preview.push_bgr_frame(overlay_frame)
-        record_queues = (
-            self._video_queue is not None or self._single_camera_video_queue is not None
-        )
-        if record_queues:
-            item = (overlay_frame, tracked_boats)
-            if self._video_queue is not None:
-                put_queue_drop_oldest(self._video_queue, item)
-            if self._single_camera_video_queue is not None:
-                put_queue_drop_oldest(self._single_camera_video_queue, item)
+                    logging.getLogger(__name__).exception(
+                        'on_boundary_media_sample failed for camera_id=%s',
+                        self.config.camera_id,
+                    )
+            if self.config.enable_preview_stream:
+                pipeline_preview.push_bgr_frame(overlay_frame)
+            record_queues = (
+                self._video_queue is not None or self._single_camera_video_queue is not None
+            )
+            if record_queues:
+                item = (overlay_frame, tracked_boats)
+                if self._video_queue is not None:
+                    put_queue_drop_oldest(self._video_queue, item)
+                if self._single_camera_video_queue is not None:
+                    put_queue_drop_oldest(self._single_camera_video_queue, item)
 
         self._queue_ocr(raw_frame, tracked_boats)
         self._queue_visual(raw_frame, tracked_boats)
@@ -487,6 +488,23 @@ class PerCameraPipeline(threading.Thread):
                 if track.state
                 in (TrackState.TENTATIVE, TrackState.CONFIRMED, TrackState.LOST)
             ]
+
+    def _needs_overlay_frame(self, tracked_boats: list[TrackedBoat]) -> bool:
+        """Chỉ dựng overlay khi có consumer thật cần tới nó.
+
+        Preview stream và ghi video cần overlay mọi frame. Callback media chỉ dùng
+        overlay khi có track CONFIRMED (xem `PipelineService._enqueue_media_sample`:
+        không có track CONFIRMED thì job bị bỏ ngay).
+        """
+        if (
+            self.config.enable_preview_stream
+            or self._video_queue is not None
+            or self._single_camera_video_queue is not None
+        ):
+            return True
+        if self._on_overlay_media_sample is None and self._on_boundary_media_sample is None:
+            return False
+        return any(track.state == TrackState.CONFIRMED for track in tracked_boats)
 
     def _maybe_save_training_snapshots(
         self,
