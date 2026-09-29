@@ -25,6 +25,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.repositories.audit_log_repository import audit_log_repo
+from app.utils.pagination import TOTAL_COUNT_HEADER
 import logging
 import sys
 import time
@@ -169,6 +170,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[TOTAL_COUNT_HEADER],
 )
 
 
