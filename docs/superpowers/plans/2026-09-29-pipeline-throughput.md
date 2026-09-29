@@ -4,11 +4,40 @@
 
 **Goal:** Giảm CPU mỗi frame của pipeline nhận diện từ ~137 ms xuống ~54 ms (P1) và cho phép hạ tiếp xuống ~17 ms bằng cờ `detect_scale` (P2, mặc định tắt), không đổi chất lượng OCR/overlay.
 
-**Architecture:** Giữ nguyên luồng dữ liệu. Sửa chỗ lãng phí kỹ thuật trong CLAHE (float32 → uint8), bỏ các bản copy full-res thừa và vẽ overlay ở đúng tỉ lệ đích; thêm telemetry fps/frame. P2 tách một "không gian toạ độ detect" có tỉ lệ cấu hình được, quy đổi box về toạ độ full-res tại **một** điểm duy nhất.
+**Architecture:** Giữ nguyên luồng dữ liệu. Sửa chỗ lãng phí kỹ thuật trong CLAHE (float32 → uint8), bỏ bản copy full-res thừa khi không consumer nào dùng overlay; thêm telemetry fps/frame. (Vẽ overlay ở tỉ lệ đích: **hoãn**, xem Trạng thái thực thi.) P2 tách một "không gian toạ độ detect" có tỉ lệ cấu hình được, quy đổi box về toạ độ full-res tại **một** điểm duy nhất.
 
 **Tech Stack:** Python 3.12, OpenCV (cv2), NumPy, Ultralytics + TensorRT engine, FastAPI, pytest, conda env `bason-dock`.
 
 **Spec:** `docs/superpowers/specs/2026-09-29-pipeline-throughput-design.md`
+
+## Trạng thái thực thi (cập nhật cuối đợt)
+
+Các checkbox bên dưới là **kế hoạch gốc**, không phải hồ sơ tiến độ — hồ sơ tiến độ nằm ở
+`.superpowers/sdd/2026-09-29-pipeline-throughput/progress.md` (kèm mọi ruling khi lệch kế hoạch).
+
+| Task | Kết quả | Ghi chú lệch kế hoạch |
+|---|---|---|
+| 0 Nhánh + tài liệu | xong | nhánh `feature/pipeline-throughput`, không đụng `main` |
+| 1 Hàm so khớp + harness | xong | `box_compare.py` đặt ở `server/app/utils/ai/` (pytest rootdir là `server/`, không import được `scripts/`); commit kèm `Makefile` vốn chưa được track |
+| 2 CLAHE uint8 | xong | có thêm phần nối cờ runtime (spec §8 yêu cầu DB > env > default) |
+| 3 Bỏ copy thừa + overlay | **một nửa** | chỉ làm phần guard "chỉ dựng overlay khi có consumer"; phần vẽ ở tỉ lệ đích (~1.4 ms/frame) **hoãn** |
+| 4 Telemetry fps/frame | xong | thêm `process_ms_per_frame` khi sửa theo review |
+| 5 `detect_scale` + `crop_pad_ratio` | xong | mặc định 1.0/0.05, chỉ hoạt động khi bật |
+| 6 Nghiệm thu | xong | xem bảng số bên dưới |
+
+**Số nghiệm thu (đo lại sau review, trên cấu hình hiệu lực):**
+
+- `make test` 322 pass · `make check` 32 PASS/0 FAIL · `make verify-engines` "Tất cả khớp".
+- `make ab-detect` (baseline = CLAHE gray-world OFF đúng như DB):
+  - `clahe-uint8`: 8→8 box, IoU min **1.0000**, 61→63 ms/frame → đường mới **không đổi gì** khi gray-world tắt.
+  - `detect-scale 0.5`: 8→8 box, IoU min **0.9704**, 0 box lệch, 67→**23 ms/frame** ✓ (cổng 0.95).
+  - `grayworld-fast`: 8→8 box, IoU min **0.9727**, 0 box lệch, 66→82 ms/frame (+16 ms để bật gray-world).
+- Trong bộ nhớ (4 frame thật 2560×1440): CLAHE gray-world OFF **28.4 ms**; gray-world ON bản cũ float32 **125.4 ms** vs bản uint8 **40.6 ms** (tiết kiệm ~85 ms/frame).
+- Chạy thật 2 camera: **5.0 fps/camera** đúng bằng `record_fps=5` trong DB, cả khi `CLAHE_FAST=false` → pipeline **không** bị chặn bởi CPU mà bởi cấu hình; `process_ms_per_frame` ~70 ms.
+
+**Tiêu chí "≥ 20 fps/camera" ở dòng Global Constraints không dùng được** (bị `record_fps=5`
+chặn) — xem spec §9 và §12; muốn fps cao hơn phải nâng `record_fps` (quyết định sản phẩm) và
+xử lý trần mới ở `GroupFrameHub`.
 
 ## Global Constraints
 
@@ -19,7 +48,7 @@
 - Mọi thay đổi hành vi phải tắt được bằng cờ cấu hình (không cần sửa code để lùi).
 - Test chạy bằng `make test` (pytest trong `server/`); kiểm tra hệ thống bằng `make check`, `make verify-engines`, `make bench`, `make ab-detect`.
 - Cổng chất lượng A/B: P1 — cùng số box, 0 box lệch, IoU min ≥ 0.98, conf lệch max ≤ 0.03; P2 — IoU min ≥ 0.95, conf lệch max ≤ 0.05.
-- Ngưỡng hiệu năng: CPU/frame đường detection giảm ≥ 2×; backend < 60 % CPU khi 2 camera; ≥ 20 fps/camera trên luồng 25 fps.
+- Ngưỡng hiệu năng: CPU/frame đường detection giảm ≥ 2× **khi gray-world bật** (đo: 166 → 64 ms/frame; khi gray-world tắt, CLAHE_FAST không đổi gì); backend < 60 % CPU khi 2 camera; fps/camera = `record_fps` cấu hình (DB đang là 5) chứ không phải ≥ 20 — xem spec §9.
 
 ## Review Focus
 
@@ -36,17 +65,17 @@
 | `server/app/services/ai/clahe_preprocessor.py` | CLAHE + cân bằng sáng; thêm đường uint8 `fast` và giữ đường tham chiếu float32 | sửa |
 | `server/app/utils/ai/box_scale.py` | Hàm thuần: quy đổi box theo tỉ lệ, nới crop có kẹp biên | mới |
 | `server/app/services/ai/frame_stats.py` | Bộ đếm frame + fps theo camera (thread-safe, clock tiêm được) | mới |
-| `server/app/services/ai/per_camera_pipeline.py` | Vòng lặp mỗi frame: detection frame, bỏ copy thừa, overlay đúng tỉ lệ, crop có pad, ghi telemetry | sửa |
+| `server/app/services/ai/per_camera_pipeline.py` | Vòng lặp mỗi frame: detection frame, bỏ copy thừa khi không cần overlay, crop có pad, ghi telemetry | sửa |
 | `server/app/services/pipeline_service.py` | Đọc cfg runtime (3 khoá mới), sở hữu `FrameStats`, log 30 s, thêm trường vào status | sửa |
 | `server/app/core/config.py` | `CLAHE_FAST`, `DETECT_SCALE`, `CROP_PAD_RATIO` | sửa |
 | `server/.env` | 3 khoá mới kèm chú thích | sửa |
-| `scripts/box_compare.py` | Hàm so khớp box dùng chung (IoU, ghép cặp, tổng hợp) | mới |
+| `server/app/utils/ai/box_compare.py` | Hàm so khớp box dùng chung (IoU, ghép cặp, tổng hợp) — đặt trong `server/` để pytest import được | mới |
 | `scripts/ab_detect.py` | Harness A/B đường detection trên frame thật + kết luận ĐẠT/KHÔNG | mới |
 | `Makefile` | `make ab-detect` | sửa |
 | `server/app/tests/test_clahe_preprocessor.py` | Test đường fast vs tham chiếu | mới |
 | `server/app/tests/test_box_scale.py` | Test quy đổi/nới box | mới |
 | `server/app/tests/test_frame_stats.py` | Test đếm frame/fps | mới |
-| `server/app/tests/test_overlay_scaling.py` | Test overlay vẽ đúng toạ độ theo tỉ lệ đích | mới |
+| `server/app/tests/test_pipeline_overlay_usage.py` | Test chỉ dựng overlay khi có consumer + `raw_frame` không bị vẽ đè (**thay** cho `test_overlay_scaling.py` vì phần vẽ ở tỉ lệ đích đã hoãn) | mới |
 
 ## Task 0: Nhánh làm việc + commit tài liệu
 

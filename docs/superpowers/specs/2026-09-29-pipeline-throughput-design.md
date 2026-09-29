@@ -16,7 +16,7 @@
 | GPU util | 23.3 % |
 | VRAM toàn app | 1218 MB (backend 428 · OCR 454 · decode 2×168) |
 | OCR worker khi bãi trống | ~0 % (idle) |
-| fps/camera suy ra | **≈ 2.5-3 fps** (0.34 core ÷ 0.134 s/frame) — đang bỏ phần lớn frame của luồng 25 fps |
+| fps/camera suy ra (SAI — xem §9) | ~~≈ 2.5-3 fps~~ — suy diễn từ ngân sách CPU. Đo thật sau này: **5.0 fps/camera**, đúng bằng `record_fps=5` trong DB; nguồn RTSP thật đo được 19.9 fps |
 
 Ngân sách từng bước (frame thật 2560×1440, engine imgsz=960):
 
@@ -35,7 +35,7 @@ Kết luận: máy **nghẽn CPU ở CLAHE**, không nghẽn GPU. GPU còn dư 3
 ## 2. Mục tiêu / phi mục tiêu
 
 Mục tiêu:
-1. Giảm CPU mỗi frame để pipeline chạy tới fps của luồng (25 fps/camera) và còn dư máy cho nhiều camera hơn trên cùng GPU.
+1. Giảm CPU mỗi frame để pipeline chạy tới fps cấu hình (và tới fps luồng nếu nâng `record_fps`) và còn dư máy cho nhiều camera hơn trên cùng GPU.
 2. Không đổi chất lượng OCR và ảnh overlay/media.
 3. Đo được: có telemetry fps/frame để lần sau không phải suy luận.
 
@@ -60,13 +60,26 @@ Phi mục tiêu (không làm trong spec này):
 | `merge` | 0.49 ms | |
 | **Tổng** | **≈ 104 ms** (dao động 104-137 ms tuỳ tải máy) | |
 
-Tức ~80 % thời gian nằm ở bước cân bằng sáng chọn kiểu dữ liệu sai, không phải thuật toán. CLAHE chỉ cấp cho **một** nơi dùng: `per_camera_pipeline.py:302` → `detector.predict_boxes`. OCR crop, overlay, media đều dùng `raw_frame` gốc, nên sửa CLAHE **không** ảnh hưởng OCR/overlay.
+Tức ~80 % thời gian nằm ở bước cân bằng sáng chọn kiểu dữ liệu sai, không phải thuật toán. CLAHE chỉ cấp cho **một** nơi dùng: lời gọi `preprocess_frame_clahe` trong `per_camera_pipeline._process_frame` → `detector.predict_boxes` (ở HEAD là dòng 363). OCR crop, overlay, media đều dùng `raw_frame` gốc, nên sửa CLAHE **không** ảnh hưởng OCR/overlay.
+
+**Số trên chỉ đúng khi `clahe_enable_gray_world = true`.** Cấu hình production đang đặt
+`clahe_enable_gray_world = false` trong `port_configs` (khớp `PROD_CFG` của
+`fine-tune/yolo/eval_clahe_ab.py`) — khi đó bước cân bằng sáng bị bỏ hoàn toàn và `fast`
+**không đổi gì**. Đo lại trên 4 frame thật 2560×1440:
+
+| Cấu hình | Bản cũ float32 | Bản uint8 (`fast`) |
+|---|---|---|
+| gray-world **OFF** (đang chạy) | 28.4 ms | 28.4 ms (y hệt) |
+| gray-world **ON** | 125.4 ms | **40.6 ms** (−85 ms/frame) |
+
+Nghĩa là P1 là việc **có điều kiện**: nó không tăng tốc cấu hình đang chạy, mà làm cho việc
+bật gray-world trở nên rẻ (từ +97 ms xuống +12 ms mỗi frame) — xem §9 và §12.
 
 ## 4. Phương án đã cân nhắc
 
 | | Phương án | Đo được | Quyết định |
 |---|---|---|---|
-| P1 | Sửa CLAHE sang uint8 (giữ nguyên hình học) + bỏ copy thừa + overlay đúng tỉ lệ + telemetry | CLAHE 104→30.6 ms; `make ab-detect --candidate clahe-uint8`: 8→8 box, khớp 8, IoU min **0.9950**, conf lệch max 0.0059, 0 box lệch, **166→64 ms/frame** → ✓ ĐẠT | **làm** |
+| P1 | Sửa CLAHE sang uint8 (giữ nguyên hình học) + bỏ copy thừa + telemetry (phần overlay ở tỉ lệ đích **hoãn**) | gray-world ON: CLAHE 104→30.6 ms, `--candidate clahe-uint8` IoU min **0.9950**, **166→64 ms/frame**. gray-world OFF (cấu hình thật): IoU min **1.0000**, 61→63 ms/frame (không đổi) | **làm** |
 | P2 | Hạ CLAHE+detection xuống `detect_scale` (mặc định 1.0) | CLAHE ở 1280×720 = 4.37 ms; A/B: 8/8 box, IoU min 0.9630, conf lệch max 0.0283; ~124→17 ms/frame | **làm, opt-in** |
 | P3 | Đẩy tiền xử lý lên GPU, zero-copy vào engine | tiết kiệm ~1-2 ms/frame sau khi có P1 | loại (YAGNI) |
 | — | Bỏ gray-world | IoU min 0.9705 | loại (dưới gate, lại mất cân bằng sáng) |
@@ -82,8 +95,8 @@ Ghi chú về bằng chứng: phép A/B ở trên chạy trên **4 frame thật 
    - Giữ nguyên API: `ClahePreprocessConfig`, chữ ký `preprocess_frame_clahe(frame, config)`.
 2. `app/services/ai/per_camera_pipeline.py`
    - Bỏ `annotated = raw_frame.copy()` khi không có consumer nào cần overlay ở frame đó; chỉ tạo buffer overlay **một lần** khi preview/media/record đang bật.
-   - Vẽ overlay ở **đúng tỉ lệ đích** (`resize_scale`) thay vì vẽ full-res rồi resize: quy đổi toạ độ box/label sang tỉ lệ đích trước khi vẽ.
-   - Không tạo thêm bản copy full-res cho payload OCR (chỉ cắt crop cần thiết).
+   - Vẽ overlay ở **đúng tỉ lệ đích** (`resize_scale`): **HOÃN** — đo được chỉ ~1.4 ms/frame, phải sửa toạ độ/font/offset của 3 hàm vẽ; đợt này chỉ thêm guard bỏ hẳn phần vẽ khi không consumer nào cần.
+   - Bản copy full-res cho payload OCR **vẫn giữ** (`frame.copy()` khi đẩy job OCR): hàng đợi chạy ở thread khác nên không thể dùng chung buffer với vòng lặp camera. Chi phí ~2.3 ms/frame, chấp nhận.
 3. `app/services/pipeline_service.py`
    - Đếm `frames_processed` / `frames_dropped` (nếu đo được) theo camera, log mỗi 30 s, và bổ sung trường **thêm** vào `GET /api/v1/pipeline/status` (`frames_processed`, `fps_per_camera`). Chỉ dùng bộ đếm, không thêm việc nặng mỗi frame.
 4. `app/utils/ai/gpu_probe.py`: không đổi trong P1.
@@ -93,7 +106,7 @@ Ghi chú về bằng chứng: phép A/B ở trên chạy trên **4 frame thật 
 - Cấu hình mới `detect_scale` (DB `detect_scale`, env `DETECT_SCALE`, mặc định **1.0** = hành vi hiện tại).
 - Khi `detect_scale < 1.0`: `detect_frame = cv2.resize(raw_frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)` → CLAHE → detector.
 - Box trả về được quy về toạ độ `raw_frame` bằng **một** hàm duy nhất, gọi ngay sau `predict_boxes` (trước `filter_boxes_by_min_size`, `dedup_overlapping_boxes`, tracker, `_enrich_track`, overlay) để mọi ngưỡng px và mọi consumer giữ nguyên đơn vị full-res.
-- Khi `detect_scale < 1.0`, crop cho OCR/embedding được nới thêm `crop_pad_ratio` (mặc định 0.05, chỉ áp dụng khi scale < 1.0) để bù box lệch vài px, tránh cắt lẹm biển số.
+- Khi `detect_scale < 1.0`, crop cho OCR/embedding được nới thêm `crop_pad_ratio` (mặc định 0.05, chỉ áp dụng khi scale < 1.0) để bù box lệch vài px, tránh cắt lẹm biển số. Box nới được tính **một lần** trong pipeline rồi dùng cho cả `_enrich_track`, queue OCR và queue visual (`_queue_boxes`) — nếu chỉ nới ở embedding thì hai đường embedding sẽ lệch nhau.
 - `detect_scale` xuất hiện trong `/pipeline/status` để nhìn là biết đang chạy chế độ nào.
 
 ## 7. Hợp đồng toạ độ (bất biến của thiết kế)
@@ -115,14 +128,20 @@ Cả ba đọc qua `port_config_runtime` (DB thắng env) như các khoá hiện
 
 ## 9. Kiểm thử và cổng nghiệm thu
 
-Công cụ mới: `scripts/ab_detect.py` + `make ab-detect` — lấy N frame thật (từ camera đang bật hoặc từ thư mục frame đã lưu), chạy **đường hiện tại** vs **đường ứng viên**, in số box, IoU khớp, lệch conf, số box lệch, và kết luận ĐẠT/KHÔNG theo gate. Dùng lại các hàm so khớp của `scripts/verify_engines.py` (tách thành module dùng chung, không copy code).
+Công cụ mới: `scripts/ab_detect.py` + `make ab-detect` — lấy N frame thật (từ camera đang bật hoặc từ thư mục frame đã lưu), chạy **đường hiện tại** vs **đường ứng viên**, in số box, IoU khớp, lệch conf, số box lệch, và kết luận ĐẠT/KHÔNG theo gate. Hàm so khớp nằm ở `server/app/utils/ai/box_compare.py` (đặt trong `server/` để pytest import được; `scripts/verify_engines.py` chưa được commit nên không dùng lại được — ghi nhận là nợ kỹ thuật của luồng model/engine).
+
+Harness chạy qua `make ab-detect` (tự `cd server`) để đọc đúng `.env` + DB; nếu không đọc được
+`port_configs` thì nó **cảnh báo** và in rõ baseline đang giả định gray-world ON/OFF. Đường
+baseline là bản CLAHE float32 cũ, đo có warmup và **đổi thứ tự mỗi frame** để không thiên lệch
+đường chạy trước; số frame **khác nhau** được đếm riêng (8 bản copy của 1 frame không tính là 8).
 
 Cổng:
-- **P1**: trên ≥8 frame thật **khác nhau** có tàu (≥2 camera), ở cả `conf=0.75` và `conf=0.25`: cùng số box, 0 box lệch, IoU min ≥ 0.98, conf lệch max ≤ 0.03.
-- **P1 hiệu năng**: CPU/frame của đường detection giảm ≥ 2× so với baseline (đo bằng harness): 166 → 64 ms/frame ✓. đo thật trên app: **5.0 fps/camera ở 2 camera**, đúng bằng `record_fps=5` trong DB — tức trước đây pipeline bị CPU chặn dưới mức cấu hình (~2.5-3 fps), nay chạm đúng mức cấu hình. Tiêu chí "≥ 20 fps/camera" ban đầu **không dùng được** vì `record_fps=5` và `FrameReaderThread` chặn theo `1/5 s`; muốn fps cao hơn phải nâng `record_fps` (quyết định sản phẩm: thêm detection/OCR/media mỗi giây). Khi nâng thử `record_fps=15`: CPU backend 140 % → 433 % nhưng fps/camera **vẫn ~5** → trần tiếp theo nằm ở coordinator của `GroupFrameHub` (fusion + preview + copy mỗi batch), không phải detector.
-- **P2**: cùng số box, IoU min ≥ 0.95, conf lệch max ≤ 0.05, và `detect_scale` vẫn mặc định 1.0 (không đổi hành vi nếu không bật).
-- **Không hồi quy**: `make test` (272+ test) pass, `make check` 32/32, `make verify-engines` đạt, `make bench` ghi lại số mới.
-- **Overlay**: unit test với frame tổng hợp + danh sách track cố định, khẳng định hình chữ nhật được vẽ đúng toạ độ theo tỉ lệ đích (sai số ≤1 px). Không so byte JPEG vì nét vẽ đổi độ dày theo tỉ lệ là chấp nhận được.
+- **P1**: trên ≥8 frame thật **khác nhau** có tàu (≥2 camera), ở cả `conf=0.75` và `conf=0.25`: cùng số box, 0 box lệch, IoU min ≥ 0.98, conf lệch max ≤ 0.03. Hai đường cùng 0 box ⇒ reason `empty_scene` ⇒ **KHÔNG ĐẠT** (bến trống không chứng minh được gì).
+- **P1 hiệu năng**: CPU/frame của đường detection giảm ≥ 2× **khi gray-world bật** (đo bằng harness: 166 → 64 ms/frame ✓). Ở cấu hình đang chạy (gray-world tắt trong DB) hai đường **y hệt nhau**: IoU min 1.0000, 61 → 63 ms/frame — P1 là việc có điều kiện, xem §3.
+- **fps/camera (sửa lại so với bản đầu)**: pipeline đạt đúng `record_fps` cấu hình, **5.0 fps/camera** với 2 camera; tiêu chí "≥ 20 fps/camera" ở bản đầu **sai** vì `FrameReaderThread` chặn theo `1/record_fps`. Bằng chứng: đặt `CLAHE_FAST=false` (đường CLAHE cũ, đắt gấp 4) vẫn đạt 5.0 fps/camera → pipeline **không** bị chặn bởi CPU ở mức cấu hình này, và suy luận "baseline ~2.5-3 fps" trong bản đầu là suy diễn từ ngân sách CPU, **không phải số đo**. Khi nâng thử `record_fps=15`: CPU 140 % → 433 % nhưng fps/camera **vẫn ~5** → trần tiếp theo nằm ở coordinator của `GroupFrameHub`, không phải detector.
+- **P2**: cùng số box, IoU min ≥ 0.95, conf lệch max ≤ 0.05, và `detect_scale` vẫn mặc định 1.0 (không đổi hành vi nếu không bật). Đo theo cấu hình hiệu lực: 8→8 box, IoU min **0.9704**, conf lệch max 0.0166, 0 box lệch, **67 → 23 ms/frame** ✓.
+- **Không hồi quy**: `make test` 322 pass, `make check` 32/32, `make verify-engines` đạt, `make ab-detect` chạy được trên bản checkout sạch (đã kiểm bằng `git archive HEAD`).
+- **Overlay**: phần vẽ ở tỉ lệ đích **hoãn** (xem §5.2) nên không có test toạ độ theo tỉ lệ đích; thay vào đó `test_pipeline_overlay_usage.py` khẳng định overlay chỉ được dựng khi có consumer (preview/ghi hình/track CONFIRMED cho callback media) và `raw_frame` không bị vẽ đè.
 
 ## 10. Đo nghiệm thu
 
@@ -135,7 +154,7 @@ Cổng:
 
 | Rủi ro | Giảm thiểu |
 |---|---|
-| gray-world uint8 làm pixel lệch nhẹ | A/B đã đo IoU min 0.9950 (gate 0.98); `CLAHE_FAST=false` quay lại bản cũ tức thì |
+| gray-world uint8 làm pixel lệch nhẹ | Chỉ xảy ra khi gray-world bật (cấu hình production đang tắt nên IoU min 1.0000); khi bật, A/B đo IoU min 0.9950 (gate 0.98). `CLAHE_FAST=false` quay lại bản cũ tức thì |
 | Bỏ copy gây vẽ đè lên frame nguồn (box lọt vào ảnh OCR/media) | Chỉ vẽ lên buffer mới tạo một lần; unit test khẳng định `raw_frame` không bị sửa sau `_process_frame` |
 | `detect_scale < 1.0` làm box lệch, cắt lẹm biển số | Mặc định 1.0; gate 0.95; `crop_pad_ratio`; cảnh báo trong status/log khi bật |
 | Telemetry thêm chi phí mỗi frame | Chỉ tăng bộ đếm số nguyên; log định kỳ 30 s, không format chuỗi mỗi frame |
@@ -147,18 +166,25 @@ Cổng:
 
 Số đo ở `record_fps=15` cho thấy trần fps hiện tại không còn ở detector mà ở vòng lặp khung:
 
-1. **Reader đọc rồi vứt frame** — `MultiFrameReaderThread.run()` đọc frame ở đầu vòng lặp rồi `continue` khi chưa tới nhịp phát (`multi_frame_reader.py:167-172`), không sleep; hub lại đặt `reader_fps = 2 × record_fps` nên ở `record_fps=15` mỗi reader kéo ~20 fps từ nguồn và vứt ~2/3. Bằng chứng: CPU backend 140 % → 433 % khi nâng `record_fps` 5 → 15 mà fps xử lý không đổi. Hướng sửa: sleep tới `next_emit` thay vì đọc lại.
-2. **Coordinator `GroupFrameHub` là trần thật** — mỗi batch còn: fuse 2 camera, vẽ overlay + boundary lên canvas, JPEG + push preview dashboard, `_last_aligned_batch` copy, và copy thêm một lần cho mỗi queue per-camera (`group_frame_hub.py:378-400`). Hướng sửa: bỏ copy thừa, chỉ dựng/encode preview khi có client WS đang mở.
-3. **`_enqueue_media_sample` copy canvas fused trước khi kiểm tra track CONFIRMED** (`pipeline_service.py:877-882`) — bỏ được khi không có track, cùng lập luận với ruling ở Task 3.
+1. **CLAHE chạy ở full-res rồi bị letterbox thu nhỏ** — ở cấu hình production (gray-world
+   tắt) CLAHE vẫn tốn **28.4 ms/frame** (4 frame thật 2560×1440) trong khi detector chỉ nhận
+   ảnh 960×544; phần chi tiết CLAHE tạo ra bị chính bước resize xoá đi. Làm CLAHE **sau** khi
+   thu nhỏ về kích thước detector (~0.2 MP thay vì 3.7 MP) ước tính còn ~4 ms/frame, tức bỏ
+   được ~24 ms/frame (~1/3 ngân sách frame hiện tại ~70 ms) — cần A/B vì CLAHE ở hai độ phân
+   giải cho kết quả không giống nhau (cổng IoU ≥ 0.98 như P1).
+2. **Reader đọc rồi vứt frame** — `MultiFrameReaderThread.run()` đọc frame ở đầu vòng lặp rồi `continue` khi chưa tới nhịp phát (`multi_frame_reader.py:167-172`), không sleep; hub lại đặt `reader_fps = 2 × record_fps` nên ở `record_fps=15` mỗi reader kéo ~20 fps từ nguồn và vứt ~2/3. Bằng chứng: CPU backend 140 % → 433 % khi nâng `record_fps` 5 → 15 mà fps xử lý không đổi. Hướng sửa: sleep tới `next_emit` thay vì đọc lại.
+3. **Coordinator `GroupFrameHub` là trần thật** — mỗi batch còn: fuse 2 camera, vẽ overlay + boundary lên canvas, JPEG + push preview dashboard, `_last_aligned_batch` copy, và copy thêm một lần cho mỗi queue per-camera (`group_frame_hub.py:378-400`). Hướng sửa: bỏ copy thừa, chỉ dựng/encode preview khi có client WS đang mở.
+4. **`_enqueue_media_sample` copy canvas fused trước khi kiểm tra track CONFIRMED** (`pipeline_service.py:877-882`) — bỏ được khi không có track, cùng lập luận với ruling ở Task 3.
 
 
-## 12. Kế hoạch thi công sơ bộ
+## 13. Kế hoạch thi công sơ bộ (bản gốc, giữ để đối chiếu)
 
 1. Tách hàm so khớp box dùng chung + `scripts/ab_detect.py` + `make ab-detect` (làm trước để có thước đo).
 2. P1a: CLAHE uint8 + unit test đối chiếu số học với bản cũ + A/B qua harness.
-3. P1b: bỏ copy thừa + overlay ở tỉ lệ đích + unit test toạ độ.
+3. P1b: bỏ copy thừa + overlay ở tỉ lệ đích + unit test toạ độ — **phần overlay ở tỉ lệ đích đã hoãn**, xem §5.2.
 4. P1c: telemetry fps/frame + trường mới trong `/pipeline/status`.
 5. P2: `detect_scale` + quy đổi toạ độ một điểm + `crop_pad_ratio` + A/B (mặc định tắt).
 6. Nghiệm thu: `make test`, `make check`, `make verify-engines`, `make bench`, A/B app thật 60 s; ghi số trước/sau.
 
-Kế hoạch chi tiết (từng bước, tiêu chí done, cách kiểm) sẽ do skill `writing-plans` tạo sau khi spec này được duyệt.
+Kế hoạch chi tiết nằm ở `docs/superpowers/plans/2026-09-29-pipeline-throughput.md` (kèm bảng
+Trạng thái thực thi ở đầu file).
