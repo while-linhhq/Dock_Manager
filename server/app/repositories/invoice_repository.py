@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 
 from app.models.invoice import Invoice
 from app.services.invoice_snapshot_service import seal_invoice_on_paid
@@ -85,24 +85,33 @@ class InvoiceRepository:
             .first()
         )
 
-    def get_all(
+    def _filtered_query(
         self,
         db: Session,
-        skip: int = 0,
-        limit: int = 100,
+        *,
         payment_status: Optional[str] = None,
         awaiting_payment: Optional[bool] = None,
         deleted_only: bool = False,
         creation_source: Optional[str] = None,
         exclude_creation_source: Optional[str] = None,
-    ) -> List[Invoice]:
-        q = db.query(Invoice).options(
-            joinedload(Invoice.creator),
-            joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
-            joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
-            joinedload(Invoice.detection),
-        )
-        if deleted_only:
+        discount_status: Optional[str] = None,
+    ) -> Query:
+        """Query đã áp bộ lọc và thứ tự, dùng chung cho danh sách và phép đếm.
+
+        Nhờ dùng chung một chỗ dựng query, `X-Total-Count` luôn khớp đúng tập
+        bản ghi mà danh sách trả về (kể cả khi bộ lọc đổi về sau).
+        """
+        q = db.query(Invoice)
+        if discount_status is not None:
+            # Chế độ riêng của `/discount-requests`: giữ nguyên bộ lọc và thứ tự
+            # `updated_at desc` như bản cũ. Chuẩn hoá ngay tại đây để
+            # `get_by_discount_status` và `count_filtered` không bao giờ lệch nhau
+            # vì một bên quên normalize.
+            normalized_discount = (discount_status or 'pending').strip().lower()
+            q = q.filter(Invoice.deleted_at.is_(None))
+            q = q.filter(Invoice.discount_status == normalized_discount)
+            q = q.order_by(Invoice.updated_at.desc())
+        elif deleted_only:
             q = q.filter(Invoice.deleted_at.isnot(None))
             q = q.order_by(Invoice.deleted_at.desc())
         else:
@@ -132,7 +141,60 @@ class InvoiceRepository:
                     Invoice.creation_source != normalized_exclude,
                 )
             )
-        return q.offset(skip).limit(limit).all()
+        return q
+
+    def count_filtered(
+        self,
+        db: Session,
+        *,
+        payment_status: Optional[str] = None,
+        awaiting_payment: Optional[bool] = None,
+        deleted_only: bool = False,
+        creation_source: Optional[str] = None,
+        exclude_creation_source: Optional[str] = None,
+        discount_status: Optional[str] = None,
+    ) -> int:
+        """Tổng số bản ghi khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(
+            db,
+            payment_status=payment_status,
+            awaiting_payment=awaiting_payment,
+            deleted_only=deleted_only,
+            creation_source=creation_source,
+            exclude_creation_source=exclude_creation_source,
+            discount_status=discount_status,
+        ).count()
+
+    def get_all(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        payment_status: Optional[str] = None,
+        awaiting_payment: Optional[bool] = None,
+        deleted_only: bool = False,
+        creation_source: Optional[str] = None,
+        exclude_creation_source: Optional[str] = None,
+    ) -> List[Invoice]:
+        return (
+            self._filtered_query(
+                db,
+                payment_status=payment_status,
+                awaiting_payment=awaiting_payment,
+                deleted_only=deleted_only,
+                creation_source=creation_source,
+                exclude_creation_source=exclude_creation_source,
+            )
+            .options(
+                joinedload(Invoice.creator),
+                joinedload(Invoice.items).joinedload(InvoiceItem.fee_config),
+                joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
+                joinedload(Invoice.detection),
+            )
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
     def get_by_discount_status(
         self,
@@ -141,9 +203,8 @@ class InvoiceRepository:
         skip: int = 0,
         limit: int = 100,
     ) -> List[Invoice]:
-        normalized = (status or 'pending').strip().lower()
         return (
-            db.query(Invoice)
+            self._filtered_query(db, discount_status=status)
             .options(
                 joinedload(Invoice.creator),
                 joinedload(Invoice.discount_reviewer),
@@ -151,9 +212,6 @@ class InvoiceRepository:
                 joinedload(Invoice.vessel).joinedload(Vessel.vessel_type),
                 joinedload(Invoice.detection),
             )
-            .filter(Invoice.deleted_at.is_(None))
-            .filter(Invoice.discount_status == normalized)
-            .order_by(Invoice.updated_at.desc())
             .offset(skip)
             .limit(limit)
             .all()

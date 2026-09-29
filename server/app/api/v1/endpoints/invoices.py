@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -28,6 +28,7 @@ from app.services.invoice_snapshot_service import is_invoice_financially_locked
 from app.services.bulk_sepay_service import create_bulk_sepay_session, sync_bulk_sepay_session
 from app.services.invoice_payment_service import bulk_record_payments
 from app.services.sepay_sync_service import sync_sepay_payments
+from app.utils.pagination import resolve_page, set_total_header
 
 router = APIRouter()
 
@@ -48,8 +49,9 @@ def _invoice_to_read(db: Session, inv) -> InvoiceRead:
 
 @router.get('/', response_model=List[InvoiceRead])
 def list_invoices(
+    response: Response,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 50,
     payment_status: Optional[str] = None,
     awaiting_payment: Optional[bool] = Query(None, description='Mọi trạng thái trừ PAID (chờ / một phần / quá hạn / hủy…)'),
     deleted_only: bool = Query(False, description='Chỉ hóa đơn đã xóa mềm'),
@@ -64,6 +66,16 @@ def list_invoices(
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
+    skip, limit = resolve_page(skip, limit)
+    total = invoice_repo.count_filtered(
+        db,
+        payment_status=payment_status,
+        awaiting_payment=awaiting_payment,
+        deleted_only=deleted_only,
+        creation_source=creation_source,
+        exclude_creation_source=exclude_creation_source,
+    )
+    set_total_header(response, total)
     rows = invoice_repo.get_all(
         db,
         skip=skip,
@@ -79,15 +91,19 @@ def list_invoices(
 
 @router.get('/discount-requests', response_model=List[InvoiceRead])
 def list_discount_requests(
+    response: Response,
     status: str = Query('pending', description='pending | approved | rejected'),
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 50,
     db: Session = Depends(get_db),
     _=Depends(require_discount_approver),
 ):
     normalized = (status or 'pending').strip().lower()
     if normalized not in {'pending', 'approved', 'rejected'}:
         raise HTTPException(status_code=422, detail='status không hợp lệ')
+    skip, limit = resolve_page(skip, limit)
+    total = invoice_repo.count_filtered(db, discount_status=normalized)
+    set_total_header(response, total)
     rows = invoice_repo.get_by_discount_status(db, normalized, skip=skip, limit=limit)
     return [_invoice_to_read(db, inv) for inv in rows]
 
