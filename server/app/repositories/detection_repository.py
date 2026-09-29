@@ -12,21 +12,47 @@ from typing import List, Optional
 # đúng chuỗi client dùng trong `getDetectionShipLabel`.
 UNKNOWN_SHIP_LABEL = 'KHÔNG XÁC ĐỊNH'
 
-DEFAULT_SORT = 'time'
+# Tập ký tự `String.trim()` của JS cắt (WhiteSpace + LineTerminator). `btrim` một
+# tham số chỉ cắt khoảng trắng ASCII nên phải truyền tường minh tập này.
+JS_TRIM_CHARS = (
+    ' \t\n\v\f\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007'
+    '\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
+)
+
+DEFAULT_SORT = 'berth'
 DEFAULT_ORDER = 'desc'
+
+
+def _js_trim(expr):
+    """`String.trim()` của JS — cắt đúng bộ ký tự `JS_TRIM_CHARS` ở hai đầu."""
+    return func.btrim(expr, JS_TRIM_CHARS)
 
 
 def _ship_label_expr():
     """Nhãn tàu hiển thị, port từ `getDetectionShipLabel` của client.
 
     Ưu tiên `vessels.ship_id`, rồi id OCR đầu tiên, cuối cùng là nhãn "không xác
-    định". Cần JOIN `vessels` kiểu outer. `btrim` chỉ cắt khoảng trắng ASCII còn
-    `String.trim()` của client rộng hơn, nhưng ship_id thực tế không có ký tự lạ.
+    định". Cả hai giá trị đều được trim như client nên id OCR toàn khoảng trắng
+    rơi về nhãn mặc định chứ không thành nhãn trắng. Cần JOIN `vessels` kiểu outer.
     """
     return func.coalesce(
-        func.nullif(func.btrim(Vessel.ship_id), ''),
-        func.nullif(func.jsonb_extract_path_text(Detection.ocr_results, '0', 'id'), ''),
+        func.nullif(_js_trim(Vessel.ship_id), ''),
+        func.nullif(_js_trim(func.jsonb_extract_path_text(Detection.ocr_results, '0', 'id')), ''),
         UNKNOWN_SHIP_LABEL,
+    )
+
+
+def _berth_time_expr():
+    """Instant tàu vào vùng neo đậu — port `getDetectionSortTs` của client.
+
+    `berth_in_time` là `timestamp with time zone`, còn `start_time`/`created_at`
+    là `timestamp without time zone` chứa giờ UTC: phải `timezone('UTC', ...)` để
+    coalesce cùng kiểu và **không** phụ thuộc timezone của session DB.
+    """
+    return func.coalesce(
+        Detection.berth_in_time,
+        func.timezone('UTC', Detection.start_time),
+        func.timezone('UTC', Detection.created_at),
     )
 
 
@@ -58,8 +84,10 @@ def _status_expr():
 
 
 # Whitelist cột sắp xếp: `sort` của client chỉ được TRA CỨU ở đây, không bao giờ
-# được nội suy thành tên cột.
+# được nội suy thành tên cột. `berth` là mặc định vì đúng thứ tự client đang thấy
+# (`getDetectionSortTs`); `time` là thời gian hiển thị của cột "Thời gian".
 SORT_COLUMNS = {
+    'berth': _berth_time_expr,
     'time': lambda: func.coalesce(Detection.start_time, Detection.created_at),
     'ship_id': _ship_label_expr,
     'confidence': lambda: func.coalesce(Detection.confidence, 0.0),
@@ -111,7 +139,9 @@ class DetectionRepository:
         (client chia phần trăm cho 100 trước khi gửi).
 
         Mọi thứ tự đều kết thúc bằng `detections.id` làm tiebreaker để phân trang
-        không trả trùng hoặc mất row khi nhiều row cùng khóa sắp xếp.
+        không trả trùng hoặc mất row khi nhiều row cùng khóa sắp xếp. Mặc định
+        `berth` giữ đúng thứ tự client đang thấy (`getDetectionSortTs`); `time` là
+        thời gian hiển thị và 5 khóa còn lại là 5 cột của bảng.
         """
         query = db.query(Detection).filter(Detection.deleted_at.is_(None))
         joined_vessel = False

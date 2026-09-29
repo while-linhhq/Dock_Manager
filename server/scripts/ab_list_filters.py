@@ -19,6 +19,11 @@ So **tập id** của hai bên cho từng tổ hợp. Khớp hết thì in
 `Lệch: 0 tổ hợp · ✓ ĐẠT`; lệch thì in tổ hợp gây lệch kèm phần id chênh lệch và
 thoát mã 1.
 
+Nhóm bến còn so thêm **thứ tự id** cho từng tổ hợp: phía client sắp theo
+`getDetectionSortTs` (đúng thứ tự trang bến đang thấy), phía SQL đi hết trang
+bằng `sort` mặc định của endpoint (`berth`). Chỉ so tập id thì lỗi thứ tự sẽ
+lọt lưới, nên thứ tự lệch cũng tính là lệch.
+
 `--tz` (mặc định: timezone của máy) là timezone dùng để quy đổi "ngày trên lịch"
 sang instant UTC: client lọc theo ngày địa phương của trình duyệt nên hai bên chỉ
 so được với nhau khi cùng timezone.
@@ -300,21 +305,21 @@ def client_matches(
     return True
 
 
-def client_side_ids(
+def client_side_ordered_ids(
     rows: Iterable[dict],
     filters: Filters,
     *,
     vessels_by_id: dict[str, dict],
     tz: tzinfo,
-) -> set[int]:
-    """Tập id theo logic client (sắp xếp như `PortView` rồi lấy id — so theo tập)."""
+) -> list[int]:
+    """Id theo logic client, **đúng thứ tự** `PortView` hiển thị (`getDetectionSortTs`)."""
     matched = [
         row
         for row in rows
         if client_matches(row, filters, vessels_by_id=vessels_by_id, tz=tz)
     ]
     matched.sort(key=get_detection_sort_ts, reverse=True)  # stable, giống Array.sort của JS
-    return {int(row['id']) for row in matched}
+    return [int(row['id']) for row in matched]
 
 
 def invoice_client_matches(
@@ -667,6 +672,7 @@ class Mismatch:
     filters: str
     only_client: list[int]
     only_sql: list[int]
+    detail: str = ''  # mô tả thêm cho lệch thứ tự (lệch tập id thì để trống)
 
 
 def run_detections(
@@ -691,10 +697,15 @@ def run_detections(
     print(f'Tổ hợp chạy: {len(combinations)}')
 
     mismatches: list[Mismatch] = []
+    order_mismatches = 0
     for index, filters in enumerate(combinations, start=1):
-        expected = client_side_ids(rows, filters, vessels_by_id=vessels_by_id, tz=tz)
+        expected_order = client_side_ordered_ids(
+            rows, filters, vessels_by_id=vessels_by_id, tz=tz
+        )
         sql_rows, _ = fetch_all_pages(client, DETECTION_LIST_URL, sql_side_params(filters, tz))
-        actual = {int(item['id']) for item in sql_rows}
+        actual_order = [int(item['id']) for item in sql_rows]
+        expected = set(expected_order)
+        actual = set(actual_order)
         if expected != actual:
             mismatches.append(
                 Mismatch(
@@ -704,9 +715,35 @@ def run_detections(
                     only_sql=sorted(actual - expected)[:20],
                 )
             )
+        elif expected_order != actual_order:
+            # Cùng tập id nhưng khác thứ tự → lỗi sắp xếp. SQL đi trang bằng `sort`
+            # mặc định của endpoint (`berth`), client sắp theo `getDetectionSortTs`.
+            order_mismatches += 1
+            first = next(
+                position
+                for position, (client_id, sql_id) in enumerate(
+                    zip(expected_order, actual_order)
+                )
+                if client_id != sql_id
+            )
+            mismatches.append(
+                Mismatch(
+                    group='bến · thứ tự',
+                    filters=_describe(filters),
+                    only_client=[],
+                    only_sql=[],
+                    detail=(
+                        f'lệch từ vị trí {first}: client id {expected_order[first]} '
+                        f'≠ SQL id {actual_order[first]}'
+                    ),
+                )
+            )
         if progress_every and index % progress_every == 0:
             print(f'  … {index}/{len(combinations)} tổ hợp, lệch {len(mismatches)}')
-    print(f'Đã chạy: {len(combinations)} tổ hợp · lệch {len(mismatches)}\n')
+    print(
+        f'Đã chạy: {len(combinations)} tổ hợp · lệch {len(mismatches)} '
+        f'(so tập id + thứ tự mặc định, thứ tự lệch {order_mismatches})\n'
+    )
     return len(combinations), mismatches
 
 
@@ -838,8 +875,11 @@ def run(tz_name: str, tz: tzinfo, *, progress_every: int = 250) -> int:
         print(f'\nLệch: {len(mismatches)} tổ hợp / {combinations_run}')
         for mismatch in mismatches[:10]:
             print(f'  ✗ [{mismatch.group}] {mismatch.filters}')
-            print(f'      chỉ có ở client: {mismatch.only_client}')
-            print(f'      chỉ có ở SQL   : {mismatch.only_sql}')
+            if mismatch.detail:
+                print(f'      {mismatch.detail}')
+            if mismatch.only_client or mismatch.only_sql:
+                print(f'      chỉ có ở client: {mismatch.only_client}')
+                print(f'      chỉ có ở SQL   : {mismatch.only_sql}')
         if len(mismatches) > 10:
             print(f'  … còn {len(mismatches) - 10} tổ hợp lệch khác')
         print(f'Lệch: {len(mismatches)} tổ hợp · ✗ KHÔNG ĐẠT')

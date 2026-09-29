@@ -113,7 +113,7 @@ def list_detections(
     occurred_from: Optional[datetime] = None,
     occurred_to: Optional[datetime] = None,
     min_confidence: Optional[float] = None,
-    sort: str = 'time',
+    sort: str = 'berth',
     order: str = 'desc',
     include_over_berth_limit: bool = False,
     include_presigned_paths: bool = False,
@@ -126,8 +126,10 @@ def list_detections(
     `track_id` và `vessel_id`; wildcard trong `q` bị escape.
     `occurred_from`/`occurred_to` là instant UTC so với
     `coalesce(start_time, created_at)`; `min_confidence` nhận 0..1.
-    `sort` chỉ nhận `time|ship_id|confidence|camera|status`, giá trị lạ rơi về
-    mặc định (không bao giờ được nội suy vào SQL).
+    `sort` nhận `berth|time|ship_id|confidence|camera|status`, giá trị lạ rơi về
+    mặc định `berth` (không bao giờ được nội suy vào SQL). `berth` = thời điểm tàu
+    vào vùng neo đậu (`berth_in_time`, fallback `start_time`, `created_at`) — đúng
+    thứ tự trang bến đang hiển thị; `time` = thời gian hiển thị của cột "Thời gian".
     """
     skip, limit = resolve_page(skip, limit)
     occurred_from = _as_utc(occurred_from)

@@ -7,7 +7,13 @@ liệu vừa seed nên không phụ thuộc số row sẵn có của môi trư�
 
 Mốc thời gian seed là **naive UTC** — đúng như cột `start_time`/`created_at`
 (`timestamp without time zone`) đang lưu trong DB; client đọc chuỗi API không
-kèm offset và hiểu là UTC (xem `parseApiDate` của client).
+kèm offset và hiểu là UTC (xem `parseApiDate` của client). Riêng `berth_in_time`
+là `timestamp with time zone` nên seed bằng datetime có tzinfo.
+
+`test_sort_whitelist_orders_exactly` phủ **cả 6 khóa** của whitelist sắp xếp
+(berth/time/ship_id/confidence/camera/status) theo đúng thứ tự id mong đợi, kèm
+tiebreaker id: A/B cũng so thứ tự nhưng trên dữ liệu thật, còn test này ghim giá
+trị kỳ vọng của từng khóa trên dữ liệu seed.
 """
 from __future__ import annotations
 
@@ -22,6 +28,8 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user
 from app.db.session import SessionLocal, get_db
 from app.main import app
+from app.models.boundary_crossing_event import BoundaryCrossingEvent
+from app.models.camera import Camera
 from app.models.detection import Detection
 from app.models.vessel import Vessel
 from app.models.vessel_type import VesselType
@@ -42,7 +50,7 @@ def _utc(*args: int) -> datetime:
 
 
 def _seed(session) -> SimpleNamespace:
-    """Seed 2 vessel (2 loại tàu) + 7 detection; trả id/khóa để assert."""
+    """Seed 2 vessel (2 loại tàu) + 8 detection + camera/event cho cột camera."""
     tag = uuid4().hex[:12]
     type_a = VesselType(type_name=f'filtertest-a-{tag}')
     type_b = VesselType(type_name=f'filtertest-b-{tag}')
@@ -74,7 +82,8 @@ def _seed(session) -> SimpleNamespace:
         return row
 
     # Vessel A: đủ biên ngày 30/09 giờ VN, đủ nhánh is_accepted và confidence.
-    # created_at = start_time để thứ tự mặc định (`time`) xác định được.
+    # created_at = start_time để thứ tự `time` xác định được; a2 có thêm
+    # berth_in_time muộn hơn hẳn để thứ tự `berth` (mặc định) khác thứ tự `time`.
     add_row(
         'a1',
         vessel_id=vessel_a.id,
@@ -88,6 +97,7 @@ def _seed(session) -> SimpleNamespace:
         vessel_id=vessel_a.id,
         start_time=_utc(2026, 9, 30, 9, 59, 0),  # 16:59 giờ VN ngày 30/09
         created_at=_utc(2026, 9, 30, 9, 59, 0),
+        berth_in_time=datetime(2026, 9, 30, 18, 0, tzinfo=timezone.utc),
         confidence=0.75,
         is_accepted=False,
     )
@@ -135,6 +145,53 @@ def _seed(session) -> SimpleNamespace:
         confidence=0.30,
         is_accepted=None,
         ocr_results=[{'id': f'OCR-{tag}', 'conf': 1.0}],
+    )
+    # id OCR toàn khoảng trắng → trim rồi rỗng → nhãn mặc định (String.trim của JS).
+    add_row(
+        'n2',
+        vessel_id=None,
+        start_time=_utc(2026, 9, 30, 14, 0, 0),
+        created_at=_utc(2026, 9, 30, 14, 0, 0),
+        confidence=0.85,
+        is_accepted=None,
+        ocr_results=[{'id': '  \t ', 'conf': 1.0}],
+    )
+
+    # Cột `camera` lấy tên camera của event IN **sớm nhất** theo track_id.
+    cam_x = Camera(camera_name='CAM-X', rtsp_url=f'rtsp://filtertest/{tag}/x')
+    cam_y = Camera(camera_name='CAM-Y', rtsp_url=f'rtsp://filtertest/{tag}/y')
+    session.add_all([cam_x, cam_y])
+    session.flush()
+    session.add_all(
+        [
+            # a1: một event IN → CAM-Y.
+            BoundaryCrossingEvent(
+                track_id=rows['a1'].track_id,
+                camera_id=cam_y.id,
+                direction='in',
+                crossed_at=datetime(2026, 9, 30, 6, 0, tzinfo=timezone.utc),
+            ),
+            # a3: hai event IN → lấy cái sớm nhất (CAM-X), event muộn không được tính.
+            BoundaryCrossingEvent(
+                track_id=rows['a3'].track_id,
+                camera_id=cam_y.id,
+                direction='in',
+                crossed_at=datetime(2026, 9, 30, 9, 0, tzinfo=timezone.utc),
+            ),
+            BoundaryCrossingEvent(
+                track_id=rows['a3'].track_id,
+                camera_id=cam_x.id,
+                direction='in',
+                crossed_at=datetime(2026, 9, 30, 8, 0, tzinfo=timezone.utc),
+            ),
+            # b1: chỉ có event OUT → không có camera IN → giá trị rỗng, xuống cuối.
+            BoundaryCrossingEvent(
+                track_id=rows['b1'].track_id,
+                camera_id=cam_x.id,
+                direction='out',
+                crossed_at=datetime(2026, 9, 30, 7, 0, tzinfo=timezone.utc),
+            ),
+        ]
     )
     session.flush()
 
@@ -314,17 +371,61 @@ def test_sort_unknown_key_falls_back_to_default(seeded) -> None:
     )
 
     assert _ids(unknown) == default
-    # `time desc` mặc định: a3 (17:00Z) → a5 (12:00Z) → a1 (10:00Z) → a2 (09:59Z) → a4.
+    # Mặc định là `berth desc` (đúng thứ tự client đang thấy): a2 (berth 18:00Z) →
+    # a3 (17:00Z) → a5 (12:00Z) → a1 (10:00Z) → a4 (29/09 16:59Z).
     assert default == [
+        seeded.a2_id,
         seeded.a3_id,
         seeded.a5_id,
         seeded.a1_id,
-        seeded.a2_id,
         seeded.a4_id,
     ]
     assert _ids(unknown_order) == _ids(
         _get(seeded, vessel_id=seeded.vessel_a_id, sort='confidence', order='desc')
     )
+
+
+# Thứ tự id mong đợi cho từng khóa của whitelist, phạm vi `q=<tag>` (8 row seed:
+# a1..a5 của tàu A, b1 của tàu B, n1 có nhãn OCR, n2 nhãn mặc định).
+#
+# Giá trị từng cột:
+#   start_time : a1=30/09 10:00Z, a2=09:59Z, a3=17:00Z, a4=29/09 16:59Z, a5=12:00Z,
+#                b1=13:00Z, n1=11:00Z, n2=14:00Z
+#   berth      : như start_time, riêng a2 có berth_in_time=18:00Z
+#   nhãn       : a*=FILTERTEST-A-<tag>, b1=FILTERTEST-B-<tag>, n1=OCR-<tag>,
+#                n2=KHÔNG XÁC ĐỊNH
+#   confidence : a1=0.95, a2=0.75, a3=0.50, a4=0.95, a5=NULL→0, b1=0.60,
+#                n1=0.30, n2=0.85
+#   camera     : a1=CAM-Y, a3=CAM-X (event IN sớm nhất), còn lại rỗng
+#   status     : Đã Xác Nhận = a1/a5/b1, Chờ Duyệt = phần còn lại
+ORDER_CASES: dict[tuple[str, str], list[str]] = {
+    ('berth', 'desc'): ['a2', 'a3', 'n2', 'b1', 'a5', 'n1', 'a1', 'a4'],
+    ('berth', 'asc'): ['a4', 'a1', 'n1', 'a5', 'b1', 'n2', 'a3', 'a2'],
+    ('time', 'desc'): ['a3', 'n2', 'b1', 'a5', 'n1', 'a1', 'a2', 'a4'],
+    ('time', 'asc'): ['a4', 'a2', 'a1', 'n1', 'a5', 'b1', 'n2', 'a3'],
+    ('ship_id', 'asc'): ['a1', 'a2', 'a3', 'a4', 'a5', 'b1', 'n2', 'n1'],
+    ('ship_id', 'desc'): ['n1', 'n2', 'b1', 'a5', 'a4', 'a3', 'a2', 'a1'],
+    ('confidence', 'asc'): ['a5', 'n1', 'a3', 'b1', 'a2', 'n2', 'a1', 'a4'],
+    ('confidence', 'desc'): ['a4', 'a1', 'n2', 'a2', 'b1', 'a3', 'n1', 'a5'],
+    # camera rỗng luôn xuống cuối ở cả hai chiều; trong nhóm rỗng thì id quyết định.
+    ('camera', 'asc'): ['a3', 'a1', 'a2', 'a4', 'a5', 'b1', 'n1', 'n2'],
+    ('camera', 'desc'): ['a1', 'a3', 'n2', 'n1', 'b1', 'a5', 'a4', 'a2'],
+    ('status', 'asc'): ['a2', 'a3', 'a4', 'n1', 'n2', 'a1', 'a5', 'b1'],
+    ('status', 'desc'): ['b1', 'a5', 'a1', 'n2', 'n1', 'a4', 'a3', 'a2'],
+}
+
+
+@pytest.mark.parametrize(('sort', 'order'), sorted(ORDER_CASES))
+def test_sort_whitelist_orders_exactly(seeded, sort: str, order: str) -> None:
+    """Mỗi khóa whitelist trả về đúng dãy id, kết thúc bằng tiebreaker id cùng chiều."""
+    expected = [getattr(seeded, f'{key}_id') for key in ORDER_CASES[(sort, order)]]
+
+    assert _ids(_get(seeded, q=seeded.tag, sort=sort, order=order)) == expected
+
+
+def test_search_unknown_label_when_ocr_id_is_blank(seeded) -> None:
+    """id OCR toàn khoảng trắng: trim rồi rỗng nên nhãn rơi về 'KHÔNG XÁC ĐỊNH'."""
+    assert seeded.n2_id in _ids(_get(seeded, q='KHÔNG XÁC ĐỊNH'))
 
 
 def test_paging_with_equal_sort_keys_keeps_every_row(seeded) -> None:
