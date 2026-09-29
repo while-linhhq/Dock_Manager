@@ -21,6 +21,7 @@ from app.services.ai.boundary_crossing import (
 from app.services.ai.visual_ship_matching import aggregate_visual_hits
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
 from app.utils.ai.box_scale import pad_box, scale_boxes
+from app.utils.ai.letterbox import Letterbox, letterbox_frame, unletterbox_boxes
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.detection_filter import (
     dedup_overlapping_boxes,
@@ -85,6 +86,10 @@ class PerCameraPipelineConfig:
     clahe_fast: bool = True
     detect_scale: float = 1.0
     crop_pad_ratio: float = 0.05
+    #: Chạy CLAHE ở kích thước detector (letterbox trước) thay vì full-res.
+    clahe_after_letterbox: bool = True
+    #: Hệ số letterbox trước CLAHE (1.0 = đúng imgsz; 1.5 giữ đủ box, xem CLAHE_LETTERBOX_SCALE).
+    clahe_letterbox_scale: float = 1.5
     enable_visual_id: bool = False
     visual_interval_sec: float = 1.0
     visual_min_crop_area: int = 4096
@@ -216,6 +221,9 @@ class PerCameraPipeline(threading.Thread):
         self._frame_stats_logged_at = 0.0
         self._detect_scale = float(config.detect_scale or 1.0)
         self._crop_pad_ratio = float(config.crop_pad_ratio or 0.0)
+        self._clahe_after_letterbox = bool(config.clahe_after_letterbox)
+        self._clahe_letterbox_scale = max(1.0, min(2.0, float(config.clahe_letterbox_scale or 1.0)))
+        self._detector_imgsz = int(getattr(self._detector, 'imgsz', 0) or 640)
         self._last_ocr_ts = 0.0
         self._last_visual_ts = 0.0
         self._training_snapshot: TrainingSnapshotCollector | None = training_snapshot_collector
@@ -386,10 +394,32 @@ class PerCameraPipeline(threading.Thread):
         captured_mono: float | None = None,
     ) -> None:
         detect_frame = self._detect_frame(raw_frame)
-        processed = preprocess_frame_clahe(detect_frame, self._clahe_config)
+        letterbox: Letterbox | None = None
+        if self._clahe_after_letterbox:
+            # CLAHE ở đúng kích thước detector: resize nội dung trước, tiền xử lý ở đó,
+            # rồi mới pad viền — chi tiết CLAHE tạo ra không bị bước letterbox xoá đi.
+            letterbox_size = int(round(self._detector_imgsz * self._clahe_letterbox_scale))
+            letterbox = letterbox_frame(raw_frame, letterbox_size)
+            detect_content = preprocess_frame_clahe(letterbox.content, self._clahe_config)
+            processed = letterbox.padded(detect_content)
+        else:
+            processed = preprocess_frame_clahe(detect_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
-        if self._detect_scale != 1.0 and detect_frame.shape[1]:
+        if letterbox is not None:
+            height, width = raw_frame.shape[:2]
+            boxes_list = [
+                [float(value) for value in box]
+                for box in unletterbox_boxes(
+                    boxes_list,
+                    letterbox.scale,
+                    letterbox.pad_x,
+                    letterbox.pad_y,
+                    width=width,
+                    height=height,
+                )
+            ]
+        elif self._detect_scale != 1.0 and detect_frame.shape[1]:
             # Điểm quy đổi DUY NHẤT từ hệ toạ độ detect về hệ full-res. Dùng tỉ lệ thật
             # (cv2 làm tròn khi cạnh lẻ) thay vì hệ số danh nghĩa để mép ảnh không lệch px.
             ratio = raw_frame.shape[1] / detect_frame.shape[1]

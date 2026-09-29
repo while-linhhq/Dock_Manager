@@ -64,9 +64,10 @@ def test_clahe_fast_false_reaches_preprocessor() -> None:
 class _FakeDetector:
     """Detector giả trả box trong hệ toạ độ của frame đưa vào."""
 
-    def __init__(self, boxes: list[list[float]] | None = None) -> None:
+    def __init__(self, boxes: list[list[float]] | None = None, imgsz: int = 960) -> None:
         self.boxes = boxes or []
         self.frames: list = []
+        self.imgsz = imgsz
 
     def predict_boxes(self, frame):
         self.frames.append(frame)
@@ -95,13 +96,67 @@ def _frame(height: int = 80, width: int = 120):
     return np.full((height, width, 3), 40, dtype=np.uint8)
 
 
+def test_clahe_after_letterbox_is_on_by_default() -> None:
+    assert _pipeline_config().clahe_after_letterbox is True
+
+
+def test_letterbox_path_feeds_detector_scaled_canvas(monkeypatch) -> None:
+    captured: list = []
+    # Hệ số mặc định 1.5: canvas 1440, nội dung 810×1440, pad_y 315, scale 0.5625.
+    detector = _FakeDetector(boxes=[[540.0, 630.0, 720.0, 855.0]])
+    pipeline = _build_pipeline_with_detector(_pipeline_config(), detector)
+    monkeypatch.setattr(pipeline._tracker, 'update', lambda boxes, confs: captured.append(boxes) or [])
+
+    pipeline._process_frame(_frame(height=1440, width=2560), 1.0)
+
+    fed = detector.frames[0]
+    assert fed.shape == (1440, 1440, 3)  # canvas vuông = imgsz × hệ số
+    assert (fed[0] == 114).all()  # viền trên: xám như ultralytics
+    assert (fed[-1] == 114).all()  # viền dưới
+    assert (fed[315] != 114).any()  # dòng đầu của nội dung (đã qua CLAHE)
+    # box ở hệ canvas → full-res: (x-0)/0.5625, (y-315)/0.5625
+    assert captured[0] == [[960.0, 560.0, 1280.0, 960.0]]
+
+
+def test_letterbox_scale_one_uses_imgsz_canvas(monkeypatch) -> None:
+    """Hệ số 1.0 (nhanh nhất) vẫn đúng hình học — chỉ khác độ chi tiết CLAHE."""
+    captured: list = []
+    detector = _FakeDetector(boxes=[[360.0, 420.0, 480.0, 570.0]])
+    pipeline = _build_pipeline_with_detector(
+        _pipeline_config(clahe_letterbox_scale=1.0), detector
+    )
+    monkeypatch.setattr(pipeline._tracker, 'update', lambda boxes, confs: captured.append(boxes) or [])
+
+    pipeline._process_frame(_frame(height=1440, width=2560), 1.0)
+
+    assert detector.frames[0].shape == (960, 960, 3)
+    assert captured[0] == [[960.0, 560.0, 1280.0, 960.0]]
+
+
+def test_letterbox_off_keeps_old_path(monkeypatch) -> None:
+    captured: list = []
+    detector = _FakeDetector(boxes=[[100.0, 100.0, 200.0, 200.0]])
+    pipeline = _build_pipeline_with_detector(
+        _pipeline_config(clahe_after_letterbox=False), detector
+    )
+    monkeypatch.setattr(pipeline._tracker, 'update', lambda boxes, confs: captured.append(boxes) or [])
+
+    pipeline._process_frame(_frame(height=1440, width=2560), 1.0)
+
+    assert detector.frames[0].shape == (1440, 2560, 3)  # nguyên frame full-res
+    assert captured[0] == [[100.0, 100.0, 200.0, 200.0]]
+
+
 def test_detect_scale_default_does_not_resize(monkeypatch) -> None:
     import cv2
 
     calls: list = []
     monkeypatch.setattr(cv2, 'resize', lambda *args, **kwargs: calls.append(kwargs) or _frame())
     detector = _FakeDetector()
-    pipeline = _build_pipeline_with_detector(_pipeline_config(), detector)
+    # Ghim đường cũ: đường letterbox mới có resize (cố ý), test này kiểm detect_scale=1.0.
+    pipeline = _build_pipeline_with_detector(
+        _pipeline_config(clahe_after_letterbox=False), detector
+    )
 
     pipeline._process_frame(_frame(), 1.0)
 
@@ -124,7 +179,9 @@ def test_detect_scale_halves_detect_frame(monkeypatch) -> None:
 
     monkeypatch.setattr(cv2, 'resize', _spy)
     detector = _FakeDetector()
-    pipeline = _build_pipeline_with_detector(_pipeline_config(detect_scale=0.5), detector)
+    pipeline = _build_pipeline_with_detector(
+        _pipeline_config(detect_scale=0.5, clahe_after_letterbox=False), detector
+    )
 
     pipeline._process_frame(_frame(), 1.0)
 
@@ -136,7 +193,9 @@ def test_detect_scale_maps_boxes_back_to_full_res(monkeypatch) -> None:
     captured: list = []
     # Box 100x100 ở hệ detect → 200x200 ở full-res, lớn hơn ngưỡng lọc 50x30.
     detector = _FakeDetector(boxes=[[100.0, 100.0, 200.0, 200.0]])
-    pipeline = _build_pipeline_with_detector(_pipeline_config(detect_scale=0.5), detector)
+    pipeline = _build_pipeline_with_detector(
+        _pipeline_config(detect_scale=0.5, clahe_after_letterbox=False), detector
+    )
     monkeypatch.setattr(pipeline._tracker, 'update', lambda boxes, confs: captured.append(boxes) or [])
 
     pipeline._process_frame(_frame(height=800, width=1200), 1.0)
@@ -180,7 +239,9 @@ class _StubTrack:
 def test_queue_boxes_pad_when_detect_scale_below_one() -> None:
     import numpy as np
 
-    pipeline = _build_pipeline(_pipeline_config(detect_scale=0.5, crop_pad_ratio=0.5))
+    pipeline = _build_pipeline(
+        _pipeline_config(detect_scale=0.5, crop_pad_ratio=0.5, clahe_after_letterbox=False)
+    )
     track = _StubTrack(np.array([40.0, 40.0, 50.0, 50.0], dtype=np.float32))
 
     [(track_id, box)] = pipeline._queue_boxes([track], 100, 100)
@@ -207,7 +268,9 @@ def test_crop_box_clamps_at_scale_one() -> None:
 
 
 def test_crop_box_pads_when_scale_below_one() -> None:
-    pipeline = _build_pipeline(_pipeline_config(detect_scale=0.5, crop_pad_ratio=0.5))
+    pipeline = _build_pipeline(
+        _pipeline_config(detect_scale=0.5, crop_pad_ratio=0.5, clahe_after_letterbox=False)
+    )
 
     assert pipeline._crop_box_for_track((40.0, 40.0, 50.0, 50.0), 100, 100) == (35, 35, 55, 55)
 
@@ -236,6 +299,8 @@ def test_runtime_flags_db_overrides_env_and_clamps(monkeypatch) -> None:
         monkeypatch,
         [
             _Row('clahe_fast', 'false'),
+            _Row('clahe_after_letterbox', 'false'),
+            _Row('clahe_letterbox_scale', '5'),
             _Row('detect_scale', '0.25'),
             _Row('crop_pad_ratio', '9'),
         ],
@@ -244,6 +309,8 @@ def test_runtime_flags_db_overrides_env_and_clamps(monkeypatch) -> None:
     cfg = service._load_runtime_config()
 
     assert cfg['clahe_fast'] is False
+    assert cfg['clahe_after_letterbox'] is False
+    assert cfg['clahe_letterbox_scale'] == 2.0  # kẹp trần
     assert cfg['detect_scale'] == 0.25
     assert cfg['crop_pad_ratio'] == 0.5  # kẹp trần
 
@@ -256,6 +323,8 @@ def test_runtime_flags_empty_db_uses_env_and_floor(monkeypatch) -> None:
     cfg = service._load_runtime_config()
 
     assert cfg['clahe_fast'] is bool(settings.CLAHE_FAST)
+    assert cfg['clahe_after_letterbox'] is bool(settings.CLAHE_AFTER_LETTERBOX)
+    assert cfg['clahe_letterbox_scale'] == float(settings.CLAHE_LETTERBOX_SCALE)
     assert cfg['detect_scale'] == 0.1  # kẹp sàn
     assert cfg['crop_pad_ratio'] == float(settings.CROP_PAD_RATIO)
 
@@ -265,7 +334,9 @@ def test_detect_scale_uses_actual_ratio_for_odd_sizes(monkeypatch) -> None:
 
     captured: list = []
     detector = _FakeDetector(boxes=[[100.0, 100.0, 200.0, 200.0]])
-    pipeline = _build_pipeline_with_detector(_pipeline_config(detect_scale=0.5), detector)
+    pipeline = _build_pipeline_with_detector(
+        _pipeline_config(detect_scale=0.5, clahe_after_letterbox=False), detector
+    )
     monkeypatch.setattr(pipeline._tracker, 'update', lambda boxes, confs: captured.append(boxes) or [])
 
     pipeline._process_frame(_frame(height=801, width=1201), 1.0)

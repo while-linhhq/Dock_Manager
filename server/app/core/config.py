@@ -110,6 +110,13 @@ class Settings(BaseSettings):
     DETECT_SCALE: float = 1.0
     # Nới crop OCR/embedding thêm tỉ lệ này khi DETECT_SCALE < 1.0 (bù box lệch vài px).
     CROP_PAD_RATIO: float = 0.05
+    # Chạy CLAHE ở kích thước detector (letterbox nội dung trước, pad sau) thay vì ở
+    # full-res rồi mới letterbox. Đặt false để quay lại đường cũ.
+    CLAHE_AFTER_LETTERBOX: bool = True
+    # Hệ số letterbox trước CLAHE. 1.0 = đúng imgsz (nhanh nhất nhưng MẤT box trên frame
+    # cam6: mất 1 box conf 0.966). 1.5 = CLAHE ở 1440 rồi thu về 960: giữ đủ box, IoU min
+    # 0.9858, vẫn nhanh hơn ~70% so với CLAHE full-res. Kẹp trong [1.0, 2.0].
+    CLAHE_LETTERBOX_SCALE: float = 1.5
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
     PREVIEW_MAX_WIDTH: int = 1280

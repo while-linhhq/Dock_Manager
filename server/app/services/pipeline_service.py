@@ -471,6 +471,20 @@ class PipelineService:
                 cfg_map.get('clahe_fast', ''),
                 bool(settings.CLAHE_FAST),
             ),
+            'clahe_after_letterbox': self._to_bool(
+                cfg_map.get('clahe_after_letterbox', ''),
+                bool(settings.CLAHE_AFTER_LETTERBOX),
+            ),
+            'clahe_letterbox_scale': max(
+                1.0,
+                min(
+                    2.0,
+                    self._to_float(
+                        cfg_map.get('clahe_letterbox_scale', ''),
+                        float(settings.CLAHE_LETTERBOX_SCALE),
+                    ),
+                ),
+            ),
             'detect_scale': max(
                 0.1,
                 min(
@@ -2203,6 +2217,8 @@ class PipelineService:
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 clahe_enable_gray_world=runtime_cfg['clahe_enable_gray_world'],
                 clahe_fast=runtime_cfg['clahe_fast'],
+                clahe_after_letterbox=runtime_cfg['clahe_after_letterbox'],
+                clahe_letterbox_scale=runtime_cfg['clahe_letterbox_scale'],
                 detect_scale=runtime_cfg['detect_scale'],
                 crop_pad_ratio=runtime_cfg['crop_pad_ratio'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],

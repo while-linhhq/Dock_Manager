@@ -40,7 +40,7 @@ from app.utils.port_config_runtime import (  # noqa: E402
 )
 
 FRAME_SUFFIXES = ('.png', '.jpg', '.jpeg')
-CANDIDATES = ('clahe-uint8', 'no-grayworld', 'grayworld-fast', 'detect-scale')
+CANDIDATES = ('clahe-uint8', 'no-grayworld', 'grayworld-fast', 'detect-scale', 'clahe-after-letterbox')
 
 
 def _build_clahe_config(enable_gray_world: bool | None = None):
@@ -151,18 +151,32 @@ def _detect(model, frame: np.ndarray, *, conf: float, imgsz: int, device: str):
     return boxes.xyxy.cpu().numpy().astype(np.float32), boxes.conf.cpu().numpy().astype(np.float32)
 
 
-def _candidate_frames(name: str, frame: np.ndarray, config, detect_scale: float):
-    """Trả về (ảnh đưa vào detector, hệ số quy box về toạ độ gốc)."""
+def _candidate_frames(name: str, frame: np.ndarray, config, detect_scale: float, imgsz: int, letterbox_scale: float):
+    """Trả về (ảnh đưa vào detector, hàm quy box về toạ độ frame gốc)."""
+    identity = lambda boxes: boxes  # noqa: E731
     if name == 'clahe-uint8':
-        return _call_clahe(frame, config, True), 1.0
+        return _call_clahe(frame, config, True), identity
     if name == 'no-grayworld':
-        return _call_clahe(frame, _build_clahe_config(False), True), 1.0
+        return _call_clahe(frame, _build_clahe_config(False), True), identity
     if name == 'grayworld-fast':
         # Đáng bật gray-world không: bản cũ float32 quá đắt, bản uint8 mới rẻ hơn nhiều.
-        return _call_clahe(frame, _build_clahe_config(True), True), 1.0
+        return _call_clahe(frame, _build_clahe_config(True), True), identity
     if name == 'detect-scale':
         small = cv2.resize(frame, None, fx=detect_scale, fy=detect_scale, interpolation=cv2.INTER_AREA)
-        return _call_clahe(small, config, True), 1.0 / detect_scale
+        return _call_clahe(small, config, True), lambda boxes: boxes * (1.0 / detect_scale)
+    if name == 'clahe-after-letterbox':
+        # Dùng lại chính hàm sản xuất để cổng A/B kiểm đúng code sẽ chạy.
+        from app.utils.ai.letterbox import letterbox_frame, unletterbox_boxes
+
+        height, width = frame.shape[:2]
+        # Đúng hệ số đang cấu hình cho production (mặc định 1.5).
+        box = letterbox_frame(frame, int(round(imgsz * letterbox_scale)))
+        processed = _call_clahe(box.content, config, True)
+        return box.padded(processed), (
+            lambda boxes: unletterbox_boxes(
+                boxes, box.scale, box.pad_x, box.pad_y, width=width, height=height
+            )
+        )
     raise SystemExit(f'Ứng viên không hợp lệ: {name}')
 
 
@@ -172,12 +186,25 @@ def main() -> int:
     parser.add_argument('--capture', type=int, default=0, help='số frame cần chụp nếu thư mục trống')
     parser.add_argument('--candidate', default='clahe-uint8', help=f'các ứng viên, phẩy ngăn cách: {",".join(CANDIDATES)}')
     parser.add_argument('--detect-scale', type=float, default=0.5, help='tỉ lệ cho ứng viên detect-scale')
+    parser.add_argument(
+        '--letterbox-scale',
+        type=float,
+        default=None,
+        help='hệ số letterbox trước CLAHE cho ứng viên clahe-after-letterbox (mặc định theo DB > env)',
+    )
     parser.add_argument('--conf', type=float, default=None, help='ngưỡng conf (mặc định theo DB)')
     parser.add_argument('--imgsz', type=int, default=None, help='kích thước suy luận (mặc định theo DB)')
     parser.add_argument('--iou-gate', type=float, default=0.98, help='IoU min tối thiểu để ĐẠT')
     parser.add_argument('--conf-gate', type=float, default=0.03, help='lệch conf max cho phép')
     parser.add_argument('--json', action='store_true', help='chỉ in JSON')
     args = parser.parse_args()
+
+    if args.letterbox_scale is None:
+        from app.core.config import settings
+
+        args.letterbox_scale = float(
+            get_port_float('clahe_letterbox_scale', float(getattr(settings, 'CLAHE_LETTERBOX_SCALE', 1.5)))
+        )
 
     candidates = [c.strip() for c in args.candidate.split(',') if c.strip()]
     for name in candidates:
@@ -208,10 +235,15 @@ def main() -> int:
 
     def _run_candidate(src):
         started = time.perf_counter()
-        image, factor = _candidate_frames(name, src, config, args.detect_scale)
+        image, to_full_res = _candidate_frames(
+            name, src, config, args.detect_scale, imgsz, letterbox_scale
+        )
         boxes, confs = _detect(model, image, conf=conf, imgsz=imgsz, device=device)
-        return boxes * factor, confs, (time.perf_counter() - started) * 1000.0
+        return np.asarray(to_full_res(boxes), dtype=np.float32).reshape(-1, 4), confs, (
+            time.perf_counter() - started
+        ) * 1000.0
 
+    letterbox_scale = float(args.letterbox_scale)
     report: dict[str, dict] = {}
     for name in candidates:
         totals = {'n_a': 0, 'n_b': 0, 'only_a': 0, 'only_b': 0}
@@ -281,6 +313,7 @@ def main() -> int:
             f'{len(frames)} frame ({distinct} khác nhau) · model {Path(str(weights)).name}'
             f' · imgsz={imgsz} conf={conf} device={device}'
             f' · đường hiện tại: CLAHE gray-world={gray_note} (bản cũ float32)'
+            f' · hệ số letterbox={letterbox_scale:g}'
         )
         if distinct < 4:
             print('  ⚠ quá ít frame khác nhau — kết quả chỉ mang tính tham khảo')
