@@ -17,6 +17,15 @@ paddleocr>=3.3.0,<4
 # Use contrib only — it's a superset of opencv-python (avoids module conflict)
 opencv-contrib-python==4.6.0.66
 numpy==1.26.4
+# Export model sang ONNX / .engine (scripts/export_engines.py). Giữ numpy 1.26.4: các wheel
+# cv2/paddle trong dự án build theo ABI numpy 1.x, numpy 2.x làm vỡ import.
+onnx==1.23.0
+safetensors>=0.4.0
+# TensorRT: TUỲ CHỌN, chỉ cần khi muốn chạy model .engine. Không pin trong file này vì
+# wheel khác nhau theo OS (Linux: tensorrt-cu12, Windows: tensorrt). Cài khi cần:
+#   Linux : pip install "tensorrt-cu12>=10,<11"
+#   rồi   : make engines          (build engine cho đúng GPU của máy)
+# Thiếu TensorRT thì app tự chạy .pt — không lỗi.
 pillow>=10.0.0
 protobuf==3.20.2
 shapely==2.1.2
