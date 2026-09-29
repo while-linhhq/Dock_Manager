@@ -6,7 +6,9 @@ numpy/torch/cv2/paddle because thread caps call it before AI libraries import.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
+from pathlib import Path
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -72,6 +74,35 @@ def get_port_float(key: str, default: float) -> float:
 
 def effective_model_path() -> str:
     return resolve_port_config('model_path', settings.MODEL_PATH)
+
+
+def models_dir() -> str:
+    """Thư mục gốc chứa model AI (mặc định ``server/models``)."""
+    return resolve_port_config('model_dir', settings.MODEL_DIR) or 'models'
+
+
+def model_file(*parts: str) -> str:
+    """Ghép đường dẫn trong thư mục model: ``model_file('dinov2', 'x.engine')``."""
+    return os.path.join(models_dir(), *parts)
+
+
+def _server_root() -> str:
+    """Thư mục ``server/`` — dự phòng khi tiến trình chạy từ gốc repo thay vì trong server."""
+    return str(Path(__file__).resolve().parents[2])
+
+
+def find_model_artifact(name: str, extensions: tuple[str, ...]) -> str | None:
+    """Tìm file model đầu tiên tồn tại trong thư mục model, theo thứ tự ưu tiên đuôi.
+
+    ``find_model_artifact('dinov2/vit_base_patch14_dinov2', ('.engine', '.safetensors'))``
+    """
+    roots = [models_dir(), os.path.join(_server_root(), models_dir())]
+    for ext in extensions:
+        for root in roots:
+            candidate = os.path.join(root, f'{name}{ext}')
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 def effective_device() -> str:

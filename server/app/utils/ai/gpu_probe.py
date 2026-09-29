@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Literal
 
 from app.core.config import settings
@@ -43,7 +44,14 @@ def collect_ai_component_matrix() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
     yolo_device: DeviceKind = 'gpu' if _torch_uses_cuda(effective_device()) else 'cpu'
-    yolo_detail = f'model={effective_model_path()}'
+    # Hiển thị đúng file đang chạy: engine TensorRT nếu có và dùng được, không phải .pt trong cấu hình.
+    try:
+        from app.utils.ai.yolo_detector import resolve_yolo_weights
+
+        runtime_model, runtime_kind = resolve_yolo_weights(effective_model_path())
+        yolo_detail = f'model={runtime_model}' + (' (TensorRT engine)' if runtime_kind == 'engine' else '')
+    except Exception:
+        yolo_detail = f'model={effective_model_path()}'
     try:
         import torch
 
@@ -67,6 +75,16 @@ def collect_ai_component_matrix() -> list[dict[str, Any]]:
     visual_device: DeviceKind = 'gpu' if _torch_uses_cuda(visual_cfg) else 'cpu'
     if not settings.ENABLE_VISUAL_ID:
         visual_device = 'off'
+    visual_runtime = ''
+    if visual_device == 'gpu':
+        try:
+            from app.services.ai.visual_embedding_extractor import _resolve_engine_path
+
+            engine = _resolve_engine_path(None, str(settings.VISUAL_BACKBONE))
+            if engine:
+                visual_runtime = f' · engine={Path(engine).name}'
+        except Exception:
+            visual_runtime = ''
     rows.append(
         {
             'key': 'visual_id',
@@ -75,6 +93,7 @@ def collect_ai_component_matrix() -> list[dict[str, Any]]:
             'detail': (
                 f'backbone={settings.VISUAL_BACKBONE}'
                 f' · device_cfg={visual_cfg}'
+                f'{visual_runtime}'
             ),
         }
     )

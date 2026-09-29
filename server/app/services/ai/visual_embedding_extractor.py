@@ -85,13 +85,20 @@ class VisualEmbeddingExtractor:
             return
 
         try:
-            if model_path and Path(model_path).is_file():
+            engine_path = _resolve_engine_path(model_path, backbone)
+            if engine_path:
+                from app.services.ai.trt_engine import TensorRTModule
+
+                model = TensorRTModule(engine_path, device=self._device)
+                self._backend = f'trt:{Path(engine_path).name}'
+            elif model_path and Path(model_path).is_file():
                 model = torch.jit.load(model_path, map_location=self._device)
                 self._backend = 'torchscript-vit'
             else:
                 model, resolved_backbone = _load_timm_backbone(
                     backbone,
                     image_size=self._image_size,
+                    weights_path=_resolve_weights_path(backbone),
                 )
                 if model is None:
                     logger.warning('Could not load visual backbone=%s', backbone)
@@ -173,21 +180,21 @@ class VisualEmbeddingExtractor:
         return outputs
 
 
-def _load_timm_backbone(backbone: str, *, image_size: int) -> tuple[Any | None, str]:
+def _load_timm_backbone(
+    backbone: str,
+    *,
+    image_size: int,
+    weights_path: str | None = None,
+) -> tuple[Any | None, str]:
     try:
         import timm
     except Exception:
         return _load_torch_hub_dinov2(image_size=image_size)
 
-    candidates = [backbone, *(_DINOV2_FALLBACK_BACKBONES if 'dinov2' in backbone.lower() else ())]
-    seen: set[str] = set()
-    for name in candidates:
-        if not name or name in seen:
-            continue
-        seen.add(name)
+    for name in _dinov2_candidates(backbone):
         try:
             kwargs: dict[str, Any] = {
-                'pretrained': True,
+                'pretrained': not weights_path,
                 'num_classes': 0,
             }
             if 'dinov2' in name.lower():
@@ -197,6 +204,9 @@ def _load_timm_backbone(backbone: str, *, image_size: int) -> tuple[Any | None, 
                 kwargs['global_pool'] = 'avg'
 
             model = timm.create_model(name, **kwargs)
+            if weights_path:
+                _load_local_weights(model, weights_path, image_size=image_size)
+                logger.info('DINOv2 nạp weights cục bộ %s (backbone=%s)', weights_path, name)
             return model, name
         except Exception:
             logger.exception('timm backbone load failed for %s', name)
@@ -205,6 +215,149 @@ def _load_timm_backbone(backbone: str, *, image_size: int) -> tuple[Any | None, 
     if 'dinov2' in backbone.lower():
         return _load_torch_hub_dinov2(image_size=image_size)
     return None, backbone
+
+
+def _read_state_dict(weights_path: str) -> dict[str, Any]:
+    """Đọc weights .safetensors/.pth/.bin thành state_dict với tên key theo timm."""
+    if weights_path.endswith('.safetensors'):
+        from safetensors.torch import load_file
+
+        return dict(load_file(weights_path))
+
+    import torch
+
+    loaded = torch.load(weights_path, map_location='cpu', weights_only=True)
+    for key in ('state_dict', 'model', 'model_state_dict'):
+        if isinstance(loaded, dict) and isinstance(loaded.get(key), dict):
+            return dict(loaded[key])
+    return dict(loaded)
+
+
+def _load_local_weights(model: Any, weights_path: str, *, image_size: int) -> None:
+    """Nạp weights cục bộ, tự nội suy ``pos_embed`` nếu checkpoint khác độ phân giải.
+
+    timm CÓ nội suy khi tải từ HuggingFace (``pretrained=True``) nhưng KHÔNG làm khi truyền
+    ``checkpoint_path`` (load strict → lệch shape pos_embed). File DINOv2 chính thức là bản
+    ``lvd142m`` (grid 518px, pos_embed 1370) nên phải nội suy về grid của ``image_size`` để
+    embedding giống hệt đường tải từ hub trước đây.
+    """
+    state = _read_state_dict(weights_path)
+    pos_embed = state.get('pos_embed')
+    patch_size = getattr(getattr(model, 'patch_embed', None), 'patch_size', (14, 14))
+    target_grid = max(1, int(image_size) // int(patch_size[0]))
+
+    if pos_embed is not None and getattr(pos_embed, 'ndim', 0) == 3:
+        tokens = int(pos_embed.shape[1]) - 1
+        source_grid = int(round(tokens**0.5))
+        if source_grid * source_grid != tokens or source_grid != target_grid:
+            from timm.layers import resample_abs_pos_embed
+
+            state['pos_embed'] = resample_abs_pos_embed(
+                pos_embed,
+                new_size=(target_grid, target_grid),
+                num_prefix_tokens=1,
+                verbose=False,
+            )
+            logger.info(
+                'pos_embed nội suy %dx%d → %dx%d (%s)',
+                source_grid,
+                source_grid,
+                target_grid,
+                target_grid,
+                weights_path,
+            )
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        logger.warning(
+            'weights %s: thiếu %d key, thừa %d key (bỏ qua)',
+            weights_path,
+            len(missing),
+            len(unexpected),
+        )
+
+
+def _dinov2_candidates(backbone: str) -> list[str]:
+    """Danh sách tên backbone sẽ thử, theo thứ tự ưu tiên (đã loại trùng)."""
+    names = [backbone, *(_DINOV2_FALLBACK_BACKBONES if 'dinov2' in backbone.lower() else ())]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in names:
+        if name and name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+def _resolve_engine_path(model_path: str | None, backbone: str) -> str | None:
+    """Đường dẫn engine TensorRT cho visual backbone, nếu có VÀ dùng được trên máy này.
+
+    Thứ tự: ``VISUAL_ENGINE_PATH`` → ``VISUAL_MODEL_PATH`` kết thúc bằng .engine →
+    tự tìm ``models/dinov2/<backbone>.engine``. Nếu người dùng đã chỉ định
+    ``VISUAL_MODEL_PATH`` là file khác (.pt/.ts) thì tôn trọng, không tự thay engine.
+
+    Engine phải mở được execution context thật (xem ``engine_usable``); hỏng thì trả None
+    để lùi về timm, không làm chết pipeline Re-ID.
+    """
+    try:
+        from app.core.config import settings
+    except Exception:
+        return None
+
+    candidates: list[str] = []
+    explicit = str(getattr(settings, 'VISUAL_ENGINE_PATH', '') or '').strip()
+    if explicit and Path(explicit).is_file():
+        candidates.append(explicit)
+    if model_path and model_path.lower().endswith('.engine') and Path(model_path).is_file():
+        candidates.append(model_path)
+        candidates = candidates[-1:]  # người dùng chỉ định rõ thì chỉ xét file đó
+    elif model_path:
+        return None
+    elif bool(getattr(settings, 'VISUAL_PREFER_ENGINE', True)):
+        try:
+            from app.utils.port_config_runtime import find_model_artifact
+
+            for name in _dinov2_candidates(backbone):
+                found = find_model_artifact(f'dinov2/{name}', ('.engine',))
+                if found:
+                    candidates.append(found)
+        except Exception:
+            pass
+
+    for candidate in candidates:
+        try:
+            from app.services.ai.trt_engine import engine_usable
+
+            usable, reason = engine_usable(candidate)
+        except Exception as exc:  # noqa: BLE001
+            usable, reason = False, str(exc)
+        if usable:
+            return candidate
+        logger.warning('Engine %s không dùng được (%s) — lùi về timm', candidate, reason)
+    return None
+
+
+def _resolve_weights_path(backbone: str) -> str | None:
+    """Weights cục bộ cho timm (bỏ phụ thuộc tải từ HuggingFace hub)."""
+    try:
+        from app.core.config import settings
+
+        explicit = str(getattr(settings, 'VISUAL_WEIGHTS_PATH', '') or '').strip()
+        if explicit and Path(explicit).is_file():
+            return explicit
+    except Exception:
+        pass
+
+    try:
+        from app.utils.port_config_runtime import find_model_artifact
+    except Exception:
+        return None
+
+    for name in _dinov2_candidates(backbone):
+        found = find_model_artifact(f'dinov2/{name}', ('.safetensors', '.pth', '.bin'))
+        if found:
+            return found
+    return None
 
 
 def _load_torch_hub_dinov2(*, image_size: int) -> tuple[Any | None, str]:

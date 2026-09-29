@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Makefile runtime (PID + log của backend/client khi chạy `make start`)
+.run/
+
 # Local seed / credentials (use register.example.json)
 register.json
 
@@ -47,6 +50,16 @@ server/.cudnn8/
 
 # YOLO model weights (binary, tracked out-of-band)
 *.pt
+
+# Model AI khác: engine TensorRT gắn cứng GPU/phiên bản TRT, build lại bằng
+# `make engines` trên từng máy — không commit. Xem server/models/.
+*.engine
+*.plan
+*.onnx
+*.trt
+*.safetensors
+# Model PaddleOCR tải sẵn (inference.pdiparams 60-80MB mỗi model)
+server/models/paddle_ocr/
 
 # Ultralytics training/predict runs
 runs/
