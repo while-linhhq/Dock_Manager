@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -27,6 +28,7 @@ from app.services.ai.detection_filter import (
 )
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
+from app.services.ai.frame_stats import FrameStats
 from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
@@ -38,6 +40,11 @@ from app.services.ai.training_snapshot_collector import (
     TrainingSnapshotConfig,
 )
 from app.services.ai.visual_id_worker import VisualQueueItem
+
+logger = logging.getLogger(__name__)
+
+# Nhịp ghi log fps/frame mỗi camera (giây) — rẻ vì chỉ đọc bộ đếm.
+FRAME_STATS_LOG_INTERVAL_SEC = 30.0
 from app.utils.ai.overlay import draw_berth_state_bbox_overlays, draw_ship_detection_overlay
 from app.utils.ai.pipeline_utils import (
     clamp_box,
@@ -115,6 +122,7 @@ class PerCameraPipeline(threading.Thread):
         training_snapshot_collector: TrainingSnapshotCollector | None = None,
         rule_engine=None,
         ship_id_catalog=None,
+        frame_stats: FrameStats | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -200,6 +208,8 @@ class PerCameraPipeline(threading.Thread):
                 )
         self._frame_count = 0
         self._fps_started_at: float | None = None
+        self._frame_stats: FrameStats | None = frame_stats
+        self._frame_stats_logged_at = 0.0
         self._last_ocr_ts = 0.0
         self._last_visual_ts = 0.0
         self._training_snapshot: TrainingSnapshotCollector | None = training_snapshot_collector
@@ -273,6 +283,7 @@ class PerCameraPipeline(threading.Thread):
                 if self._fps_started_at is None:
                     self._fps_started_at = time.time()
                 fps_est = self._frame_count / max(1e-6, time.time() - self._fps_started_at)
+                self._record_frame_stats()
                 self._process_frame(raw_frame, fps_est, captured_mono=captured_mono)
         except Exception:
             import logging
@@ -283,6 +294,25 @@ class PerCameraPipeline(threading.Thread):
             )
         finally:
             self._stop_event.set()
+
+    def _record_frame_stats(self) -> None:
+        """Ghi nhận 1 frame và log fps định kỳ (chỉ đọc bộ đếm, không cấp phát)."""
+        stats = self._frame_stats
+        if stats is None:
+            return
+        camera_id = int(self.config.camera_id)
+        stats.record(camera_id)
+        now = time.time()
+        if now - self._frame_stats_logged_at < FRAME_STATS_LOG_INTERVAL_SEC:
+            return
+        self._frame_stats_logged_at = now
+        logger.info(
+            'camera %s: %s fps · %s frame đã xử lý (trung bình từ lúc chạy %.2f fps)',
+            camera_id,
+            f'{stats.fps(camera_id):.1f}' if stats.fps(camera_id) is not None else 'n/a',
+            stats.totals().get(camera_id, 0),
+            self._frame_count / max(1e-6, now - (self._fps_started_at or now)),
+        )
 
     def join(self, timeout: float | None = None) -> None:
         if self._reader is not None:

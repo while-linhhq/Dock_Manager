@@ -38,6 +38,7 @@ from app.services.ai.handoff_matcher import OverlapMergeConfig
 from app.services.ai.directional_handoff import DirectionalHandoffConfig
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
+from app.services.ai.frame_stats import FrameStats
 from app.services.ai.group_frame_hub import GroupFrameHub
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
@@ -152,6 +153,7 @@ class PipelineService:
         self._video_registry = TrackVideoRegistry()
         self._latest_fused_lock = threading.Lock()
         self._latest_fused_bgr: Any = None
+        self._frame_stats = FrameStats()
         self._media_sample_queue: queue.Queue[_MediaSampleJob | None] = queue.Queue(maxsize=5)
         self._media_sample_thread: threading.Thread | None = None
         self._primary_record_camera_id: int | None = None
@@ -862,6 +864,18 @@ class PipelineService:
             )
             if cam > 0:
                 self._media_collector.update_latest_single(tid, cam, frame, ts)
+
+    def frame_stats_payload(self) -> dict[str, Any]:
+        """Số frame đã xử lý + fps theo camera (khoá chuỗi để JSON hoá được)."""
+        stats = getattr(self, '_frame_stats', None)
+        if stats is None:
+            return {'frames_processed': {}, 'fps_per_camera': {}}
+        return {
+            'frames_processed': {str(key): int(value) for key, value in stats.totals().items()},
+            'fps_per_camera': {
+                str(key): round(float(value), 2) for key, value in stats.snapshot().items()
+            },
+        }
 
     def _enqueue_media_sample(
         self,
@@ -2198,6 +2212,7 @@ class PipelineService:
                     training_snapshot_collector=training_snapshot_collector,
                     rule_engine=get_rule_engine(),
                     ship_id_catalog=self._ship_id_catalog,
+                    frame_stats=self._frame_stats,
                 )
             )
 

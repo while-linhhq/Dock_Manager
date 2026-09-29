@@ -62,27 +62,43 @@ async def stop_pipeline():
     return {"message": "Pipeline stopped"}
 
 def _kill_orphan_ocr_workers() -> list[int]:
-    """Kill lingering ``ocr-gpu-worker`` child processes holding VRAM.
+    """Kill lingering OCR child processes holding VRAM.
 
     The pipeline stop path closes the OCR subprocess cleanly, but a crashed or
     force-restarted process can leave orphans reparented to init that keep
     1.5-3GB of CUDA context each. Reap them explicitly on server shutdown so a
     subsequent start does not hit CUBLAS_ALLOC_FAILED.
+
+    Lưu ý: worker là tiến trình con do ``multiprocessing`` spawn, nên /proc của nó
+    chỉ hiện tên ``python`` với cmdline ``from multiprocessing.spawn import
+    spawn_main``. Tên ``name='ocr-gpu-worker'`` chỉ tồn tại bên trong Python, không
+    xuất hiện ở OS — vì vậy khớp theo chuỗi đó sẽ không bao giờ trúng. Nhận diện
+    theo dấu hiệu thực: cmdline có ``multiprocessing`` + cùng cwd + cùng interpreter.
     """
+    import os
+    import sys
+
     import psutil
 
-    killed: list[int] = []
+    cwd = os.path.realpath(os.getcwd())
+    exe = os.path.realpath(sys.executable)
     me = psutil.Process()
-    for proc in psutil.process_iter(['name', 'cmdline']):
+
+    killed: list[int] = []
+    for proc in psutil.process_iter(['pid', 'cmdline']):
         try:
             if proc.pid == me.pid:
                 continue
-            name = proc.info.get('name') or ''
             cmdline = ' '.join(proc.info.get('cmdline') or [])
-            if 'ocr-gpu-worker' in name or 'ocr-gpu-worker' in cmdline:
-                proc.terminate()
-                killed.append(proc.pid)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            if 'multiprocessing' not in cmdline:
+                continue
+            if os.path.realpath(proc.cwd()) != cwd:
+                continue
+            if os.path.realpath(proc.exe()) != exe:
+                continue
+            proc.terminate()
+            killed.append(proc.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     if killed:
         gone, alive = psutil.wait_procs(
@@ -314,6 +330,7 @@ async def get_status():
         "active_group_id": pipeline_service.active_group_id,
         "seam_anchor_active": pipeline_service.seam_anchor_verifier is not None,
         "gpu": gpu,
+        **pipeline_service.frame_stats_payload(),
     }
 
 
