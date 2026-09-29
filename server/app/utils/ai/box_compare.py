@@ -79,6 +79,9 @@ def summarize(
     conf_max = float(max(conf_deltas)) if conf_deltas else 0.0
 
     reasons: list[str] = []
+    if not n_a and not n_b:
+        # Bến trống: hai đường cùng không thấy gì thì A/B không chứng minh được gì.
+        reasons.append('empty_scene')
     if only_a or only_b or (not ious and (n_a or n_b)):
         reasons.append('unmatched')
     if ious and iou_min < iou_gate:

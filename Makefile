@@ -132,7 +132,7 @@ bench:
 #   make ab-detect                  # A/B đường tiền xử lý detection (CLAHE) trên frame thật
 #   make ab-detect AB_ARGS="--candidate detect-scale --detect-scale 0.5 --iou-gate 0.95"
 ab-detect:
-	@$(PYX); python scripts/ab_detect.py $(AB_ARGS)
+	@$(PYX); cd server && python ../scripts/ab_detect.py $(AB_ARGS)
 
 test:
 	@$(PYX); cd server && python -m pytest app/tests -q --no-header -p no:cacheprovider

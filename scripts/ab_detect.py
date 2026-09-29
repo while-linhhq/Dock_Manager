@@ -40,7 +40,7 @@ from app.utils.port_config_runtime import (  # noqa: E402
 )
 
 FRAME_SUFFIXES = ('.png', '.jpg', '.jpeg')
-CANDIDATES = ('clahe-uint8', 'no-grayworld', 'detect-scale')
+CANDIDATES = ('clahe-uint8', 'no-grayworld', 'grayworld-fast', 'detect-scale')
 
 
 def _build_clahe_config(enable_gray_world: bool | None = None):
@@ -58,6 +58,37 @@ def _build_clahe_config(enable_gray_world: bool | None = None):
         tile_grid_size=config.tile_grid_size,
         enable_gray_world=enable_gray_world,
     )
+
+
+def _resolve_weights(model_path: str) -> tuple[str, str]:
+    """Chọn engine TRT nếu có, ngược lại dùng .pt.
+
+    Ưu tiên `resolve_yolo_weights` của app khi có (đường chạy thật); nếu bản checkout
+    chưa có hàm đó thì tự dò `.engine` cạnh file `.pt` để harness vẫn chạy được.
+    """
+    try:
+        from app.utils.ai.yolo_detector import resolve_yolo_weights
+    except ImportError:
+        resolve_yolo_weights = None
+    if resolve_yolo_weights is not None:
+        weights, kind = resolve_yolo_weights(model_path)
+        return str(weights), str(kind)
+    stem, ext = os.path.splitext(model_path)
+    engine = f'{stem}.engine'
+    if ext.lower() == '.engine' or not os.path.isfile(engine):
+        return model_path, (ext.lstrip('.').lower() or 'pt')
+    return engine, 'engine'
+
+
+def _distinct_frames(frames: list[np.ndarray]) -> int:
+    """Số frame thật sự khác nhau (cùng một ảnh copy nhiều bản chỉ tính 1)."""
+    import hashlib
+
+    seen = set()
+    for frame in frames:
+        small = cv2.resize(frame, (64, 64), interpolation=cv2.INTER_AREA)
+        seen.add(hashlib.sha1(small.tobytes()).hexdigest())
+    return len(seen)
 
 
 def _call_clahe(frame: np.ndarray, config, fast: bool) -> np.ndarray:
@@ -126,6 +157,9 @@ def _candidate_frames(name: str, frame: np.ndarray, config, detect_scale: float)
         return _call_clahe(frame, config, True), 1.0
     if name == 'no-grayworld':
         return _call_clahe(frame, _build_clahe_config(False), True), 1.0
+    if name == 'grayworld-fast':
+        # Đáng bật gray-world không: bản cũ float32 quá đắt, bản uint8 mới rẻ hơn nhiều.
+        return _call_clahe(frame, _build_clahe_config(True), True), 1.0
     if name == 'detect-scale':
         small = cv2.resize(frame, None, fx=detect_scale, fy=detect_scale, interpolation=cv2.INTER_AREA)
         return _call_clahe(small, config, True), 1.0 / detect_scale
@@ -158,15 +192,25 @@ def main() -> int:
     if not frames:
         raise SystemExit(f'Không có frame nào trong {args.frames_dir} (dùng --capture N để chụp từ camera)')
 
-    from app.utils.ai.yolo_detector import resolve_yolo_weights
     from ultralytics import YOLO
 
     model_path = effective_model_path()
     if not os.path.isabs(model_path):
         # Cấu hình lưu đường dẫn tương đối theo server/ (app luôn chạy với cwd=server).
         model_path = str(SERVER / model_path)
-    weights, weights_kind = resolve_yolo_weights(model_path)
+    weights, weights_kind = _resolve_weights(model_path)
     model = YOLO(weights)
+
+    def _run_baseline(src):
+        started = time.perf_counter()
+        boxes, confs = _detect(model, _call_clahe(src, config, False), conf=conf, imgsz=imgsz, device=device)
+        return boxes, confs, (time.perf_counter() - started) * 1000.0
+
+    def _run_candidate(src):
+        started = time.perf_counter()
+        image, factor = _candidate_frames(name, src, config, args.detect_scale)
+        boxes, confs = _detect(model, image, conf=conf, imgsz=imgsz, device=device)
+        return boxes * factor, confs, (time.perf_counter() - started) * 1000.0
 
     report: dict[str, dict] = {}
     for name in candidates:
@@ -174,17 +218,19 @@ def main() -> int:
         ious: list[float] = []
         conf_deltas: list[float] = []
         base_ms = cand_ms = 0.0
-        for frame in frames:
-            started = time.perf_counter()
-            base_img = _call_clahe(frame, config, False)
-            base_boxes, base_conf = _detect(model, base_img, conf=conf, imgsz=imgsz, device=device)
-            base_ms += (time.perf_counter() - started) * 1000.0
-
-            started = time.perf_counter()
-            cand_img, factor = _candidate_frames(name, frame, config, args.detect_scale)
-            cand_boxes, cand_conf = _detect(model, cand_img, conf=conf, imgsz=imgsz, device=device)
-            cand_ms += (time.perf_counter() - started) * 1000.0
-            cand_boxes = cand_boxes * factor
+        # Warmup: tránh tính phí "first touch" cho đường chạy trước.
+        _run_baseline(frames[0])
+        _run_candidate(frames[0])
+        for index, frame in enumerate(frames):
+            # Đổi thứ tự mỗi frame để độ trễ không bị thiên lệch về đường chạy trước.
+            if index % 2 == 0:
+                base_boxes, base_conf, base_dt = _run_baseline(frame)
+                cand_boxes, cand_conf, cand_dt = _run_candidate(frame)
+            else:
+                cand_boxes, cand_conf, cand_dt = _run_candidate(frame)
+                base_boxes, base_conf, base_dt = _run_baseline(frame)
+            base_ms += base_dt
+            cand_ms += cand_dt
 
             frame_ious, frame_deltas, only_a, only_b = match_boxes(
                 base_boxes, base_conf, cand_boxes, cand_conf
@@ -224,7 +270,20 @@ def main() -> int:
             'results': report,
         }, ensure_ascii=False, indent=2))
     else:
-        print(f'{len(frames)} frame · model {Path(str(weights)).name} · imgsz={imgsz} conf={conf} device={device}')
+        from app.utils.port_config_runtime import load_port_config_map
+
+        if not load_port_config_map():
+            print('  ⚠ Không đọc được port_configs trong DB → đang dùng mặc định .env,')
+            print('    KHÔNG phải cấu hình hiệu lực. Chạy qua `make ab-detect` (tự cd server).')
+        distinct = _distinct_frames(frames)
+        gray_note = 'ON' if config.enable_gray_world else 'OFF'
+        print(
+            f'{len(frames)} frame ({distinct} khác nhau) · model {Path(str(weights)).name}'
+            f' · imgsz={imgsz} conf={conf} device={device}'
+            f' · đường hiện tại: CLAHE gray-world={gray_note} (bản cũ float32)'
+        )
+        if distinct < 4:
+            print('  ⚠ quá ít frame khác nhau — kết quả chỉ mang tính tham khảo')
         print(f'cổng: IoU min ≥ {args.iou_gate} · conf lệch ≤ {args.conf_gate}')
         for name, row in report.items():
             verdict = '✓ ĐẠT' if row['passed'] else f"✗ KHÔNG ĐẠT ({', '.join(row['reasons'])})"
@@ -237,6 +296,9 @@ def main() -> int:
                 f' · {verdict}'
             )
 
+    if any('empty_scene' in row['reasons'] for row in report.values()):
+        print('  ✗ Bến trống: cả hai đường đều không có box → A/B không kết luận được.')
+        print('    Hãy chọn frame có tàu (--frames-dir) hoặc chờ có tàu rồi --capture N.')
     return 0 if all(row['passed'] for row in report.values()) else 1
 
 

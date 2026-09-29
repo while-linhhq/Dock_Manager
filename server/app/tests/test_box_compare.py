@@ -116,3 +116,18 @@ def test_match_boxes_handles_empty_inputs() -> None:
     assert ious == []
     assert conf_deltas == []
     assert (only_a, only_b) == (0, 0)
+
+
+def test_summarize_empty_scene_is_not_a_pass() -> None:
+    """Bến trống (0 box cả hai đường) không chứng minh được gì → không được ĐẠT."""
+    result = summarize(0, 0, [], [], 0, 0, iou_gate=0.98, conf_gate=0.03)
+
+    assert result['passed'] is False
+    assert 'empty_scene' in result['reasons']
+
+
+def test_summarize_all_matched_passes() -> None:
+    result = summarize(2, 2, [0.99, 0.995], [0.001, 0.002], 0, 0, iou_gate=0.98, conf_gate=0.03)
+
+    assert result['passed'] is True
+    assert result['reasons'] == []
