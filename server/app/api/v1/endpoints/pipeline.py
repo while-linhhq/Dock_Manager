@@ -330,6 +330,7 @@ async def get_status():
         "active_group_id": pipeline_service.active_group_id,
         "seam_anchor_active": pipeline_service.seam_anchor_verifier is not None,
         "gpu": gpu,
+        "detect_scale": pipeline_service.active_detect_scale,
         **pipeline_service.frame_stats_payload(),
     }
 

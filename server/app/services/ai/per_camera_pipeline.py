@@ -20,6 +20,7 @@ from app.services.ai.boundary_crossing import (
 )
 from app.services.ai.visual_ship_matching import aggregate_visual_hits
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
+from app.utils.ai.box_scale import pad_box, scale_boxes
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.detection_filter import (
     dedup_overlapping_boxes,
@@ -81,6 +82,8 @@ class PerCameraPipelineConfig:
     clahe_enable_gray_world: bool
     edge_zone_ratio: float
     clahe_fast: bool = True
+    detect_scale: float = 1.0
+    crop_pad_ratio: float = 0.05
     enable_visual_id: bool = False
     visual_interval_sec: float = 1.0
     visual_min_crop_area: int = 4096
@@ -210,6 +213,8 @@ class PerCameraPipeline(threading.Thread):
         self._fps_started_at: float | None = None
         self._frame_stats: FrameStats | None = frame_stats
         self._frame_stats_logged_at = 0.0
+        self._detect_scale = float(config.detect_scale or 1.0)
+        self._crop_pad_ratio = float(config.crop_pad_ratio or 0.0)
         self._last_ocr_ts = 0.0
         self._last_visual_ts = 0.0
         self._training_snapshot: TrainingSnapshotCollector | None = training_snapshot_collector
@@ -295,6 +300,29 @@ class PerCameraPipeline(threading.Thread):
         finally:
             self._stop_event.set()
 
+    def _detect_frame(self, raw_frame: np.ndarray) -> np.ndarray:
+        """Frame đưa vào CLAHE + detector; `detect_scale=1.0` thì dùng nguyên frame gốc."""
+        if self._detect_scale == 1.0:
+            return raw_frame
+        return cv2.resize(
+            raw_frame,
+            None,
+            fx=self._detect_scale,
+            fy=self._detect_scale,
+            interpolation=cv2.INTER_AREA,
+        )
+
+    def _crop_box_for_track(
+        self,
+        box: Any,
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int]:
+        """Box crop cho OCR/embedding; nới thêm khi detection chạy ở tỉ lệ nhỏ."""
+        if self._detect_scale != 1.0:
+            return pad_box(box, self._crop_pad_ratio, width, height)
+        return clamp_box(box, width, height)
+
     def _record_frame_stats(self) -> None:
         """Ghi nhận 1 frame và log fps định kỳ (chỉ đọc bộ đếm, không cấp phát)."""
         stats = self._frame_stats
@@ -331,9 +359,16 @@ class PerCameraPipeline(threading.Thread):
         *,
         captured_mono: float | None = None,
     ) -> None:
-        processed = preprocess_frame_clahe(raw_frame, self._clahe_config)
+        detect_frame = self._detect_frame(raw_frame)
+        processed = preprocess_frame_clahe(detect_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
+        if self._detect_scale != 1.0:
+            # Điểm quy đổi DUY NHẤT từ hệ toạ độ detect về hệ full-res.
+            boxes_list = [
+                [float(value) for value in box]
+                for box in scale_boxes(boxes_list, 1.0 / self._detect_scale)
+            ]
         boxes_list, det_confs = filter_boxes_by_min_size(
             boxes_list,
             det_confs,
@@ -564,7 +599,7 @@ class PerCameraPipeline(threading.Thread):
             )
             return
         height, width = frame.shape[:2]
-        x1, y1, x2, y2 = clamp_box(track.box, width, height)
+        x1, y1, x2, y2 = self._crop_box_for_track(track.box, width, height)
         crop = frame[y1:y2, x1:x2]
         embedding = self._embedding_extractor.extract(crop)
         motion_state = self._motion_classifier.classify(frame, track)

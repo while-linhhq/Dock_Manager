@@ -154,6 +154,7 @@ class PipelineService:
         self._latest_fused_lock = threading.Lock()
         self._latest_fused_bgr: Any = None
         self._frame_stats = FrameStats()
+        self._active_detect_scale: float = float(settings.DETECT_SCALE)
         self._media_sample_queue: queue.Queue[_MediaSampleJob | None] = queue.Queue(maxsize=5)
         self._media_sample_thread: threading.Thread | None = None
         self._primary_record_camera_id: int | None = None
@@ -469,6 +470,26 @@ class PipelineService:
             'clahe_fast': self._to_bool(
                 cfg_map.get('clahe_fast', ''),
                 bool(settings.CLAHE_FAST),
+            ),
+            'detect_scale': max(
+                0.1,
+                min(
+                    1.0,
+                    self._to_float(
+                        cfg_map.get('detect_scale', ''),
+                        float(settings.DETECT_SCALE),
+                    ),
+                ),
+            ),
+            'crop_pad_ratio': max(
+                0.0,
+                min(
+                    0.5,
+                    self._to_float(
+                        cfg_map.get('crop_pad_ratio', ''),
+                        float(settings.CROP_PAD_RATIO),
+                    ),
+                ),
             ),
             'fused_frame_max_width': max(
                 320,
@@ -1737,6 +1758,7 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
+        self._active_detect_scale = float(runtime_cfg['detect_scale'])
         self._apply_rtsp_decode_config(runtime_cfg)
 
         # Load detector if not loaded
@@ -2175,6 +2197,8 @@ class PipelineService:
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 clahe_enable_gray_world=runtime_cfg['clahe_enable_gray_world'],
                 clahe_fast=runtime_cfg['clahe_fast'],
+                detect_scale=runtime_cfg['detect_scale'],
+                crop_pad_ratio=runtime_cfg['crop_pad_ratio'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
                 enable_visual_id=visual_enabled,
                 visual_interval_sec=runtime_cfg['visual_id_interval_sec'],
@@ -2263,6 +2287,7 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
+        self._active_detect_scale = float(runtime_cfg['detect_scale'])
         self._apply_rtsp_decode_config(runtime_cfg)
 
         # Pre-warm GStreamer codec probe cache so per-camera pipelines open
@@ -2457,6 +2482,11 @@ class PipelineService:
     @property
     def gpu_status(self) -> dict[str, Any] | None:
         return self._gpu_status
+
+    @property
+    def active_detect_scale(self) -> float:
+        """Tỉ lệ frame đưa vào detector đang chạy (1.0 = nguyên frame)."""
+        return float(getattr(self, '_active_detect_scale', settings.DETECT_SCALE))
 
     def test_video_sync(
         self,

@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # Cân bằng sáng trên uint8 (~10× nhanh hơn bản float32, lệch trung bình ~1.3 mức).
     # Đặt false để quay lại đúng bản float32 cũ khi cần so sánh bitwise.
     CLAHE_FAST: bool = True
+    # Tỉ lệ frame đưa vào CLAHE + detector. 1.0 = nguyên frame gốc (mặc định).
+    # 0.5 = nhanh hơn nhiều nhưng box lệch nhẹ (đo được IoU min 0.963) → chỉ bật sau
+    # khi chạy `make ab-detect` trên chính camera đó và thấy ĐẠT.
+    DETECT_SCALE: float = 1.0
+    # Nới crop OCR/embedding thêm tỉ lệ này khi DETECT_SCALE < 1.0 (bù box lệch vài px).
+    CROP_PAD_RATIO: float = 0.05
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
     PREVIEW_MAX_WIDTH: int = 1280
