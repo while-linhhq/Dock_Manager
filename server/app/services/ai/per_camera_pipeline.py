@@ -73,6 +73,7 @@ class PerCameraPipelineConfig:
     clahe_tile_size: int
     clahe_enable_gray_world: bool
     edge_zone_ratio: float
+    clahe_fast: bool = True
     enable_visual_id: bool = False
     visual_interval_sec: float = 1.0
     visual_min_crop_area: int = 4096
@@ -168,6 +169,7 @@ class PerCameraPipeline(threading.Thread):
             clip_limit=config.clahe_clip_limit,
             tile_grid_size=config.clahe_tile_size,
             enable_gray_world=config.clahe_enable_gray_world,
+            fast=config.clahe_fast,
         )
         self._shared_ocr_queue = shared_ocr_queue
         self._ocr_queue: queue.Queue | None = None

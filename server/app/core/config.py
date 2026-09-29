@@ -22,9 +22,18 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
+    # Endpoint S3 tường minh. Trỏ MinIO local (mặc định) — đặt rỗng để dùng AWS thật.
+    # boto3 chỉ đọc biến môi trường, không đọc .env, nên s3_service truyền giá trị
+    # này vào client để chạy local không cần export gì thêm.
+    AWS_ENDPOINT_URL: str = "http://127.0.0.1:9100"
     
-    # Model settings
-    MODEL_PATH: str = "app/yolo11n.pt"
+    # Model settings — toàn bộ model AI nằm trong server/models/
+    # (xem scripts/export_engines.py để build lại engine trên từng máy)
+    MODEL_DIR: str = "models"
+    MODEL_PATH: str = "models/yolo/yolo26s_finetuned.pt"
+    # Ưu tiên TensorRT engine cùng tên (.pt → .engine) nếu có. Engine gắn cứng GPU
+    # arch + phiên bản TensorRT nên KHÔNG bê sang máy khác được → luôn có đường lùi .pt.
+    YOLO_PREFER_ENGINE: bool = True
     DEVICE: str = "0"
     CONF: float = 0.75
     YOLO_IMGSZ: int = 640
@@ -92,6 +101,9 @@ class Settings(BaseSettings):
     # Gray-world white balance before CLAHE (heaviest per-frame CPU step).
     # Toggle off to test whether YOLO still detects well without it.
     CLAHE_ENABLE_GRAY_WORLD: bool = True
+    # Cân bằng sáng trên uint8 (~10× nhanh hơn bản float32, lệch trung bình ~1.3 mức).
+    # Đặt false để quay lại đúng bản float32 cũ khi cần so sánh bitwise.
+    CLAHE_FAST: bool = True
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
     PREVIEW_MAX_WIDTH: int = 1280
@@ -110,6 +122,16 @@ class Settings(BaseSettings):
     OCR_AUDIT_ENABLE: bool = True
     OCR_AUDIT_SAVE_FRAMES: bool = True
     OCR_CONFIDENCE_THRESHOLD: float = 0.0
+    # PaddleOCR: dùng model cục bộ trong models/paddle_ocr/ thay vì tải về ~/.paddlex.
+    # Rỗng = để PaddleX tự resolve/tải như cũ.
+    PADDLE_OCR_DET_MODEL_DIR: str = "models/paddle_ocr/PP-OCRv6_medium_det"
+    PADDLE_OCR_REC_MODEL_DIR: str = "models/paddle_ocr/PP-OCRv6_medium_rec"
+    # TensorRT cho Paddle: Paddle tự build + cache engine con (run_mode=trt_fp16 hoặc
+    # trt_fp32), KHÔNG sinh file .engine. Mặc định TẮT: Paddle 3.3.0 lỗi ở converter TRT
+    # (paddle/tensorrt/impls/manipulation.py → stack_converter) khi convert model OCR,
+    # bật lên sẽ tốn ~1-2 phút rồi mới lùi về fp32. Xem scripts/probe_paddle_trt.py.
+    PADDLE_USE_TENSORRT: bool = False
+    PADDLE_TRT_PRECISION: str = "fp16"
     
     # Video record configuration
     RECORD_ENABLE: bool = True
@@ -158,7 +180,12 @@ class Settings(BaseSettings):
     VISUAL_MATCH_THRESHOLD: float = 0.55
     VISUAL_NO_OCR_MATCH_THRESHOLD: float = 0.55
     VISUAL_TOP_K: int = 20
+    # Rỗng = tự tìm trong models/dinov2/: <backbone>.engine (TensorRT) → .safetensors (timm)
     VISUAL_MODEL_PATH: str = ""
+    VISUAL_WEIGHTS_PATH: str = ""
+    VISUAL_ENGINE_PATH: str = ""
+    VISUAL_PREFER_ENGINE: bool = True
+    VISUAL_ENGINE_MAX_BATCH: int = 8
     VISUAL_BACKBONE: str = "vit_base_patch14_dinov2"
     VISUAL_EMBEDDING_DIM: int = 768
     VISUAL_IMAGE_SIZE: int = 224

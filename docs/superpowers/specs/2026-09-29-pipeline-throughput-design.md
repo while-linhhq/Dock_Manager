@@ -48,23 +48,25 @@ Phi mục tiêu (không làm trong spec này):
 
 ## 3. Nguyên nhân gốc
 
-`ClahePreprocessor._gray_world_balance()` chuyển **cả frame sang float32** rồi mới trả về, và hàm `preprocess_frame_clahe` đưa frame float32 đó vào `cv2.cvtColor(..., COLOR_BGR2LAB)`. Phân rã 133.9 ms:
+`ClahePreprocessor._gray_world_balance()` chuyển **cả frame sang float32** (44 MB cho frame 2560×1440) chỉ để tính mean 3 kênh rồi nhân lại và hạ về uint8. Đo lại phân rã `preprocess_frame_clahe` (20 vòng, frame camera 2560×1440):
 
 | Bước | Chi phí | Ghi chú |
 |---|---|---|
-| gray-world float32 (`astype` + reshape-mean + scale + clip + `astype`) | **84.6 ms** | 3 pass trên 44 MB |
-| `BGR2LAB` trên float32 | **19.1 ms** | trên uint8 chỉ **1.86 ms** |
-| `LAB2BGR` uint8 | 2.78 ms | |
-| `CLAHE.apply` kênh L | 1.45 ms | thuật toán thật rất rẻ |
-| `split` + `merge` | 0.52 ms | |
+| `_gray_world_balance` float32 (astype + reshape-mean + scale + clip + astype) | **83.5 ms** | **80 % tổng thời gian** |
+| `LAB2BGR` uint8 | 3.63 ms | |
+| `split` | 2.07 ms | |
+| `BGR2LAB` uint8 | 1.93 ms | (đường float32 mất 19.1 ms nhưng **không** nằm trên đường chạy thật) |
+| `CLAHE.apply` kênh L | 1.30 ms | thuật toán thật rất rẻ |
+| `merge` | 0.49 ms | |
+| **Tổng** | **≈ 104 ms** (dao động 104-137 ms tuỳ tải máy) | |
 
-Tức ~98 % thời gian là chi phí kỹ thuật (chọn kiểu dữ liệu), không phải thuật toán. CLAHE chỉ cấp cho **một** nơi dùng: `per_camera_pipeline.py:302` → `detector.predict_boxes`. OCR crop, overlay, media đều dùng `raw_frame` gốc, nên sửa CLAHE **không** ảnh hưởng OCR/overlay.
+Tức ~80 % thời gian nằm ở bước cân bằng sáng chọn kiểu dữ liệu sai, không phải thuật toán. CLAHE chỉ cấp cho **một** nơi dùng: `per_camera_pipeline.py:302` → `detector.predict_boxes`. OCR crop, overlay, media đều dùng `raw_frame` gốc, nên sửa CLAHE **không** ảnh hưởng OCR/overlay.
 
 ## 4. Phương án đã cân nhắc
 
 | | Phương án | Đo được | Quyết định |
 |---|---|---|---|
-| P1 | Sửa CLAHE sang uint8 (giữ nguyên hình học) + bỏ copy thừa + overlay đúng tỉ lệ + telemetry | CLAHE 134→31.7 ms; A/B: 8/8 box, IoU min **0.9950**, conf lệch max 0.0059; 137→54 ms/frame | **làm** |
+| P1 | Sửa CLAHE sang uint8 (giữ nguyên hình học) + bỏ copy thừa + overlay đúng tỉ lệ + telemetry | CLAHE 104→30.6 ms; `make ab-detect --candidate clahe-uint8`: 8→8 box, khớp 8, IoU min **0.9950**, conf lệch max 0.0059, 0 box lệch, **166→64 ms/frame** → ✓ ĐẠT | **làm** |
 | P2 | Hạ CLAHE+detection xuống `detect_scale` (mặc định 1.0) | CLAHE ở 1280×720 = 4.37 ms; A/B: 8/8 box, IoU min 0.9630, conf lệch max 0.0283; ~124→17 ms/frame | **làm, opt-in** |
 | P3 | Đẩy tiền xử lý lên GPU, zero-copy vào engine | tiết kiệm ~1-2 ms/frame sau khi có P1 | loại (YAGNI) |
 | — | Bỏ gray-world | IoU min 0.9705 | loại (dưới gate, lại mất cân bằng sáng) |
