@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 from datetime import date
 from typing import List, Optional
@@ -15,6 +15,7 @@ from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.services.storage.s3_service import parse_minio_uri
 from app.utils.media_token import build_media_view_url
+from app.utils.pagination import resolve_page, set_total_header
 from app.services.berth_limit_service import compute_detection_over_berth_limit
 from app.services.detection_camera_service import resolve_camera_in_out
 
@@ -91,8 +92,9 @@ def create_detection(
 @router.get('/', response_model=List[DetectionRead])
 def list_detections(
     request: Request,
+    response: Response,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 50,
     vessel_id: Optional[int] = None,
     ship_id: Optional[str] = None,
     event_date: Optional[date] = None,
@@ -101,6 +103,14 @@ def list_detections(
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
+    skip, limit = resolve_page(skip, limit)
+    total = detection_repo.count_filtered(
+        db,
+        vessel_id=vessel_id,
+        ship_id=ship_id,
+        event_date=event_date,
+    )
+    set_total_header(response, total)
     rows = detection_repo.get_all(
         db,
         skip=skip,

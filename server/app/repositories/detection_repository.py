@@ -1,5 +1,5 @@
 from datetime import date, datetime, time, timezone
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 from sqlalchemy import func
 from app.models.detection import Detection
 from app.models.vessel import Vessel
@@ -18,17 +18,20 @@ class DetectionRepository:
     def get_by_track_id(self, db: Session, track_id: str) -> Optional[Detection]:
         return db.query(Detection).filter(Detection.track_id == track_id).first()
 
-    def get_all(
+    def _filtered_query(
         self,
         db: Session,
-        skip: int = 0,
-        limit: int = 100,
+        *,
         vessel_id: Optional[int] = None,
         ship_id: Optional[str] = None,
         event_date: Optional[date] = None,
-    ) -> List[Detection]:
-        q = db.query(Detection).options(joinedload(Detection.vessel))
-        q = q.filter(Detection.deleted_at.is_(None))
+    ) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_all` và `count_filtered`.
+
+        Nhờ dùng chung một chỗ dựng query, `X-Total-Count` luôn khớp đúng tập
+        bản ghi mà danh sách trả về (kể cả khi bộ lọc đổi về sau).
+        """
+        q = db.query(Detection).filter(Detection.deleted_at.is_(None))
         if vessel_id is not None:
             q = q.filter(Detection.vessel_id == vessel_id)
         if ship_id:
@@ -44,7 +47,40 @@ class DetectionRepository:
                 func.coalesce(Detection.start_time, Detection.created_at) >= start_dt,
                 func.coalesce(Detection.start_time, Detection.created_at) <= end_dt,
             )
-        return q.order_by(Detection.created_at.desc()).offset(skip).limit(limit).all()
+        return q
+
+    def get_all(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        vessel_id: Optional[int] = None,
+        ship_id: Optional[str] = None,
+        event_date: Optional[date] = None,
+    ) -> List[Detection]:
+        return (
+            self._filtered_query(
+                db, vessel_id=vessel_id, ship_id=ship_id, event_date=event_date
+            )
+            .options(joinedload(Detection.vessel))
+            .order_by(Detection.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def count_filtered(
+        self,
+        db: Session,
+        *,
+        vessel_id: Optional[int] = None,
+        ship_id: Optional[str] = None,
+        event_date: Optional[date] = None,
+    ) -> int:
+        """Tổng số bản ghi khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(
+            db, vessel_id=vessel_id, ship_id=ship_id, event_date=event_date
+        ).count()
 
     def create(self, db: Session, data) -> Detection:
         payload = data.model_dump() if hasattr(data, 'model_dump') else dict(data)

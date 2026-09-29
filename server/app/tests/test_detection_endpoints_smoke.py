@@ -57,6 +57,9 @@ def client(monkeypatch):
         return SimpleNamespace(**vars(obj))
 
     monkeypatch.setattr(detections_module.detection_repo, 'get_all', lambda db, **kw: [_fresh(row)])
+    # `get_db` ở đây trả None nên count_filtered thật sẽ nổ khi gọi db.query;
+    # stub để smoke test vẫn đo được tầng route (200 + shape response).
+    monkeypatch.setattr(detections_module.detection_repo, 'count_filtered', lambda db, **kw: 1)
     monkeypatch.setattr(detections_module.detection_repo, 'get', lambda db, _id: _fresh(row))
     monkeypatch.setattr(
         detections_module.detection_media_repo,
