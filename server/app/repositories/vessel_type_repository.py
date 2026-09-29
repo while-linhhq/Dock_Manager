@@ -12,7 +12,8 @@ class VesselTypeRepository:
 
     def get_all(self, db: Session, skip: int = 0, limit: Optional[int] = None) -> List[VesselType]:
         """`limit=None` = không giới hạn (giữ hành vi cũ cho caller khác)."""
-        q = db.query(VesselType).offset(skip)
+        # Thứ tự xác định để phân trang không trả trùng/mất row.
+        q = db.query(VesselType).order_by(VesselType.id.asc()).offset(skip)
         if limit is not None:
             q = q.limit(limit)
         return q.all()

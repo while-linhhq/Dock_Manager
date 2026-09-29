@@ -27,7 +27,13 @@ class CameraRepository:
         active_only: bool = False,
     ) -> List[Camera]:
         """`limit=None` = không giới hạn (giữ hành vi cũ cho caller khác)."""
-        q = self._filtered_query(db, active_only=active_only).offset(skip)
+        q = (
+            self._filtered_query(db, active_only=active_only)
+            # Thứ tự xác định để phân trang không trả trùng/mất row; đặt ở đây
+            # (không đặt trong `_filtered_query`) để `count_all` không mang ORDER BY.
+            .order_by(Camera.id.asc())
+            .offset(skip)
+        )
         if limit is not None:
             q = q.limit(limit)
         return q.all()

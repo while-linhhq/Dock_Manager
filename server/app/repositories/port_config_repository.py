@@ -31,7 +31,7 @@ class PortConfigRepository:
         dựng map cấu hình, nên mặc định phải giữ nguyên hành vi cũ; endpoint danh
         mục truyền `limit` đã kẹp theo trần catalog.
         """
-        q = db.query(PortConfig).offset(skip)
+        q = db.query(PortConfig).order_by(PortConfig.id.asc()).offset(skip)
         if limit is not None:
             q = q.limit(limit)
         return q.all()

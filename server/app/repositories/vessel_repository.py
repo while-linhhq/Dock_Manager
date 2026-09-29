@@ -75,6 +75,8 @@ class VesselRepository:
                 db, active_only=active_only, classification=classification, q=q
             )
             .options(joinedload(Vessel.vessel_type))
+            # Tên tàu rồi id: thứ tự xác định cho phân trang và cho dropdown chọn tàu.
+            .order_by(Vessel.name.asc(), Vessel.id.asc())
             .offset(skip)
             .limit(limit)
             .all()

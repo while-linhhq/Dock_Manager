@@ -12,7 +12,8 @@ class RoleRepository:
 
     def get_all(self, db: Session, skip: int = 0, limit: Optional[int] = None) -> List[Role]:
         """`limit=None` = không giới hạn (giữ hành vi cũ cho caller khác)."""
-        q = db.query(Role).offset(skip)
+        # Thứ tự xác định để phân trang không trả trùng/mất row.
+        q = db.query(Role).order_by(Role.id.asc()).offset(skip)
         if limit is not None:
             q = q.limit(limit)
         return q.all()

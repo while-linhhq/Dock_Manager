@@ -29,6 +29,8 @@ class UserRepository:
         return (
             db.query(User)
             .options(joinedload(User.role))
+            # Thứ tự xác định để phân trang không trả trùng/mất row.
+            .order_by(User.id.asc())
             .offset(skip)
             .limit(limit)
             .all()

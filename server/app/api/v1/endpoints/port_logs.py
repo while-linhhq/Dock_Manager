@@ -1,18 +1,27 @@
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.port_log import PortLogCreate, PortLogRead
-from app.repositories.port_log_repository import port_log_repo
+from app.repositories.port_log_repository import DEFAULT_ORDER, DEFAULT_SORT, port_log_repo
 from app.services.outside_hours_stats_service import outside_hours_berth_summary
 from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 
 router = APIRouter()
+
+
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @router.get('/outside-hours-summary')
@@ -62,14 +71,55 @@ def list_port_logs(
     response: Response,
     skip: int = 0,
     limit: int = DEFAULT_PAGE_SIZE,
-    ship_id: Optional[str] = None,
-    log_date: Optional[date] = None,
+    ship_id: Optional[str] = Query(None, description='Khớp đúng mã tàu (`voted_ship_id`)'),
+    log_date: Optional[date] = Query(None, description='Một ngày lịch của `logged_at`'),
+    q: Optional[str] = Query(
+        None,
+        description='Tìm không phân biệt hoa thường trên nhãn tàu (`voted_ship_id`) và `track_id`',
+    ),
+    vessel_type_id: Optional[int] = Query(
+        None, description='Loại tàu, tra qua `vessels.ship_id` = `voted_ship_id`'
+    ),
+    min_confidence: Optional[float] = Query(
+        None, description='Độ tin cậy tối thiểu (0..1); thiếu confidence coi là 0'
+    ),
+    logged_from: Optional[datetime] = Query(
+        None, description='Instant UTC (ISO-8601) so với `logged_at`'
+    ),
+    logged_to: Optional[datetime] = Query(
+        None, description='Instant UTC (ISO-8601) so với `logged_at`'
+    ),
+    sort: str = Query(DEFAULT_SORT, description='time | voted_ship_id'),
+    order: str = Query(DEFAULT_ORDER, description='asc | desc'),
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
+    """Danh sách nhật ký cảng — 5 bộ lọc của trang thống kê chạy ở SQL.
+
+    Port `StatisticsView.tsx:34-61`: `q` (nhãn tàu hiển thị + `track_id`),
+    `vessel_type_id` (tra loại tàu theo `ship_id` của tàu), `logged_from`/
+    `logged_to` (instant UTC — client tự đổi khoảng ngày địa phương) và
+    `min_confidence` (thiếu confidence coi là 0). Hai tham số cũ `ship_id` (khớp
+    đúng mã tàu) và `log_date` (một ngày lịch) giữ nguyên ngữ nghĩa.
+
+    `sort` chỉ nhận `time` (mặc định, = `logged_at`) hoặc `voted_ship_id` — đúng
+    hai cột bấm sắp xếp được của bảng; giá trị lạ rơi về mặc định, không bao giờ
+    được nội suy vào SQL.
+    """
     skip, limit = resolve_page(skip, limit)
-    set_total_header(response, port_log_repo.count_logs(db, ship_id=ship_id, log_date=log_date))
-    return port_log_repo.get_all_logs(db, skip=skip, limit=limit, ship_id=ship_id, log_date=log_date)
+    filters = {
+        'ship_id': ship_id,
+        'log_date': log_date,
+        'q': q,
+        'vessel_type_id': vessel_type_id,
+        'min_confidence': min_confidence,
+        'logged_from': _as_utc(logged_from),
+        'logged_to': _as_utc(logged_to),
+        'sort': sort,
+        'order': order,
+    }
+    set_total_header(response, port_log_repo.count_logs(db, **filters))
+    return port_log_repo.get_all_logs(db, skip=skip, limit=limit, **filters)
 
 
 @router.get('/{log_id}', response_model=PortLogRead)
