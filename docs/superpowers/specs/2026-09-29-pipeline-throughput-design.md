@@ -119,7 +119,7 @@ Công cụ mới: `scripts/ab_detect.py` + `make ab-detect` — lấy N frame th
 
 Cổng:
 - **P1**: trên ≥8 frame thật **khác nhau** có tàu (≥2 camera), ở cả `conf=0.75` và `conf=0.25`: cùng số box, 0 box lệch, IoU min ≥ 0.98, conf lệch max ≤ 0.03.
-- **P1 hiệu năng**: CPU/frame của đường detection giảm ≥ 2× so với baseline (đo bằng harness), CPU backend khi chạy 2 camera < 60 %, và telemetry cho thấy **≥ 20 fps/camera** với luồng 25 fps (tức ≥ 80 % fps luồng; baseline hiện tại ≈ 2.5-3 fps).
+- **P1 hiệu năng**: CPU/frame của đường detection giảm ≥ 2× so với baseline (đo bằng harness): 166 → 64 ms/frame ✓. đo thật trên app: **5.0 fps/camera ở 2 camera**, đúng bằng `record_fps=5` trong DB — tức trước đây pipeline bị CPU chặn dưới mức cấu hình (~2.5-3 fps), nay chạm đúng mức cấu hình. Tiêu chí "≥ 20 fps/camera" ban đầu **không dùng được** vì `record_fps=5` và `FrameReaderThread` chặn theo `1/5 s`; muốn fps cao hơn phải nâng `record_fps` (quyết định sản phẩm: thêm detection/OCR/media mỗi giây). Khi nâng thử `record_fps=15`: CPU backend 140 % → 433 % nhưng fps/camera **vẫn ~5** → trần tiếp theo nằm ở coordinator của `GroupFrameHub` (fusion + preview + copy mỗi batch), không phải detector.
 - **P2**: cùng số box, IoU min ≥ 0.95, conf lệch max ≤ 0.05, và `detect_scale` vẫn mặc định 1.0 (không đổi hành vi nếu không bật).
 - **Không hồi quy**: `make test` (272+ test) pass, `make check` 32/32, `make verify-engines` đạt, `make bench` ghi lại số mới.
 - **Overlay**: unit test với frame tổng hợp + danh sách track cố định, khẳng định hình chữ nhật được vẽ đúng toạ độ theo tỉ lệ đích (sai số ≤1 px). Không so byte JPEG vì nét vẽ đổi độ dày theo tỉ lệ là chấp nhận được.
@@ -139,9 +139,18 @@ Cổng:
 | Bỏ copy gây vẽ đè lên frame nguồn (box lọt vào ảnh OCR/media) | Chỉ vẽ lên buffer mới tạo một lần; unit test khẳng định `raw_frame` không bị sửa sau `_process_frame` |
 | `detect_scale < 1.0` làm box lệch, cắt lẹm biển số | Mặc định 1.0; gate 0.95; `crop_pad_ratio`; cảnh báo trong status/log khi bật |
 | Telemetry thêm chi phí mỗi frame | Chỉ tăng bộ đếm số nguyên; log định kỳ 30 s, không format chuỗi mỗi frame |
-| Đổi overlay sang vẽ ở tỉ lệ đích làm nét vẽ khác trước | Chấp nhận (không ảnh hưởng nhận diện); unit test toạ độ; so 1 ảnh snapshot trước/sau khi nghiệm thu |
+| Đổi overlay sang vẽ ở tỉ lệ đích làm nét vẽ khác trước | **Hoãn, không làm trong đợt này**: đo được chỉ ~1.4 ms/frame nhưng phải sửa toạ độ/font/offset của 3 hàm vẽ; Task 3 chỉ thêm guard bỏ overlay khi không có consumer nên nét vẽ không đổi |
 
 Đường lùi tổng thể: mọi thay đổi hành vi đều nằm sau cờ cấu hình (`CLAHE_FAST`, `detect_scale`, `crop_pad_ratio`), tắt cờ là về hành vi hiện tại mà không cần sửa code; ngoài ra revert commit trên nhánh `feature/*`.
+
+## 12. Việc tiếp theo (phát hiện khi nghiệm thu, chưa làm)
+
+Số đo ở `record_fps=15` cho thấy trần fps hiện tại không còn ở detector mà ở vòng lặp khung:
+
+1. **Reader đọc rồi vứt frame** — `MultiFrameReaderThread.run()` đọc frame ở đầu vòng lặp rồi `continue` khi chưa tới nhịp phát (`multi_frame_reader.py:167-172`), không sleep; hub lại đặt `reader_fps = 2 × record_fps` nên ở `record_fps=15` mỗi reader kéo ~20 fps từ nguồn và vứt ~2/3. Bằng chứng: CPU backend 140 % → 433 % khi nâng `record_fps` 5 → 15 mà fps xử lý không đổi. Hướng sửa: sleep tới `next_emit` thay vì đọc lại.
+2. **Coordinator `GroupFrameHub` là trần thật** — mỗi batch còn: fuse 2 camera, vẽ overlay + boundary lên canvas, JPEG + push preview dashboard, `_last_aligned_batch` copy, và copy thêm một lần cho mỗi queue per-camera (`group_frame_hub.py:378-400`). Hướng sửa: bỏ copy thừa, chỉ dựng/encode preview khi có client WS đang mở.
+3. **`_enqueue_media_sample` copy canvas fused trước khi kiểm tra track CONFIRMED** (`pipeline_service.py:877-882`) — bỏ được khi không có track, cùng lập luận với ruling ở Task 3.
+
 
 ## 12. Kế hoạch thi công sơ bộ
 
