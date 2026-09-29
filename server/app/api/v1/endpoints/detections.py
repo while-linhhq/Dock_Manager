@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from app.db.session import get_db
@@ -89,6 +89,15 @@ def create_detection(
     return _detection_to_read(db, created, request=request)
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @router.get('/', response_model=List[DetectionRead])
 def list_detections(
     request: Request,
@@ -98,27 +107,47 @@ def list_detections(
     vessel_id: Optional[int] = None,
     ship_id: Optional[str] = None,
     event_date: Optional[date] = None,
+    q: Optional[str] = None,
+    is_accepted: Optional[bool] = None,
+    vessel_type_id: Optional[int] = None,
+    occurred_from: Optional[datetime] = None,
+    occurred_to: Optional[datetime] = None,
+    min_confidence: Optional[float] = None,
+    sort: str = 'time',
+    order: str = 'desc',
     include_over_berth_limit: bool = False,
     include_presigned_paths: bool = False,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
+    """Danh sách nhận diện — 7 bộ lọc của trang bến chạy ở SQL, kèm sắp xếp cột.
+
+    `q` tìm không phân biệt hoa thường trên nhãn tàu (ship_id / id OCR),
+    `track_id` và `vessel_id`; wildcard trong `q` bị escape.
+    `occurred_from`/`occurred_to` là instant UTC so với
+    `coalesce(start_time, created_at)`; `min_confidence` nhận 0..1.
+    `sort` chỉ nhận `time|ship_id|confidence|camera|status`, giá trị lạ rơi về
+    mặc định (không bao giờ được nội suy vào SQL).
+    """
     skip, limit = resolve_page(skip, limit)
-    total = detection_repo.count_filtered(
-        db,
-        vessel_id=vessel_id,
-        ship_id=ship_id,
-        event_date=event_date,
-    )
+    occurred_from = _as_utc(occurred_from)
+    occurred_to = _as_utc(occurred_to)
+    filters = {
+        'vessel_id': vessel_id,
+        'ship_id': ship_id,
+        'event_date': event_date,
+        'q': q,
+        'is_accepted': is_accepted,
+        'vessel_type_id': vessel_type_id,
+        'occurred_from': occurred_from,
+        'occurred_to': occurred_to,
+        'min_confidence': min_confidence,
+        'sort': sort,
+        'order': order,
+    }
+    total = detection_repo.count_filtered(db, **filters)
     set_total_header(response, total)
-    rows = detection_repo.get_all(
-        db,
-        skip=skip,
-        limit=limit,
-        vessel_id=vessel_id,
-        ship_id=ship_id,
-        event_date=event_date,
-    )
+    rows = detection_repo.get_all(db, skip=skip, limit=limit, **filters)
     camera_map = resolve_camera_in_out(db, [str(r.track_id or '') for r in rows])
     return [
         _detection_to_read(

@@ -2,12 +2,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session, joinedload
 from app.models.vessel import Vessel
+from app.utils.sql_filters import ilike_contains
 from typing import List, Optional
-
-
-def _escape_like(value: str) -> str:
-    """Escape wildcard của LIKE/ILIKE để `q` chỉ khớp đúng ký tự người dùng gõ."""
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 class VesselRepository:
@@ -56,11 +52,11 @@ class VesselRepository:
         if classification:
             query = query.filter(Vessel.classification == classification)
         if q and q.strip():
-            pattern = f'%{_escape_like(q.strip())}%'
+            needle = q.strip()
             query = query.filter(
                 or_(
-                    Vessel.ship_id.ilike(pattern, escape='\\'),
-                    Vessel.name.ilike(pattern, escape='\\'),
+                    ilike_contains(Vessel.ship_id, needle),
+                    ilike_contains(Vessel.name, needle),
                 )
             )
         return query
