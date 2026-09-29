@@ -41,11 +41,6 @@ from app.services.ai.training_snapshot_collector import (
     TrainingSnapshotConfig,
 )
 from app.services.ai.visual_id_worker import VisualQueueItem
-
-logger = logging.getLogger(__name__)
-
-# Nhịp ghi log fps/frame mỗi camera (giây) — rẻ vì chỉ đọc bộ đếm.
-FRAME_STATS_LOG_INTERVAL_SEC = 30.0
 from app.utils.ai.overlay import draw_berth_state_bbox_overlays, draw_ship_detection_overlay
 from app.utils.ai.pipeline_utils import (
     clamp_box,
@@ -58,6 +53,12 @@ from app.utils.ai.ship_id_recognizer import create_ship_id_recognizer
 _COLOR_TENTATIVE = (128, 128, 128)
 _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_LOST = (0, 165, 255)
+
+
+logger = logging.getLogger(__name__)
+
+# Nhịp ghi log fps/frame mỗi camera (giây) — rẻ vì chỉ đọc bộ đếm.
+FRAME_STATS_LOG_INTERVAL_SEC = 30.0
 
 
 @dataclass(frozen=True)
@@ -288,12 +289,11 @@ class PerCameraPipeline(threading.Thread):
                 if self._fps_started_at is None:
                     self._fps_started_at = time.time()
                 fps_est = self._frame_count / max(1e-6, time.time() - self._fps_started_at)
-                self._record_frame_stats()
+                started = time.perf_counter()
                 self._process_frame(raw_frame, fps_est, captured_mono=captured_mono)
+                self._record_frame_stats((time.perf_counter() - started) * 1000.0)
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).exception(
+            logger.exception(
                 'PerCameraPipeline crashed for camera_id=%s',
                 self.config.camera_id,
             )
@@ -312,6 +312,29 @@ class PerCameraPipeline(threading.Thread):
             interpolation=cv2.INTER_AREA,
         )
 
+    def _queue_boxes(
+        self,
+        tracks: list[TrackedBoat],
+        width: int,
+        height: int,
+    ) -> list[tuple[str, np.ndarray]]:
+        """Box đưa sang OCR/visual, khớp hệ toạ độ crop của embedding.
+
+        Khi `detect_scale < 1.0` box bị lệch vài px nên crop được nới thêm
+        `crop_pad_ratio` — nếu chỉ nới ở `_enrich_track` thì embedding trong pipeline
+        và embedding của visual worker sẽ khác nhau.
+        """
+        return [
+            (
+                track.track_id,
+                np.asarray(
+                    self._crop_box_for_track(track.box, width, height),
+                    dtype=np.float32,
+                ),
+            )
+            for track in tracks
+        ]
+
     def _crop_box_for_track(
         self,
         box: Any,
@@ -323,21 +346,24 @@ class PerCameraPipeline(threading.Thread):
             return pad_box(box, self._crop_pad_ratio, width, height)
         return clamp_box(box, width, height)
 
-    def _record_frame_stats(self) -> None:
-        """Ghi nhận 1 frame và log fps định kỳ (chỉ đọc bộ đếm, không cấp phát)."""
+    def _record_frame_stats(self, duration_ms: float | None = None) -> None:
+        """Ghi nhận 1 frame (kèm ms xử lý) và log định kỳ."""
         stats = self._frame_stats
         if stats is None:
             return
         camera_id = int(self.config.camera_id)
-        stats.record(camera_id)
+        stats.record(camera_id, duration_ms)
         now = time.time()
         if now - self._frame_stats_logged_at < FRAME_STATS_LOG_INTERVAL_SEC:
             return
         self._frame_stats_logged_at = now
+        fps = stats.fps(camera_id)
+        avg_ms = stats.avg_ms(camera_id)
         logger.info(
-            'camera %s: %s fps · %s frame đã xử lý (trung bình từ lúc chạy %.2f fps)',
+            'camera %s: %s fps · %s ms/frame · %s frame đã xử lý (trung bình từ lúc chạy %.2f fps)',
             camera_id,
-            f'{stats.fps(camera_id):.1f}' if stats.fps(camera_id) is not None else 'n/a',
+            f'{fps:.1f}' if fps is not None else 'n/a',
+            f'{avg_ms:.1f}' if avg_ms is not None else 'n/a',
             stats.totals().get(camera_id, 0),
             self._frame_count / max(1e-6, now - (self._fps_started_at or now)),
         )
@@ -363,11 +389,12 @@ class PerCameraPipeline(threading.Thread):
         processed = preprocess_frame_clahe(detect_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
-        if self._detect_scale != 1.0:
-            # Điểm quy đổi DUY NHẤT từ hệ toạ độ detect về hệ full-res.
+        if self._detect_scale != 1.0 and detect_frame.shape[1]:
+            # Điểm quy đổi DUY NHẤT từ hệ toạ độ detect về hệ full-res. Dùng tỉ lệ thật
+            # (cv2 làm tròn khi cạnh lẻ) thay vì hệ số danh nghĩa để mép ảnh không lệch px.
+            ratio = raw_frame.shape[1] / detect_frame.shape[1]
             boxes_list = [
-                [float(value) for value in box]
-                for box in scale_boxes(boxes_list, 1.0 / self._detect_scale)
+                [float(value) for value in box] for box in scale_boxes(boxes_list, ratio)
             ]
         boxes_list, det_confs = filter_boxes_by_min_size(
             boxes_list,
@@ -510,9 +537,7 @@ class PerCameraPipeline(threading.Thread):
                         tracked_boats,
                     )
                 except Exception:
-                    import logging
-
-                    logging.getLogger(__name__).exception(
+                    logger.exception(
                         'on_overlay_media_sample failed for camera_id=%s',
                         self.config.camera_id,
                     )
@@ -525,9 +550,7 @@ class PerCameraPipeline(threading.Thread):
                         boundary_crossings,
                     )
                 except Exception:
-                    import logging
-
-                    logging.getLogger(__name__).exception(
+                    logger.exception(
                         'on_boundary_media_sample failed for camera_id=%s',
                         self.config.camera_id,
                     )
@@ -639,9 +662,7 @@ class PerCameraPipeline(threading.Thread):
                 entry['time'] = time.time()
                 self._ocr_cache[ck] = entry
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).exception(
+            logger.exception(
                 'reid diagnose_track failed for camera_id=%s track_id=%s',
                 self.config.camera_id,
                 track.track_id,
@@ -684,7 +705,8 @@ class PerCameraPipeline(threading.Thread):
         if not confirmed:
             return
 
-        items = [(track.track_id, track.box.copy()) for track in confirmed]
+        height, width = frame.shape[:2]
+        items = self._queue_boxes(confirmed, width, height)
         if self._shared_ocr_queue is not None:
             put_queue_drop_oldest(
                 self._ocr_queue,
@@ -717,7 +739,8 @@ class PerCameraPipeline(threading.Thread):
         )
         if not confirmed:
             return
-        items = [(track.track_id, track.box.copy()) for track in confirmed]
+        height, width = frame.shape[:2]
+        items = self._queue_boxes(confirmed, width, height)
         put_queue_drop_oldest(
             self._visual_queue,
             VisualQueueItem(

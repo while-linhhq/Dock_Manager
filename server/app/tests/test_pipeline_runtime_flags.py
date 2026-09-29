@@ -144,6 +144,62 @@ def test_detect_scale_maps_boxes_back_to_full_res(monkeypatch) -> None:
     assert captured and captured[0] == [[200.0, 200.0, 400.0, 400.0]]
 
 
+class _SpyFrameStats:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def record(self, camera_id: int, duration_ms: float | None = None) -> None:
+        self.calls.append((camera_id, duration_ms))
+
+    def fps(self, camera_id: int):
+        return 5.0
+
+    def totals(self):
+        return {1: 3}
+
+    def avg_ms(self, camera_id: int):
+        return 12.5
+
+
+def test_record_frame_stats_passes_processing_time() -> None:
+    spy = _SpyFrameStats()
+    pipeline = _build_pipeline(_pipeline_config())
+    pipeline._frame_stats = spy
+
+    pipeline._record_frame_stats(12.5)
+
+    assert spy.calls == [(pipeline.config.camera_id, 12.5)]
+
+
+class _StubTrack:
+    def __init__(self, box) -> None:
+        self.track_id = 't1'
+        self.box = box
+
+
+def test_queue_boxes_pad_when_detect_scale_below_one() -> None:
+    import numpy as np
+
+    pipeline = _build_pipeline(_pipeline_config(detect_scale=0.5, crop_pad_ratio=0.5))
+    track = _StubTrack(np.array([40.0, 40.0, 50.0, 50.0], dtype=np.float32))
+
+    [(track_id, box)] = pipeline._queue_boxes([track], 100, 100)
+
+    assert track_id == 't1'
+    assert list(box) == [35.0, 35.0, 55.0, 55.0]
+
+
+def test_queue_boxes_clamp_at_scale_one() -> None:
+    import numpy as np
+
+    pipeline = _build_pipeline(_pipeline_config())
+    track = _StubTrack(np.array([-5.0, -5.0, 20.0, 20.0], dtype=np.float32))
+
+    [(_, box)] = pipeline._queue_boxes([track], 100, 100)
+
+    assert list(box) == [0.0, 0.0, 20.0, 20.0]
+
+
 def test_crop_box_clamps_at_scale_one() -> None:
     pipeline = _build_pipeline(_pipeline_config())
 
@@ -154,3 +210,67 @@ def test_crop_box_pads_when_scale_below_one() -> None:
     pipeline = _build_pipeline(_pipeline_config(detect_scale=0.5, crop_pad_ratio=0.5))
 
     assert pipeline._crop_box_for_track((40.0, 40.0, 50.0, 50.0), 100, 100) == (35, 35, 55, 55)
+
+
+class _Row:
+    def __init__(self, key: str, value: str) -> None:
+        self.key = key
+        self.value = value
+
+
+class _DummySession:
+    def close(self) -> None:
+        pass
+
+
+def _service_with_db_rows(monkeypatch, rows):
+    from app.services import pipeline_service as ps
+
+    monkeypatch.setattr(ps, 'SessionLocal', lambda: _DummySession())
+    monkeypatch.setattr(ps.port_config_repo, 'get_all', lambda db: rows)
+    return ps.PipelineService.__new__(ps.PipelineService)
+
+
+def test_runtime_flags_db_overrides_env_and_clamps(monkeypatch) -> None:
+    service = _service_with_db_rows(
+        monkeypatch,
+        [
+            _Row('clahe_fast', 'false'),
+            _Row('detect_scale', '0.25'),
+            _Row('crop_pad_ratio', '9'),
+        ],
+    )
+
+    cfg = service._load_runtime_config()
+
+    assert cfg['clahe_fast'] is False
+    assert cfg['detect_scale'] == 0.25
+    assert cfg['crop_pad_ratio'] == 0.5  # kẹp trần
+
+
+def test_runtime_flags_empty_db_uses_env_and_floor(monkeypatch) -> None:
+    from app.core.config import settings
+
+    service = _service_with_db_rows(monkeypatch, [_Row('detect_scale', '0.001')])
+
+    cfg = service._load_runtime_config()
+
+    assert cfg['clahe_fast'] is bool(settings.CLAHE_FAST)
+    assert cfg['detect_scale'] == 0.1  # kẹp sàn
+    assert cfg['crop_pad_ratio'] == float(settings.CROP_PAD_RATIO)
+
+
+def test_detect_scale_uses_actual_ratio_for_odd_sizes(monkeypatch) -> None:
+    import pytest
+
+    captured: list = []
+    detector = _FakeDetector(boxes=[[100.0, 100.0, 200.0, 200.0]])
+    pipeline = _build_pipeline_with_detector(_pipeline_config(detect_scale=0.5), detector)
+    monkeypatch.setattr(pipeline._tracker, 'update', lambda boxes, confs: captured.append(boxes) or [])
+
+    pipeline._process_frame(_frame(height=801, width=1201), 1.0)
+
+    detect_width = detector.frames[0].shape[1]
+    assert detect_width != 1201  # chắc chắn đã thu nhỏ
+    assert captured[0][0][0] == pytest.approx(100.0 * (1201 / detect_width))
+    assert captured[0][0][0] != pytest.approx(200.0)

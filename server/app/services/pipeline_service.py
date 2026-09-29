@@ -896,6 +896,9 @@ class PipelineService:
             'fps_per_camera': {
                 str(key): round(float(value), 2) for key, value in stats.snapshot().items()
             },
+            'process_ms_per_frame': {
+                str(key): round(float(value), 1) for key, value in stats.ms_snapshot().items()
+            },
         }
 
     def _enqueue_media_sample(
@@ -1758,7 +1761,10 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
-        self._active_detect_scale = float(runtime_cfg['detect_scale'])
+        # Chế độ 1 camera cổ điển chạy qua YoloWorkerThread — đường đó không thu nhỏ frame
+        # nên báo đúng là 1.0 dù cấu hình có đặt detect_scale.
+        self._active_detect_scale = 1.0
+        self._frame_stats.reset()
         self._apply_rtsp_decode_config(runtime_cfg)
 
         # Load detector if not loaded
@@ -2288,6 +2294,7 @@ class PipelineService:
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
         self._active_detect_scale = float(runtime_cfg['detect_scale'])
+        self._frame_stats.reset()
         self._apply_rtsp_decode_config(runtime_cfg)
 
         # Pre-warm GStreamer codec probe cache so per-camera pipelines open
