@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import List
@@ -7,6 +7,12 @@ from app.db.session import get_db
 from app.api.deps import get_current_user
 from app.schemas.user import UserCreate, UserRead, UserSelfUpdate, UserUpdate
 from app.repositories.user_repository import user_repo
+from app.utils.pagination import (
+    DEFAULT_CATALOG_LIMIT,
+    MAX_CATALOG_LIMIT,
+    resolve_page,
+    set_total_header,
+)
 from app.utils.security import hash_password
 
 router = APIRouter()
@@ -28,7 +34,15 @@ def _is_admin(user) -> bool:
 
 
 @router.get('/', response_model=List[UserRead])
-def list_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def list_users(
+    response: Response,
+    skip: int = 0,
+    limit: int = DEFAULT_CATALOG_LIMIT,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
+    set_total_header(response, user_repo.count_all(db))
     return user_repo.get_all(db, skip=skip, limit=limit)
 
 

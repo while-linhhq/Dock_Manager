@@ -1,5 +1,5 @@
 from datetime import date
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 from app.models.port_log import PortLog
 from typing import List, Optional
 
@@ -8,13 +8,40 @@ class PortLogRepository:
     def get(self, db: Session, log_id: int) -> Optional[PortLog]:
         return db.query(PortLog).filter(PortLog.id == log_id).first()
 
-    def get_all_logs(self, db: Session, skip: int = 0, limit: int = 100, ship_id: Optional[str] = None, log_date: Optional[date] = None) -> List[PortLog]:
+    def _filtered_query(
+        self,
+        db: Session,
+        *,
+        ship_id: Optional[str] = None,
+        log_date: Optional[date] = None,
+    ) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_all_logs` và `count_logs`."""
         q = db.query(PortLog)
         if ship_id:
             q = q.filter(PortLog.voted_ship_id == ship_id)
         if log_date:
             q = q.filter(PortLog.logged_at >= log_date, PortLog.logged_at < date.fromordinal(log_date.toordinal() + 1))
-        return q.order_by(PortLog.logged_at.desc()).offset(skip).limit(limit).all()
+        return q
+
+    def get_all_logs(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        ship_id: Optional[str] = None,
+        log_date: Optional[date] = None,
+    ) -> List[PortLog]:
+        return (
+            self._filtered_query(db, ship_id=ship_id, log_date=log_date)
+            .order_by(PortLog.logged_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def count_logs(self, db: Session, *, ship_id: Optional[str] = None, log_date: Optional[date] = None) -> int:
+        """Tổng số port-log khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(db, ship_id=ship_id, log_date=log_date).count()
 
     def get_logs_by_date(self, db: Session, log_date: date) -> List[PortLog]:
         from datetime import datetime, timedelta

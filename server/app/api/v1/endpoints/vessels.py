@@ -33,6 +33,12 @@ from app.services.storage.s3_service import (
     put_bytes,
 )
 from app.utils.media_token import build_media_view_url
+from app.utils.pagination import (
+    DEFAULT_CATALOG_LIMIT,
+    MAX_CATALOG_LIMIT,
+    resolve_page,
+    set_total_header,
+)
 
 _log = logging.getLogger(__name__)
 _PREVIEW_MAX_SIDE = 320
@@ -298,15 +304,28 @@ def normalize_vessel_classification_fields(
 
 @router.get('/', response_model=List[VesselRead])
 def list_vessels(
+    response: Response,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = DEFAULT_CATALOG_LIMIT,
     active_only: bool = False,
     classification: str | None = None,
+    q: str | None = None,
     db: Session = Depends(get_db),
 ):
     # classification: 'spot' | 'monthly' | 'unclassified' — lọc theo tab UI. None = tất cả.
+    # q: tìm theo ship_id hoặc tên tàu (không phân biệt hoa thường) cho dropdown chọn tàu.
+    skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
+    total = vessel_repo.count_filtered(
+        db, active_only=active_only, classification=classification, q=q
+    )
+    set_total_header(response, total)
     vessels = vessel_repo.get_all(
-        db, skip=skip, limit=limit, active_only=active_only, classification=classification
+        db,
+        skip=skip,
+        limit=limit,
+        active_only=active_only,
+        classification=classification,
+        q=q,
     )
     return vessels_to_read(db, vessels)
 

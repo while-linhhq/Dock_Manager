@@ -16,16 +16,29 @@ from app.repositories.camera_repository import camera_repo
 from app.services.ai.boundary_crossing import apply_boundary_lines_update
 from app.services.ai.detection_filter import apply_detection_settings_update
 from app.services.ai.multi_frame_reader import capture_snapshot
+from app.utils.pagination import (
+    DEFAULT_CATALOG_LIMIT,
+    MAX_CATALOG_LIMIT,
+    resolve_page,
+    set_total_header,
+)
 
 router = APIRouter()
 
 
 @router.get('/', response_model=List[CameraRead])
-def list_cameras(active_only: bool = False, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def list_cameras(
+    response: Response,
+    skip: int = 0,
+    limit: int = DEFAULT_CATALOG_LIMIT,
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
     """List all cameras."""
-    if active_only:
-        return camera_repo.get_active(db)
-    return camera_repo.get_all(db)
+    skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
+    set_total_header(response, camera_repo.count_all(db, active_only=active_only))
+    return camera_repo.get_all(db, skip=skip, limit=limit, active_only=active_only)
 
 
 @router.get('/{camera_id}/snapshot')

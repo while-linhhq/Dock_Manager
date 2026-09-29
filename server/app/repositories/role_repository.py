@@ -10,8 +10,16 @@ class RoleRepository:
     def get_by_name(self, db: Session, role_name: str) -> Optional[Role]:
         return db.query(Role).filter(Role.role_name == role_name).first()
 
-    def get_all(self, db: Session) -> List[Role]:
-        return db.query(Role).all()
+    def get_all(self, db: Session, skip: int = 0, limit: Optional[int] = None) -> List[Role]:
+        """`limit=None` = không giới hạn (giữ hành vi cũ cho caller khác)."""
+        q = db.query(Role).offset(skip)
+        if limit is not None:
+            q = q.limit(limit)
+        return q.all()
+
+    def count_all(self, db: Session) -> int:
+        """Tổng số role (trước khi phân trang) — khớp đúng tập `get_all` trả về."""
+        return db.query(Role).count()
 
     def update(self, db: Session, role_id: int, data: dict) -> Optional[Role]:
         db_obj = self.get(db, role_id)

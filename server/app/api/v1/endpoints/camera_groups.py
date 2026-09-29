@@ -25,6 +25,12 @@ from app.services.ai.multi_frame_reader import TimedFrame, capture_snapshot
 from app.services.editor_preview import editor_preview_manager
 from app.utils.ws_safe import SafeWebSocket, start_disconnect_watch, stop_disconnect_watch
 from app.services.fused_preview_worker import FusedPreviewWorker
+from app.utils.pagination import (
+    DEFAULT_CATALOG_LIMIT,
+    MAX_CATALOG_LIMIT,
+    resolve_page,
+    set_total_header,
+)
 
 router = APIRouter()
 
@@ -39,11 +45,18 @@ def _load_record_fps(db: Session) -> int:
 
 @router.get('/', response_model=list[CameraGroupRead])
 def list_camera_groups(
+    response: Response,
+    skip: int = 0,
+    limit: int = DEFAULT_CATALOG_LIMIT,
     active_only: bool = False,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    return camera_group_repo.get_all(db, active_only=active_only)
+    skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
+    set_total_header(response, camera_group_repo.count_all(db, active_only=active_only))
+    return camera_group_repo.get_all(
+        db, active_only=active_only, skip=skip, limit=limit
+    )
 
 
 @router.post('/', response_model=CameraGroupRead, status_code=201)

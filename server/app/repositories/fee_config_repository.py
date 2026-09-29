@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 from app.models.fee import FeeConfig
 from typing import List, Optional
 
@@ -12,11 +12,65 @@ class FeeConfigRepository:
             .first()
         )
 
-    def get_all(self, db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[FeeConfig]:
-        q = db.query(FeeConfig).options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
+    def _filtered_query(
+        self,
+        db: Session,
+        *,
+        active_only: bool = False,
+        vessel_id: Optional[int] = None,
+        vessel_type_id: Optional[int] = None,
+    ) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_all`/`get_by_*` và `count_filtered`.
+
+        Phạm vi phí là "hoặc tàu hoặc loại tàu", nên nhánh lọc nào cũng kèm điều
+        kiện `IS NULL` ở vế còn lại — giống hệt `get_by_vessel`/`get_by_vessel_type`.
+        """
+        q = db.query(FeeConfig)
+        if vessel_id is not None:
+            q = q.filter(FeeConfig.vessel_id == vessel_id, FeeConfig.vessel_type_id.is_(None))
+        elif vessel_type_id is not None:
+            q = q.filter(FeeConfig.vessel_type_id == vessel_type_id, FeeConfig.vessel_id.is_(None))
         if active_only:
             q = q.filter(FeeConfig.is_active == True)
-        return q.offset(skip).limit(limit).all()
+        return q
+
+    def get_all(
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        active_only: bool = False,
+        vessel_id: Optional[int] = None,
+        vessel_type_id: Optional[int] = None,
+    ) -> List[FeeConfig]:
+        return (
+            self._filtered_query(
+                db,
+                active_only=active_only,
+                vessel_id=vessel_id,
+                vessel_type_id=vessel_type_id,
+            )
+            .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def count_filtered(
+        self,
+        db: Session,
+        *,
+        active_only: bool = False,
+        vessel_id: Optional[int] = None,
+        vessel_type_id: Optional[int] = None,
+    ) -> int:
+        """Tổng số fee config khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(
+            db,
+            active_only=active_only,
+            vessel_id=vessel_id,
+            vessel_type_id=vessel_type_id,
+        ).count()
 
     def get_by_ids(self, db: Session, fee_ids: List[int]) -> List[FeeConfig]:
         if not fee_ids:
@@ -35,31 +89,21 @@ class FeeConfigRepository:
         self, db: Session, vessel_type_id: int, *, active_only: bool = True
     ) -> List[FeeConfig]:
         """Fee config gắn theo loại tàu — đường chính cho tàu tháng (monthly)."""
-        q = (
-            db.query(FeeConfig)
-            .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
-            .filter(
-                FeeConfig.vessel_type_id == vessel_type_id,
-                FeeConfig.vessel_id.is_(None),
+        return (
+            self._filtered_query(
+                db, vessel_type_id=vessel_type_id, active_only=active_only
             )
+            .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
+            .all()
         )
-        if active_only:
-            q = q.filter(FeeConfig.is_active == True)
-        return q.all()
 
     def get_by_vessel(self, db: Session, vessel_id: int, *, active_only: bool = True) -> List[FeeConfig]:
         """Fee config gắn trực tiếp mã tàu (thay cho resolve theo loại tàu)."""
-        q = (
-            db.query(FeeConfig)
+        return (
+            self._filtered_query(db, vessel_id=vessel_id, active_only=active_only)
             .options(joinedload(FeeConfig.vessel_type), joinedload(FeeConfig.vessel))
-            .filter(
-                FeeConfig.vessel_id == vessel_id,
-                FeeConfig.vessel_type_id.is_(None),
-            )
+            .all()
         )
-        if active_only:
-            q = q.filter(FeeConfig.is_active == True)
-        return q.all()
 
     def create(self, db: Session, data: dict) -> FeeConfig:
         db_obj = FeeConfig(**data)

@@ -34,6 +34,10 @@ class UserRepository:
             .all()
         )
 
+    def count_all(self, db: Session) -> int:
+        """Tổng số user (trước khi phân trang) — khớp đúng tập `get_all` trả về."""
+        return db.query(User).count()
+
     def create(self, db: Session, username: str, hashed_password: str, **kwargs) -> User:
         db_user = User(username=username, hashed_password=hashed_password, **kwargs)
         db.add(db_user)

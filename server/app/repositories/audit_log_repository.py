@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 from sqlalchemy.orm import joinedload
 from app.models.audit_log import AuditLog
 from typing import List, Optional
@@ -15,15 +15,35 @@ class AuditLogRepository:
         db.refresh(db_log)
         return db_log
 
-    def get_by_user(self, db: Session, user_id: Optional[int] = None, limit: int = 100) -> List[AuditLog]:
+    def _filtered_query(self, db: Session, *, user_id: Optional[int] = None) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_by_user` và `count_by_user`."""
         q = (
             db.query(AuditLog)
-            .options(joinedload(AuditLog.user))
             .filter(~AuditLog.action.in_(_AUDIT_LIST_SKIP_ACTIONS))
         )
         if user_id is not None:
             q = q.filter(AuditLog.user_id == user_id)
-        return q.order_by(AuditLog.created_at.desc()).limit(limit).all()
+        return q
+
+    def get_by_user(
+        self,
+        db: Session,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+        skip: int = 0,
+    ) -> List[AuditLog]:
+        return (
+            self._filtered_query(db, user_id=user_id)
+            .options(joinedload(AuditLog.user))
+            .order_by(AuditLog.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def count_by_user(self, db: Session, *, user_id: Optional[int] = None) -> int:
+        """Tổng số audit-log khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(db, user_id=user_id).count()
 
 
 audit_log_repo = AuditLogRepository()

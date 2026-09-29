@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -10,6 +10,7 @@ from app.api.deps import get_current_user
 from app.schemas.port_log import PortLogCreate, PortLogRead
 from app.repositories.port_log_repository import port_log_repo
 from app.services.outside_hours_stats_service import outside_hours_berth_summary
+from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 
 router = APIRouter()
 
@@ -58,13 +59,16 @@ def create_port_log(
 
 @router.get('/', response_model=List[PortLogRead])
 def list_port_logs(
+    response: Response,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = DEFAULT_PAGE_SIZE,
     ship_id: Optional[str] = None,
     log_date: Optional[date] = None,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
+    skip, limit = resolve_page(skip, limit)
+    set_total_header(response, port_log_repo.count_logs(db, ship_id=ship_id, log_date=log_date))
     return port_log_repo.get_all_logs(db, skip=skip, limit=limit, ship_id=ship_id, log_date=log_date)
 
 

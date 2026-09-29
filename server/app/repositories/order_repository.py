@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timezone
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 from app.models.order import Order
 from typing import List, Optional
 
@@ -38,11 +38,30 @@ class OrderRepository:
                 return cand
         raise RuntimeError('Could not allocate unique order_number')
 
-    def get_all(self, db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None) -> List[Order]:
-        q = db.query(Order).options(joinedload(Order.vessel))
+    def _filtered_query(self, db: Session, *, status: Optional[str] = None) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_all` và `count_filtered`.
+
+        Nhờ dùng chung một chỗ dựng query, `X-Total-Count` luôn khớp đúng tập bản
+        ghi mà danh sách trả về (kể cả khi bộ lọc đổi về sau).
+        """
+        q = db.query(Order)
         if status:
             q = q.filter(Order.status == status)
-        return q.order_by(Order.created_at.desc()).offset(skip).limit(limit).all()
+        return q
+
+    def get_all(self, db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None) -> List[Order]:
+        return (
+            self._filtered_query(db, status=status)
+            .options(joinedload(Order.vessel))
+            .order_by(Order.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def count_filtered(self, db: Session, *, status: Optional[str] = None) -> int:
+        """Tổng số đơn khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(db, status=status).count()
 
     def count_by_status(self, db: Session, status: str) -> int:
         return int(

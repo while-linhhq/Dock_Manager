@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -13,6 +13,7 @@ from app.schemas.order import (
 )
 from app.repositories.order_repository import order_repo
 from app.services.order_invoice_service import ensure_invoice_for_order
+from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 
 router = APIRouter()
 
@@ -30,8 +31,16 @@ def _prepare_create_payload(data: OrderCreate, db: Session, user_id: int) -> dic
 
 
 @router.get('/', response_model=List[OrderRead])
-def list_orders(skip: int = 0, limit: int = 100, status: Optional[str] = None, db: Session = Depends(get_db)):
+def list_orders(
+    response: Response,
+    skip: int = 0,
+    limit: int = DEFAULT_PAGE_SIZE,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     norm = normalize_order_status(status) if status else None
+    skip, limit = resolve_page(skip, limit)
+    set_total_header(response, order_repo.count_filtered(db, status=norm))
     return order_repo.get_all(db, skip=skip, limit=limit, status=norm)
 
 

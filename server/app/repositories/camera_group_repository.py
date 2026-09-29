@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Optional, Sequence
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 
 from app.models.camera_group import CameraGroup, CameraGroupMember
 from app.schemas.camera_group import CameraGroupCreate, CameraGroupUpdate
@@ -17,13 +17,34 @@ class CameraGroupRepository:
             .first()
         )
 
-    def get_all(self, db: Session, active_only: bool = False) -> list[CameraGroup]:
-        query = db.query(CameraGroup).options(
-            joinedload(CameraGroup.members).joinedload(CameraGroupMember.camera)
-        )
+    def _filtered_query(self, db: Session, *, active_only: bool = False) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_all` và `count_all`."""
+        query = db.query(CameraGroup)
         if active_only:
             query = query.filter(CameraGroup.is_active.is_(True))
-        return query.order_by(CameraGroup.id.desc()).all()
+        return query
+
+    def get_all(
+        self,
+        db: Session,
+        active_only: bool = False,
+        skip: int = 0,
+        limit: Optional[int] = None,
+    ) -> list[CameraGroup]:
+        """`limit=None` = không giới hạn (giữ hành vi cũ cho caller khác)."""
+        query = (
+            self._filtered_query(db, active_only=active_only)
+            .options(joinedload(CameraGroup.members).joinedload(CameraGroupMember.camera))
+            .order_by(CameraGroup.id.desc())
+            .offset(skip)
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
+
+    def count_all(self, db: Session, *, active_only: bool = False) -> int:
+        """Tổng số nhóm camera khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(db, active_only=active_only).count()
 
     def create(
         self,
