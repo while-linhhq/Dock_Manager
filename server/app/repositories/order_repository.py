@@ -1,7 +1,7 @@
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, case, cast, func, or_
+from sqlalchemy import Date, String, case, cast, func, or_
 from sqlalchemy.orm import Query, Session, joinedload
 from app.models.order import Order
 from app.models.vessel import Vessel
@@ -228,6 +228,29 @@ class OrderRepository:
                 sort=sort,
                 order=order,
             )
+            # Đếm không cần thứ tự.
+            .order_by(None)
+            .count()
+        )
+
+    def count_created_on(
+        self,
+        db: Session,
+        day: date,
+        *,
+        status: Optional[str] = None,
+    ) -> int:
+        """Số đơn tạo trong ngày `day`, tuỳ chọn lọc thêm theo `status`.
+
+        Dùng chung `_filtered_query` để bộ lọc `status` luôn khớp danh sách đơn.
+        `cast(created_at, Date)` giữ nguyên ngữ nghĩa cũ `created_at.date() ==
+        date.today()`: row có `created_at IS NULL` cho NULL nên không được đếm,
+        và không có quy đổi timezone nào ở đây. `status` so khớp tuyệt đối, đúng
+        như `order.status == 'COMPLETED'` của bản cũ.
+        """
+        return (
+            self._filtered_query(db, status=status)
+            .filter(cast(Order.created_at, Date) == day)
             # Đếm không cần thứ tự.
             .order_by(None)
             .count()

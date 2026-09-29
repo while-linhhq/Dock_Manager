@@ -37,12 +37,12 @@ def get_system_overview(db: Session = Depends(get_db), _=Depends(get_current_use
 def get_dashboard_stats(db: Session = Depends(get_db), _=Depends(get_current_user)):
     today = date.today()
 
-    total_vessels = len(vessel_repo.get_all(db, limit=100000))
-    detections_today = detection_repo.get_all(db, limit=100000)
-    detections_today = [d for d in detections_today if d.created_at and d.created_at.date() == today]
-
-    orders_today = [o for o in order_repo.get_all(db, limit=100000) if o.created_at and o.created_at.date() == today]
-    completed_today = sum(1 for o in orders_today if o.status == 'COMPLETED')
+    # Tất cả chỉ số đều là COUNT ở SQL — không nạp bảng nào về Python. Ngữ nghĩa
+    # "hôm nay" giữ nguyên bản cũ: so phần ngày của `created_at` với ngày máy chủ,
+    # row có `created_at IS NULL` không được đếm.
+    total_vessels = vessel_repo.count_filtered(db)
+    total_detections_today = detection_repo.count_created_on(db, today)
+    completed_orders_today = order_repo.count_created_on(db, today, status='COMPLETED')
     pending_orders = order_repo.count_by_status(db, 'PENDING')
 
     unpaid_invoices = invoice_repo.count_unpaid(db)
@@ -50,13 +50,13 @@ def get_dashboard_stats(db: Session = Depends(get_db), _=Depends(get_current_use
     # Revenue from completed orders today (simplified: count * avg fee placeholder)
     total_revenue_today = Decimal('0')
 
-    active_cameras = len(camera_repo.get_active(db))
+    active_cameras = camera_repo.count_all(db, active_only=True)
 
     return DashboardStats(
         total_vessels=total_vessels,
-        total_detections_today=len(detections_today),
+        total_detections_today=total_detections_today,
         pending_orders=pending_orders,
-        completed_orders_today=completed_today,
+        completed_orders_today=completed_orders_today,
         total_revenue_today=total_revenue_today,
         unpaid_invoices=unpaid_invoices,
         active_cameras=active_cameras,

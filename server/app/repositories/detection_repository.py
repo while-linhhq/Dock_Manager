@@ -1,5 +1,5 @@
 from datetime import date, datetime, time, timezone
-from sqlalchemy import String, case, cast, func, or_, select
+from sqlalchemy import Date, String, case, cast, func, or_, select
 from sqlalchemy.orm import Query, Session, joinedload
 from app.models.boundary_crossing_event import BoundaryCrossingEvent
 from app.models.camera import Camera
@@ -292,6 +292,22 @@ class DetectionRepository:
                 order=order,
             )
             # Đếm không cần thứ tự (và bỏ luôn subquery camera nếu có).
+            .order_by(None)
+            .count()
+        )
+
+    def count_created_on(self, db: Session, day: date) -> int:
+        """Số detection tạo trong ngày `day` — đếm bằng COUNT, không nạp row.
+
+        Dùng chung `_filtered_query` nên vẫn loại row đã xoá mềm đúng như
+        `get_all`. `cast(created_at, Date)` giữ nguyên ngữ nghĩa cũ
+        `created_at.date() == date.today()`: row có `created_at IS NULL` cho NULL
+        nên không được đếm, và không có quy đổi timezone nào ở đây.
+        """
+        return (
+            self._filtered_query(db)
+            .filter(cast(Detection.created_at, Date) == day)
+            # Đếm không cần thứ tự.
             .order_by(None)
             .count()
         )
