@@ -30,9 +30,9 @@ from app.services.storage.minio_layout import visual_reference_preview_key
 from app.services.storage.s3_service import (
     get_object_bytes,
     parse_minio_uri,
-    presign_get,
     put_bytes,
 )
+from app.utils.media_token import build_media_view_url
 
 _log = logging.getLogger(__name__)
 _PREVIEW_MAX_SIDE = 320
@@ -155,7 +155,8 @@ def _resolve_preview_url(
         return _preview_api_path(vessel_id, point_id)
     if uri.startswith('minio://') or uri.startswith('s3://'):
         try:
-            url = presign_get(uri, ttl_seconds=600)
+            # URL qua API (không phải presign MinIO trỏ 127.0.0.1) để trình duyệt ở xa mở được.
+            url = build_media_view_url(uri)
             if url:
                 return url
         except Exception:

@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from datetime import date
 from typing import List, Optional
@@ -13,22 +13,30 @@ from app.services.detection_cleanup_service import purge_detection_resources
 from app.services.detection_invoice_service import recompute_ai_invoice_for_detection
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
-from app.services.storage.s3_service import presign_get, parse_minio_uri
+from app.services.storage.s3_service import parse_minio_uri
+from app.utils.media_token import build_media_view_url
 from app.services.berth_limit_service import compute_detection_over_berth_limit
 from app.services.detection_camera_service import resolve_camera_in_out
 
 router = APIRouter()
 
 
-def _with_presigned_detection_paths(obj):
+def _with_media_view_paths(obj, request):
+    """Đổi minio://... thành URL xem được trên trình duyệt (qua chính origin API).
+
+    Trước đây là presign của MinIO — URL đó trỏ thẳng ``MINIO_ENDPOINT``
+    (mặc định 127.0.0.1:9100) nên trình duyệt ở máy khác không mở được ảnh.
+    """
     for attr in ('audit_image_path', 'video_path'):
         raw = getattr(obj, attr, '') or ''
         if parse_minio_uri(raw) is None:
             continue
         try:
-            setattr(obj, attr, presign_get(raw, ttl_seconds=600) or raw)
+            url = build_media_view_url(raw, request=request)
         except Exception:
-            pass
+            url = None
+        if url:
+            setattr(obj, attr, url)
     return obj
 
 
@@ -50,11 +58,12 @@ def _detection_to_read(
     db: Session,
     obj,
     *,
+    request=None,
     include_over_berth_limit: bool = True,
     include_presigned_paths: bool = True,
     camera_map: Optional[dict] = None,
 ) -> DetectionRead:
-    row = _with_presigned_detection_paths(obj) if include_presigned_paths else obj
+    row = _with_media_view_paths(obj, request) if include_presigned_paths else obj
     payload = DetectionRead.model_validate(row)
     update = {'is_over_berth_limit': compute_detection_over_berth_limit(db, obj) if include_over_berth_limit else False}
     update.update(_camera_update(obj, camera_map))
@@ -63,6 +72,7 @@ def _detection_to_read(
 
 @router.post('/', response_model=DetectionRead, status_code=201)
 def create_detection(
+    request: Request,
     data: DetectionCreate,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
@@ -75,11 +85,12 @@ def create_detection(
     if detection_repo.get_by_track_id(db, tid):
         raise HTTPException(status_code=409, detail='track_id already exists')
     created = detection_repo.create(db, payload)
-    return _detection_to_read(db, created)
+    return _detection_to_read(db, created, request=request)
 
 
 @router.get('/', response_model=List[DetectionRead])
 def list_detections(
+    request: Request,
     skip: int = 0,
     limit: int = 100,
     vessel_id: Optional[int] = None,
@@ -103,6 +114,7 @@ def list_detections(
         _detection_to_read(
             db,
             row,
+            request=request,
             include_over_berth_limit=include_over_berth_limit,
             include_presigned_paths=include_presigned_paths,
             camera_map=camera_map,
@@ -112,16 +124,17 @@ def list_detections(
 
 
 @router.get('/{detection_id}', response_model=DetectionRead)
-def get_detection(detection_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def get_detection(detection_id: int, request: Request, db: Session = Depends(get_db), _=Depends(get_current_user)):
     obj = detection_repo.get(db, detection_id)
     if not obj:
         raise HTTPException(status_code=404, detail='Detection not found')
     camera_map = resolve_camera_in_out(db, [str(obj.track_id or '')])
-    return _detection_to_read(db, obj, camera_map=camera_map)
+    return _detection_to_read(db, obj, request=request, camera_map=camera_map)
 
 
 @router.post('/{detection_id}/verify', response_model=DetectionRead)
 def verify_detection(
+    request: Request,
     detection_id: int,
     data: DetectionVerify,
     db: Session = Depends(get_db),
@@ -136,11 +149,12 @@ def verify_detection(
     )
     if not updated:
         raise HTTPException(status_code=404, detail='Detection not found')
-    return _detection_to_read(db, updated)
+    return _detection_to_read(db, updated, request=request)
 
 
 @router.patch('/{detection_id}', response_model=DetectionRead)
 def update_detection(
+    request: Request,
     detection_id: int,
     data: DetectionUpdate,
     db: Session = Depends(get_db),
@@ -183,7 +197,7 @@ def update_detection(
 
     fresh = detection_repo.get(db, detection_id) or updated
     camera_map = resolve_camera_in_out(db, [str(fresh.track_id or '')])
-    return _detection_to_read(db, fresh, camera_map=camera_map)
+    return _detection_to_read(db, fresh, request=request, camera_map=camera_map)
 
 
 @router.delete('/{detection_id}', status_code=204)
@@ -194,14 +208,22 @@ def delete_detection(detection_id: int, db: Session = Depends(get_db), _=Depends
 
 
 @router.get('/{detection_id}/media', response_model=List[DetectionMediaRead])
-def get_detection_media(detection_id: int, db: Session = Depends(get_db), _=Depends(get_current_user)):
+def get_detection_media(
+    detection_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
     rows = detection_media_repo.get_by_detection(db, detection_id)
-    # If media is stored as minio://bucket/key, convert to a short-lived presigned URL for FE.
+    # minio://bucket/key -> URL qua API để trình duyệt (kể cả ở xa) mở được.
     for row in rows:
-        if parse_minio_uri(getattr(row, 'file_path', '') or '') is not None:
-            try:
-                row.file_path = presign_get(row.file_path, ttl_seconds=600) or row.file_path
-            except Exception:
-                # Keep original value if presign fails; FE will ignore unknown formats.
-                pass
+        raw = getattr(row, 'file_path', '') or ''
+        if parse_minio_uri(raw) is None:
+            continue
+        try:
+            url = build_media_view_url(raw, request=request)
+        except Exception:
+            url = None
+        if url:
+            row.file_path = url
     return rows

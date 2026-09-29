@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # boto3 chỉ đọc biến môi trường, không đọc .env, nên s3_service truyền giá trị
     # này vào client để chạy local không cần export gì thêm.
     AWS_ENDPOINT_URL: str = "http://127.0.0.1:9100"
+    # Base công khai để dựng URL media mở được từ trình duyệt ở xa (ảnh đối chiếu,
+    # video). Để trống thì lấy ZALO_PUBLIC_BASE_URL, rồi mới tới origin của request.
+    PUBLIC_BASE_URL: str = ""
     
     # Model settings — toàn bộ model AI nằm trong server/models/
     # (xem scripts/export_engines.py để build lại engine trên từng máy)
