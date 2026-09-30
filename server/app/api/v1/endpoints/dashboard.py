@@ -41,7 +41,7 @@ def get_system_overview(db: Session = Depends(get_db), _=Depends(get_current_use
 
 @router.get('/detection-analytics', response_model=DashboardDetectionAnalyticsRead)
 def get_detection_analytics(
-    period: Literal['day', 'week', 'month'] = Query('day'),
+    period: Literal['day', 'week', 'month', 'year'] = Query('day'),
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
@@ -50,6 +50,9 @@ def get_detection_analytics(
     Endpoint chỉ kiểm tra tham số rồi gọi service — không có SQL ở đây. Xem
     `app/services/dashboard_analytics_service.py` để biết cửa sổ thời gian:
     `by_hour` cố định 24 giờ gần nhất, ba tổng hợp còn lại theo `period`.
+
+    Bộ giá trị `period` khớp `/dashboard/summary` (`day` | `month` | `year`) và có
+    thêm `week`; `year` là nhánh Task 18 thêm để nút "Năm" của client không 422.
     """
     return build_detection_analytics(db, period)
 

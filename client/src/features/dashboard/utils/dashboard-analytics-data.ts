@@ -1,107 +1,79 @@
-import type { DashboardStats, DetectionRead } from '../../../types/api.types';
-import { parseApiDate } from '../../../utils/date-time';
-import { getDetectionShipLabel } from '../../../utils/detection-display';
+import type {
+  DashboardStats,
+  DetectionAnalyticsAcceptance,
+  DetectionAnalyticsBucket,
+  DetectionAnalyticsHour,
+  DetectionAnalyticsShip,
+} from '../../../types/api.types';
 
-/** 24 khung giờ kết thúc tại giờ hiện tại (local), đếm detection theo start_time/created_at. */
-export function buildDetectionsByHourLast24h(detections: DetectionRead[]): {
+/**
+ * Nhãn tiếng Việt của donut "Trạng thái duyệt" — GIỮ NGUYÊN chuỗi đang hiển thị,
+ * đúng thứ tự cũ (`buildAcceptanceSplit`) và đúng thứ tự khóa API trả về:
+ * `accepted` → 'Đã xác nhận', `rejected` → 'Chưa xác nhận', `pending` → 'Chưa gán'.
+ */
+export const ACCEPTANCE_LABELS = ['Đã xác nhận', 'Chưa xác nhận', 'Chưa gán'] as const;
+
+/**
+ * Trục giờ của biểu đồ "24 giờ qua" (cửa sổ cuộn cố định, không theo kỳ).
+ *
+ * `by_hour[].hour` là instant **UTC**; nhãn trục của biểu đồ là giờ **địa phương**
+ * (bản cũ `buildDetectionsByHourLast24h` dùng `t.getHours()`), nên phải đi qua
+ * `new Date(hour)` — KHÔNG được cắt chuỗi ISO rồi coi như giờ địa phương, nếu không
+ * người dùng UTC+7 sẽ thấy biểu đồ lệch 7 tiếng mà trông vẫn hợp lý.
+ */
+export function buildHourAxisFromAnalytics(
+  points?: DetectionAnalyticsHour[] | null,
+): {
   categories: string[];
   data: number[];
 } {
-  const now = Date.now();
-  const slotMs = 60 * 60 * 1000;
-  const slotStart = new Date(now);
-  slotStart.setMinutes(0, 0, 0);
-  slotStart.setMilliseconds(0);
-  const start = slotStart.getTime() - 23 * slotMs;
-
-  const categories: string[] = [];
-  const data = new Array(24).fill(0);
-  for (let i = 0; i < 24; i++) {
-    const t = new Date(start + i * slotMs);
-    categories.push(
-      `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`,
-    );
-  }
-
-  for (const d of detections) {
-    const raw = d.start_time ?? d.created_at;
-    if (!raw) {
-      continue;
-    }
-    const parsed = parseApiDate(raw);
-    const ts = parsed ? parsed.getTime() : NaN;
-    if (Number.isNaN(ts) || ts < start || ts > now + slotMs) {
-      continue;
-    }
-    const idx = Math.floor((ts - start) / slotMs);
-    if (idx >= 0 && idx < 24) {
-      data[idx] += 1;
-    }
-  }
-
-  return { categories, data };
-}
-
-export function buildTopShipCounts(
-  detections: DetectionRead[],
-  topN = 8,
-): { labels: string[]; counts: number[] } {
-  const m = new Map<string, number>();
-  for (const d of detections) {
-    const k = getDetectionShipLabel(d);
-    m.set(k, (m.get(k) ?? 0) + 1);
-  }
-  const sorted = [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN);
   return {
-    labels: sorted.map(([k]) => k),
-    counts: sorted.map(([, v]) => v),
+    categories: (points ?? []).map((point) => {
+      const at = new Date(point.hour);
+      if (Number.isNaN(at.getTime())) {
+        // Dữ liệu hỏng: hiện nguyên chuỗi để lộ lỗi thay vì bịa ra một nhãn giờ.
+        return point.hour;
+      }
+      return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+    }),
+    data: (points ?? []).map((point) => Number(point.count)),
   };
 }
 
-export function buildAcceptanceSplit(detections: DetectionRead[]): {
+export function buildTopShipsFromAnalytics(
+  topShips?: DetectionAnalyticsShip[] | null,
+): {
   labels: string[];
-  series: number[];
+  counts: number[];
 } {
-  let yes = 0;
-  let no = 0;
-  let unk = 0;
-  for (const d of detections) {
-    if (d.is_accepted === true) {
-      yes += 1;
-    } else if (d.is_accepted === false) {
-      no += 1;
-    } else {
-      unk += 1;
-    }
-  }
   return {
-    labels: ['Đã xác nhận', 'Chưa xác nhận', 'Chưa gán'],
-    series: [yes, no, unk],
+    labels: (topShips ?? []).map((ship) => ship.label),
+    counts: (topShips ?? []).map((ship) => Number(ship.count)),
   };
 }
 
-export function buildConfidenceBuckets(detections: DetectionRead[]): {
+export function buildAcceptanceFromAnalytics(
+  acceptance?: DetectionAnalyticsAcceptance | null,
+): {
   labels: string[];
   series: number[];
 } {
-  const b = [0, 0, 0];
-  for (const d of detections) {
-    const c = d.confidence;
-    if (c == null || Number.isNaN(Number(c))) {
-      continue;
-    }
-    const n = Number(c);
-    if (n < 0.5) {
-      b[0] += 1;
-    } else if (n < 0.75) {
-      b[1] += 1;
-    } else {
-      b[2] += 1;
-    }
-  }
   return {
-    labels: ['< 50%', '50–75%', '≥ 75%'],
-    series: b,
+    labels: [...ACCEPTANCE_LABELS],
+    series: [acceptance?.accepted ?? 0, acceptance?.rejected ?? 0, acceptance?.pending ?? 0],
+  };
+}
+
+/** Nhãn bucket ('< 50%', '50–75%', '≥ 75%') do server trả — đi thẳng ra biểu đồ. */
+export function buildConfidenceFromAnalytics(
+  buckets?: DetectionAnalyticsBucket[] | null,
+): {
+  labels: string[];
+  series: number[];
+} {
+  return {
+    labels: (buckets ?? []).map((bucket) => bucket.bucket),
+    series: (buckets ?? []).map((bucket) => Number(bucket.count)),
   };
 }
 

@@ -74,6 +74,7 @@ export const DashboardView: React.FC = () => {
     stats,
     summary,
     summaryPeriod,
+    analytics,
     recentDetections,
     pipelineStatus,
     isLoading,
@@ -168,7 +169,7 @@ export const DashboardView: React.FC = () => {
 
       <DashboardAiFeedPanel
         pipelineStatus={pipelineStatus}
-        detections={recentDetections}
+        analytics={analytics}
         stats={stats}
         summary={summary}
         summaryPeriod={summaryPeriod}

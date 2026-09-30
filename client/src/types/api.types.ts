@@ -259,6 +259,35 @@ export type DashboardSummary = {
   boundary_out_counts?: number[];
 };
 
+/** Một khung giờ của biểu đồ "24 giờ qua" — `hour` là instant ISO-8601 **UTC**. */
+export type DetectionAnalyticsHour = { hour: string; count: number };
+
+/** Một nhãn tàu (`getDetectionShipLabel`) và số lượt trong kỳ. */
+export type DetectionAnalyticsShip = { label: string; count: number };
+
+/** Trạng thái duyệt: accepted = `is_accepted IS TRUE`, rejected = FALSE, pending = NULL. */
+export type DetectionAnalyticsAcceptance = {
+  accepted: number;
+  rejected: number;
+  pending: number;
+};
+
+/** Một bucket độ tin cậy — nhãn do server trả, đúng chuỗi client đang hiển thị. */
+export type DetectionAnalyticsBucket = { bucket: string; count: number };
+
+/**
+ * `GET /dashboard/detection-analytics` — nguồn số của bốn widget phân tích.
+ *
+ * `by_hour` luôn đủ 24 khung giờ gần nhất (cửa sổ cuộn, KHÔNG theo `period`);
+ * `top_ships` / `acceptance` / `confidence_buckets` theo kỳ đã chọn.
+ */
+export type DashboardDetectionAnalytics = {
+  by_hour: DetectionAnalyticsHour[];
+  top_ships: DetectionAnalyticsShip[];
+  acceptance: DetectionAnalyticsAcceptance;
+  confidence_buckets: DetectionAnalyticsBucket[];
+};
+
 export type BoundaryPoint = { x: number; y: number };
 
 export type BoundaryLines = {

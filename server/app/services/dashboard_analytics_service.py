@@ -11,7 +11,7 @@ Cửa sổ thời gian (quan trọng — hai nhóm khác nhau):
   tả "24 giờ qua"), KHÔNG phụ thuộc `period`. Bucket là giờ UTC đã cắt phút, tăng
   dần, luôn đủ 24 điểm kể cả khi không có row nào.
 - `top_ships`, `acceptance`, `confidence_buckets` theo `period` (`day` | `week` |
-  `month`) với **cùng quy ước như `/dashboard/summary`**: biên kỳ tính theo
+  `month` | `year`) với **cùng quy ước như `/dashboard/summary`**: biên kỳ tính theo
   Asia/Ho_Chi_Minh rồi quy về UTC, so nửa khoảng `[start, end)` trên `created_at`
   (row đã xoá mềm bị loại).
 
@@ -29,7 +29,10 @@ from app.repositories.detection_repository import detection_repo
 
 TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
-Period = Literal['day', 'week', 'month']
+# `year` được thêm ở Task 18: client có nút Ngày/Tháng/Năm (`DashboardPeriod`) và
+# `/dashboard/summary` nhận `year`, nên endpoint này phải nhận cùng bộ giá trị —
+# thiếu nhánh `year` thì tab "Năm" của dashboard sẽ 422.
+Period = Literal['day', 'week', 'month', 'year']
 
 # Số nhãn tàu tối đa của widget "Mã tàu xuất hiện nhiều" (top 8).
 TOP_SHIPS_LIMIT = 8
@@ -39,8 +42,10 @@ def period_bounds_utc(period: Period) -> Tuple[datetime, datetime]:
     """`(start_utc, end_utc)` của kỳ — biên theo giờ VN, nửa khoảng `[start, end)`.
 
     Cùng quy ước với `/dashboard/summary`: `day` = ngày dương lịch VN, `month` =
-    tháng dương lịch VN. `week` = tuần ISO bắt đầu Thứ Hai 00:00 giờ VN (dashboard
-    chưa có nút "tuần", nhưng cửa sổ này là phần giao diện của endpoint).
+    tháng dương lịch VN, `year` = năm dương lịch VN (01/01 00:00 → 01/01 năm sau,
+    đúng khuôn của `/dashboard/summary`). `week` = tuần ISO bắt đầu Thứ Hai 00:00
+    giờ VN (dashboard chưa có nút "tuần", nhưng cửa sổ này là phần giao diện của
+    endpoint).
     """
     now = datetime.now(TZ)
     if period == 'week':
@@ -54,6 +59,9 @@ def period_bounds_utc(period: Period) -> Tuple[datetime, datetime]:
             end_local = start_local.replace(year=start_local.year + 1, month=1)
         else:
             end_local = start_local.replace(month=start_local.month + 1)
+    elif period == 'year':
+        start_local = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local.replace(year=start_local.year + 1)
     else:
         start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end_local = start_local + timedelta(days=1)

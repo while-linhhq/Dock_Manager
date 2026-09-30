@@ -1,5 +1,6 @@
 import { httpClient } from '../../../services/httpClient';
 import type {
+  DashboardDetectionAnalytics,
   DashboardPeriod,
   DashboardStats,
   DashboardSummary,
@@ -28,23 +29,19 @@ export type PipelineStatus = {
 };
 
 /**
- * Cửa sổ nhận diện của dashboard — KHÔNG được cắt nhỏ tuỳ tiện.
+ * Cửa sổ nhận diện của dashboard — số dòng sidebar "Nhận diện gần đây" hiển thị.
  *
- * Sidebar chỉ hiện 18 dòng (`SIDEBAR_LIMIT` trong `DashboardRecentDetectionsSidebar`)
- * nhưng mảng này còn là nguồn số của các widget phân tích trong
- * `DashboardAiAnalyticsCharts`:
- * - `buildConfidenceBuckets` LUÔN tính trên đúng mảng này;
- * - `buildTopShipCounts` rơi về mảng này khi `summary.top_ship_labels` rỗng — đúng
- *   trường hợp kỳ `day` (kỳ mặc định khi mở dashboard) hiện nay;
- * - `buildDetectionsByHourLast24h` / `buildAcceptanceSplit` rơi về mảng này khi
- *   `/dashboard/summary` thiếu chuỗi tổng hợp.
- * Vì vậy 120 → 20 là hồi quy số liệu âm thầm, không phải tối ưu (số đo thật ở
- * `.superpowers/sdd/2026-09-30-pagination-dashboard-performance/task-15-report.md`).
- * 120 vẫn dưới trần 200 của API nên đạt mục tiêu "≤ 200 dòng/request"; muốn giảm
- * thật (120 dòng ≈ 10,6 MB, ~0,35–0,49 s) thì bốn widget phải đọc API tổng hợp
- * phía server (Task 17), không phải cắt cửa sổ ở client.
+ * 18 là ĐÚNG số dòng sidebar vẽ (`DashboardRecentDetectionsSidebar`), và cũng là cửa
+ * sổ duy nhất dashboard tải về. Bốn widget phân tích (biểu đồ 24 giờ, trạng thái
+ * duyệt, top tàu, phân bố độ tin cậy) đọc số tổng hợp từ
+ * `GET /dashboard/detection-analytics` — chúng KHÔNG còn đếm trên mảng này.
+ *
+ * Task 15 phải giữ 120 dòng vì lúc đó bốn widget tự đếm trên mảng (cắt xuống 18 là
+ * hồi quy số liệu âm thầm). Task 18 nối client sang API tổng hợp nên mới cắt được;
+ * 18 dòng vẫn mang `ocr_results` (đo trên DB thật: 2,27 MB, 99,5 % khối lượng) —
+ * phần băng thông đó là việc của Task 19.
  */
-export const DASHBOARD_DETECTIONS_WINDOW = 120;
+export const DASHBOARD_DETECTIONS_LIMIT = 18;
 
 export const dashboardApi = {
   getSummary: async (period: DashboardPeriod = 'day'): Promise<DashboardSummary> => {
@@ -53,8 +50,22 @@ export const dashboardApi = {
   getStats: async (): Promise<DashboardStats> => {
     return httpClient.get<DashboardStats>('/dashboard/stats');
   },
+  /**
+   * Bốn widget phân tích của dashboard, tổng hợp bằng aggregate ở SQL (Task 17).
+   *
+   * `period` là đúng `DashboardPeriod` của client (`day | month | year`) — endpoint
+   * có cả nhánh `year` như `/dashboard/summary` nên tab "Năm" không còn 422.
+   * `by_hour` trong response luôn là 24 giờ cuộn, không phụ thuộc `period`.
+   */
+  getDetectionAnalytics: async (
+    period: DashboardPeriod = 'day',
+  ): Promise<DashboardDetectionAnalytics> => {
+    return httpClient.get<DashboardDetectionAnalytics>(
+      `/dashboard/detection-analytics?period=${period}`,
+    );
+  },
   getRecentDetections: async (
-    limit: number = DASHBOARD_DETECTIONS_WINDOW,
+    limit: number = DASHBOARD_DETECTIONS_LIMIT,
   ): Promise<DetectionRead[]> => {
     return httpClient.get<DetectionRead[]>(`/detections/?limit=${limit}`);
   },

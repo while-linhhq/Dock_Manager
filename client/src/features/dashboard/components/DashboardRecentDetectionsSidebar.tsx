@@ -4,8 +4,7 @@ import type { DetectionRead } from '../../../types/api.types';
 import { cn } from '../../../utils/cn';
 import { formatDateTimeVN } from '../../../utils/date-time';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
-
-const SIDEBAR_LIMIT = 18;
+import { DASHBOARD_DETECTIONS_LIMIT } from '../services/dashboardApi';
 
 function formatShortDateTime(iso: string | null): string {
   return formatDateTimeVN(iso, {
@@ -26,8 +25,10 @@ export const DashboardRecentDetectionsSidebar: React.FC<DashboardRecentDetection
   detections,
   isLoading,
 }) => {
+  // Cùng một hằng số với request `/detections/?limit=…`: sidebar là cửa sổ duy nhất
+  // dashboard tải về, bốn widget phân tích đã đọc API tổng hợp riêng.
   const rows = useMemo(
-    () => detections.slice(0, SIDEBAR_LIMIT),
+    () => detections.slice(0, DASHBOARD_DETECTIONS_LIMIT),
     [detections],
   );
 

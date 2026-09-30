@@ -21,6 +21,9 @@ Ngữ nghĩa cửa sổ: `by_hour` LUÔN là 24 khung giờ gần nhất (không
 `top_ships`/`acceptance`/`confidence_buckets` theo `period` với cùng quy ước như
 `/dashboard/summary` (biên kỳ theo Asia/Ho_Chi_Minh, nửa khoảng `[start, end)` trên
 `created_at`).
+
+Task 18 thêm nhánh `year` (năm dương lịch VN) để client truyền thẳng `DashboardPeriod`
+(`day` | `month` | `year`) mà tab "Năm" không 422; `week` vẫn giữ nguyên.
 """
 from __future__ import annotations
 
@@ -101,6 +104,9 @@ def _expected_window_utc(period: str) -> tuple[datetime, datetime]:
             end_local = start_local.replace(year=start_local.year + 1, month=1)
         else:
             end_local = start_local.replace(month=start_local.month + 1)
+    elif period == 'year':
+        start_local = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local.replace(year=start_local.year + 1)
     else:
         start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
         end_local = start_local + timedelta(days=1)
@@ -424,7 +430,7 @@ def test_aggregates_match_client_builders_over_the_period_window(ctx) -> None:
     in_window_labels = _seed_equivalence_rows(session, now=now, tag=tag)
     assert in_window_labels > TOP_SHIPS_LIMIT
 
-    for period in ('day', 'week', 'month'):
+    for period in ('day', 'week', 'month', 'year'):
         body = _get_analytics(ctx.client, period)
         # Trục giờ lấy từ chính response để ca này không phụ thuộc việc test có chạy
         # vắt qua mốc giờ hay không (trục được kiểm riêng ở test phía trên).
@@ -594,6 +600,75 @@ def test_seeded_counts_are_exact_for_every_aggregate(ctx) -> None:
     assert sum(after_hours[key] - before_hours.get(key, 0) for key in after_hours) == 25
 
 
+def test_year_period_has_the_same_shape_as_the_other_periods(ctx) -> None:
+    """`year` (nhánh Task 18 cho tab "Năm") trả CÙNG hình dạng như `day`/`week`/`month`.
+
+    Không chỉ "200 OK": cùng bộ khóa, cùng 24 khung giờ ISO-UTC tăng dần cách nhau 1
+    giờ, cùng thứ tự ba nhãn bucket, cùng ba khóa `acceptance`. Client ánh xạ thẳng ba
+    nhãn tiếng Việt và đọc `by_hour` theo vị trí nên số phần tử + thứ tự là hợp đồng.
+    """
+    shapes = {
+        period: _get_analytics(ctx.client, period)
+        for period in ('day', 'week', 'month', 'year')
+    }
+    reference = shapes['day']
+    for period, body in shapes.items():
+        assert set(body) == set(reference) == {
+            'by_hour',
+            'top_ships',
+            'acceptance',
+            'confidence_buckets',
+        }, period
+        assert len(body['by_hour']) == len(reference['by_hour']) == HOURS, period
+        assert all(set(point) == {'hour', 'count'} for point in body['by_hour']), period
+        hours = [_parse_hour(point['hour']) for point in body['by_hour']]
+        assert hours == sorted(hours), period
+        assert all(
+            later - earlier == timedelta(hours=1) for earlier, later in zip(hours, hours[1:])
+        ), period
+        assert [row['bucket'] for row in body['confidence_buckets']] == [
+            row['bucket'] for row in reference['confidence_buckets']
+        ] == list(CLIENT_CONFIDENCE_LABELS), period
+        assert set(body['acceptance']) == {'accepted', 'rejected', 'pending'}, period
+        assert all(isinstance(value, int) for value in body['acceptance'].values()), period
+        assert len(body['top_ships']) <= TOP_SHIPS_LIMIT, period
+        assert all(set(row) == {'label', 'count'} for row in body['top_ships']), period
+
+    # Trước Task 18 enum chỉ có day|week|month nên chính request này trả 422.
+    assert ctx.client.get(f'{ANALYTICS_URL}?period=year').status_code == 200
+
+
+def test_year_window_is_the_local_calendar_year(ctx) -> None:
+    """`year` = năm dương lịch VN: row trong năm được đếm, row trước giao thừa 1 giờ thì không.
+
+    Row "năm trước" vẫn nằm trong 365 ngày gần nhất, nên nếu ai đó cài `year` thành
+    cửa sổ cuộn 365 ngày (thay vì 01/01 → 01/01 năm sau như `/dashboard/summary`) thì
+    `rejected` sẽ tăng và test này đỏ.
+    """
+    session = ctx.session
+    tag = uuid4().hex[:8]
+    year_start = datetime.now(TZ).replace(
+        month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+
+    before = _get_analytics(ctx.client, 'year')
+    _add_detection(
+        session, tag, when=year_start + timedelta(hours=1), confidence=0.9, is_accepted=True
+    )
+    _add_detection(
+        session, tag, when=year_start - timedelta(hours=1), confidence=0.9, is_accepted=False
+    )
+    after = _get_analytics(ctx.client, 'year')
+
+    assert after['acceptance']['accepted'] - before['acceptance']['accepted'] == 1
+    assert after['acceptance']['rejected'] - before['acceptance']['rejected'] == 0
+
+    # Biên năm của bản port độc lập trong test: 01/01 00:00 VN → 01/01 năm sau 00:00 VN.
+    start_utc, end_utc = _expected_window_utc('year')
+    assert start_utc == year_start.astimezone(timezone.utc)
+    assert end_utc == year_start.replace(year=year_start.year + 1).astimezone(timezone.utc)
+
+
 # --- Hình dạng SQL --------------------------------------------------------
 
 
@@ -656,7 +731,7 @@ def test_confidence_labels_and_unknown_ship_label_match_the_client() -> None:
 
 def test_response_shape_is_complete_for_every_period(ctx) -> None:
     """Ba giá trị `period` đều trả đủ bốn khóa; donut/bucket luôn đủ nhóm."""
-    for period in ('day', 'week', 'month'):
+    for period in ('day', 'week', 'month', 'year'):
         body = _get_analytics(ctx.client, period)
         assert set(body) == {'by_hour', 'top_ships', 'acceptance', 'confidence_buckets'}
         assert len(body['by_hour']) == HOURS

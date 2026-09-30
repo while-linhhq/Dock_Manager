@@ -3,19 +3,19 @@ import ReactApexChart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
 import { BarChart3, RefreshCw } from 'lucide-react';
 import type {
+  DashboardDetectionAnalytics,
   DashboardPeriod,
   DashboardStats,
   DashboardSummary,
-  DetectionRead,
 } from '../../../types/api.types';
 import { cn } from '../../../utils/cn';
 import { Button } from '../../../components/Button/Button';
 import { useHtmlDarkClass } from '../hooks/use-html-dark-class';
 import {
-  buildAcceptanceSplit,
-  buildConfidenceBuckets,
-  buildDetectionsByHourLast24h,
-  buildTopShipCounts,
+  buildAcceptanceFromAnalytics,
+  buildConfidenceFromAnalytics,
+  buildHourAxisFromAnalytics,
+  buildTopShipsFromAnalytics,
   formatStatsSummary,
 } from '../utils/dashboard-analytics-data';
 
@@ -51,15 +51,12 @@ function periodLabelVi(p: DashboardPeriod | undefined): string {
   return 'hôm nay';
 }
 
-function detectionVolumeChartTitle(p: DashboardPeriod): string {
-  if (p === 'month') {
-    return 'Lượt nhận diện theo ngày trong tháng';
-  }
-  if (p === 'year') {
-    return 'Lượt nhận diện theo tháng trong năm';
-  }
-  return 'Lượt nhận diện theo giờ trong ngày';
-}
+/**
+ * Biểu đồ lượt nhận diện là cửa sổ cuộn 24 giờ (`by_hour` của API tổng hợp, port
+ * `buildDetectionsByHourLast24h`) nên tiêu đề KHÔNG đổi theo nút kỳ ngày/tháng/năm;
+ * ba biểu đồ còn lại mới theo kỳ.
+ */
+const DETECTION_VOLUME_CHART_TITLE = 'Lượt nhận diện theo giờ — 24 giờ qua';
 
 function boundaryCrossingChartTitle(p: DashboardPeriod): string {
   if (p === 'month') {
@@ -72,7 +69,8 @@ function boundaryCrossingChartTitle(p: DashboardPeriod): string {
 }
 
 export type DashboardAiAnalyticsChartsProps = {
-  detections: DetectionRead[];
+  /** Số tổng hợp của bốn widget — nguồn DUY NHẤT, không đếm trên mảng detection. */
+  analytics: DashboardDetectionAnalytics | null;
   stats: DashboardStats | null;
   summary: DashboardSummary | null;
   summaryPeriod: DashboardPeriod;
@@ -81,7 +79,7 @@ export type DashboardAiAnalyticsChartsProps = {
 };
 
 export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProps> = ({
-  detections,
+  analytics,
   stats,
   summary,
   summaryPeriod,
@@ -91,24 +89,10 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
   const isDark = useHtmlDarkClass();
   const base = useMemo(() => apexCommon(isDark), [isDark]);
 
-  const volumeSeries = useMemo(() => {
-    const labels = summary?.detection_volume_labels;
-    const counts = summary?.detection_volume_counts;
-    if (
-      labels &&
-      labels.length > 0 &&
-      counts &&
-      counts.length === labels.length
-    ) {
-      return {
-        categories: labels,
-        data: counts.map((n) => Number(n)),
-        fromSummary: true as const,
-      };
-    }
-    const fb = buildDetectionsByHourLast24h(detections);
-    return { ...fb, fromSummary: false as const };
-  }, [summary, detections]);
+  const volumeSeries = useMemo(
+    () => buildHourAxisFromAnalytics(analytics?.by_hour),
+    [analytics],
+  );
 
   const boundarySeries = useMemo(() => {
     const labels = summary?.boundary_volume_labels;
@@ -137,41 +121,22 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
     };
   }, [summary]);
 
-  const topShips = useMemo(() => {
-    const summaryShipLabels = summary?.top_ship_labels;
-    const summaryShipCounts = summary?.top_ship_counts;
-    if (
-      summaryShipLabels?.length &&
-      summaryShipCounts &&
-      summaryShipCounts.length === summaryShipLabels.length
-    ) {
-      return { labels: summaryShipLabels, counts: summaryShipCounts };
-    }
-    return buildTopShipCounts(detections, 8);
-  }, [summary, detections]);
-  const acceptance = useMemo(() => {
-    if (
-      summary &&
-      typeof summary.detections_review_accepted === 'number' &&
-      typeof summary.detections_review_not_accepted === 'number' &&
-      typeof summary.detections_review_unassigned === 'number'
-    ) {
-      return {
-        labels: ['Đã xác nhận', 'Chưa xác nhận', 'Chưa gán'] as const,
-        series: [
-          summary.detections_review_accepted,
-          summary.detections_review_not_accepted,
-          summary.detections_review_unassigned,
-        ],
-      };
-    }
-    return buildAcceptanceSplit(detections);
-  }, [summary, detections]);
+  const topShips = useMemo(
+    () => buildTopShipsFromAnalytics(analytics?.top_ships),
+    [analytics],
+  );
+  const acceptance = useMemo(
+    () => buildAcceptanceFromAnalytics(analytics?.acceptance),
+    [analytics],
+  );
   const acceptanceTotal = useMemo(
     () => acceptance.series.reduce((a, b) => a + b, 0),
     [acceptance.series],
   );
-  const confidence = useMemo(() => buildConfidenceBuckets(detections), [detections]);
+  const confidence = useMemo(
+    () => buildConfidenceFromAnalytics(analytics?.confidence_buckets),
+    [analytics],
+  );
   const kpi = useMemo(() => formatStatsSummary(stats), [stats]);
 
   const areaOptions: ApexOptions = useMemo(() => {
@@ -286,9 +251,10 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
               Phân tích dữ liệu nhận diện
             </h3>
             <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 max-w-xl">
-              Biểu đồ lượt nhận diện, trạng thái duyệt và top tàu theo kỳ{' '}
-              <span className="font-semibold">{periodLabelVi(summaryPeriod)}</span> (múi giờ VN). Phân bố độ tin cậy
-              vẫn theo tối đa 120 dòng đã tải. Tab «Xem trực tiếp» — luồng camera.
+              Trạng thái duyệt, top tàu và phân bố độ tin cậy tổng hợp theo kỳ{' '}
+              <span className="font-semibold">{periodLabelVi(summaryPeriod)}</span> (múi giờ VN); biểu đồ lượt
+              nhận diện là cửa sổ cuộn 24 giờ qua. Số liệu do server tổng hợp trên toàn bộ dữ liệu trong kỳ,
+              không đếm trên mảng nhận diện mà sidebar tải. Tab «Xem trực tiếp» — luồng camera.
             </p>
           </div>
         </div>
@@ -321,11 +287,10 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="lg:col-span-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-0.5 px-1">
-            {detectionVolumeChartTitle(summaryPeriod)}
+            {DETECTION_VOLUME_CHART_TITLE}
           </p>
           <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
-            Kỳ: {periodLabelVi(summaryPeriod)}
-            {!volumeSeries.fromSummary ? ' — đang dùng mẫu 24h gần nhất (API summary chưa có chuỗi khối lượng).' : ''}
+            Cửa sổ cuộn 24 giờ gần nhất, nhãn là giờ địa phương — không đổi theo nút ngày/tháng/năm ở trên.
           </p>
           <ReactApexChart
             options={areaOptions}
@@ -374,8 +339,8 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
             Mã tàu xuất hiện nhiều (top 8 — theo {periodLabelVi(summaryPeriod)})
           </p>
           <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
-            Xếp hạng theo kỳ (ngày / tháng / năm) đã chọn trên dashboard; các biểu đồ khác vẫn dựa trên tối đa
-            120 dòng nhận diện đã tải.
+            Xếp hạng theo kỳ (ngày / tháng / năm) đã chọn trên dashboard; server tổng hợp trên toàn bộ dữ
+            liệu trong kỳ, không phải mẫu 18 dòng mới nhất của sidebar.
           </p>
           {topShips.labels.length === 0 ? (
             <p className="py-16 text-center text-xs font-mono uppercase tracking-wide text-gray-500">
@@ -392,8 +357,11 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
         </div>
 
         <div className="lg:col-span-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-1 px-1">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-0.5 px-1">
             Phân bố độ tin cậy (confidence)
+          </p>
+          <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
+            Theo kỳ: {periodLabelVi(summaryPeriod)} — server tổng hợp trên toàn bộ dữ liệu trong kỳ (Asia/Ho_Chi_Minh).
           </p>
           <ReactApexChart
             options={columnConfOptions}

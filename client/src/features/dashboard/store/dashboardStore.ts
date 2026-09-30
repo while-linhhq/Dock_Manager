@@ -1,17 +1,23 @@
 import { create } from 'zustand';
 import type {
+  DashboardDetectionAnalytics,
   DashboardPeriod,
   DashboardStats,
   DashboardSummary,
   DetectionRead,
 } from '../../../types/api.types';
-import { dashboardApi, DASHBOARD_DETECTIONS_WINDOW } from '../services/dashboardApi';
+import { dashboardApi, DASHBOARD_DETECTIONS_LIMIT } from '../services/dashboardApi';
 import type { PipelineStatus } from '../services/dashboardApi';
 
 interface DashboardState {
   stats: DashboardStats | null;
   summary: DashboardSummary | null;
   summaryPeriod: DashboardPeriod;
+  /**
+   * Số tổng hợp của bốn widget phân tích (`GET /dashboard/detection-analytics`).
+   * Là nguồn DUY NHẤT của bốn biểu đồ — chúng không còn đếm trên `recentDetections`.
+   */
+  analytics: DashboardDetectionAnalytics | null;
   recentDetections: DetectionRead[];
   pipelineStatus: PipelineStatus | null;
   isLoading: boolean;
@@ -27,6 +33,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   stats: null,
   summary: null,
   summaryPeriod: 'day',
+  analytics: null,
   recentDetections: [],
   pipelineStatus: null,
   isLoading: false,
@@ -41,12 +48,18 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     const p = period ?? get().summaryPeriod;
     set({ summaryLoading: true, summaryPeriod: p });
     try {
-      const summary = await dashboardApi.getSummary(p);
-      set({ summary, summaryLoading: false });
+      // Đổi kỳ thì cả `summary` lẫn số của bốn widget phân tích phải đổi theo —
+      // hai nguồn này dùng chung một `period` nên không được lệch kỳ nhau.
+      const [summary, analytics] = await Promise.all([
+        dashboardApi.getSummary(p),
+        dashboardApi.getDetectionAnalytics(p),
+      ]);
+      set({ summary, analytics, summaryLoading: false });
     } catch (err: any) {
       set({
         error: err.message || 'Failed to fetch summary',
         summary: null,
+        analytics: null,
         summaryLoading: false,
       });
     }
@@ -60,13 +73,14 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       .catch((): PipelineStatus | null => null);
 
     try {
-      const [stats, summary, recentDetections, pipelineStatus] = await Promise.all([
+      const [stats, summary, analytics, recentDetections, pipelineStatus] = await Promise.all([
         dashboardApi.getStats(),
         dashboardApi.getSummary(period),
-        // Cửa sổ này phục vụ CẢ sidebar 18 dòng LẪN các widget phân tích — xem
-        // chú thích `DASHBOARD_DETECTIONS_WINDOW`, không cắt nhỏ mà không đo lại biểu đồ.
+        // Bốn widget phân tích đọc số ở đây, KHÔNG đếm trên `recentDetections` nữa
+        // — nhờ vậy sidebar chỉ cần đúng 18 dòng nó hiển thị.
+        dashboardApi.getDetectionAnalytics(period),
         dashboardApi
-          .getRecentDetections(DASHBOARD_DETECTIONS_WINDOW)
+          .getRecentDetections(DASHBOARD_DETECTIONS_LIMIT)
           .catch(() => [] as DetectionRead[]),
         pipelinePromise,
       ]);
@@ -74,6 +88,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
         stats,
         summary,
         summaryPeriod: period,
+        analytics,
         recentDetections,
         pipelineStatus,
         isLoading: false,
