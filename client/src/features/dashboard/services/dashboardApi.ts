@@ -38,8 +38,8 @@ export type PipelineStatus = {
  *
  * Task 15 phải giữ 120 dòng vì lúc đó bốn widget tự đếm trên mảng (cắt xuống 18 là
  * hồi quy số liệu âm thầm). Task 18 nối client sang API tổng hợp nên mới cắt được;
- * 18 dòng vẫn mang `ocr_results` (đo trên DB thật: 2,27 MB, 99,5 % khối lượng) —
- * phần băng thông đó là việc của Task 19.
+ * Task 19 tắt luôn `ocr_results` (đo trên DB thật: 2,27 MB cho 18 dòng, 99,5 % khối
+ * lượng là mảng OCR) — sidebar chỉ cần `first_ocr_result_id` làm nhãn tàu dự phòng.
  */
 export const DASHBOARD_DETECTIONS_LIMIT = 18;
 
@@ -64,10 +64,21 @@ export const dashboardApi = {
       `/dashboard/detection-analytics?period=${period}`,
     );
   },
+  /**
+   * Cửa sổ nhận diện mới nhất cho sidebar.
+   *
+   * `include_ocr_results=false`: sidebar chỉ vẽ nhãn tàu/giờ/trạng thái nên mảng
+   * `ocr_results` (99,5 % khối lượng phản hồi) không cần rời server; id OCR đầu
+   * tiên vẫn về qua `first_ocr_result_id` cho nhãn tàu dự phòng. Các caller khác
+   * của `/detections/` (trang bến, `portApi.getDetectionsPage`) không truyền cờ
+   * nên giữ nguyên payload đầy đủ.
+   */
   getRecentDetections: async (
     limit: number = DASHBOARD_DETECTIONS_LIMIT,
   ): Promise<DetectionRead[]> => {
-    return httpClient.get<DetectionRead[]>(`/detections/?limit=${limit}`);
+    return httpClient.get<DetectionRead[]>(
+      `/detections/?limit=${limit}&include_ocr_results=false`,
+    );
   },
   getPipelineStatus: async (): Promise<PipelineStatus> => {
     return httpClient.get<PipelineStatus>('/pipeline/status');

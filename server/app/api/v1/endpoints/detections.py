@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from datetime import date, datetime
 from typing import List, Optional
@@ -72,6 +73,35 @@ def _detection_to_read(
     return payload.model_copy(update=update)
 
 
+def _first_ocr_result_id(ocr_results: object) -> Optional[str]:
+    """id của OCR đầu tiên — đúng thứ `getDetectionShipLabel` của client đọc.
+
+    Client so `typeof id === 'string'` trên `ocr_results[0].id` rồi mới `trim()`,
+    nên ở đây **chỉ lọc kiểu**, không trim: chuỗi trả về nguyên bản để phép trim
+    vẫn nằm đúng một chỗ như trước (nhãn hiển thị không đổi).
+    """
+    if not isinstance(ocr_results, list) or not ocr_results:
+        return None
+    first = ocr_results[0]
+    if not isinstance(first, dict):
+        return None
+    value = first.get('id')
+    return value if isinstance(value, str) else None
+
+
+def _detection_to_lite_row(payload: DetectionRead) -> dict:
+    """Bản rút gọn của một dòng danh sách: bỏ hẳn `ocr_results`.
+
+    `ocr_results` chiếm 99,5 % khối lượng phản hồi (đo trên DB thật: 18 dòng →
+    2,27 MB) mà sidebar chỉ cần id OCR đầu tiên làm nhãn tàu dự phòng, nên mảng
+    đó không cần rời khỏi server. Giữ nguyên mọi trường khác bằng cách rút từ
+    chính `DetectionRead` đã dựng (một nguồn duy nhất, không chép tay từng field).
+    """
+    row = payload.model_dump(mode='json')
+    row['first_ocr_result_id'] = _first_ocr_result_id(row.pop('ocr_results', None))
+    return row
+
+
 @router.post('/', response_model=DetectionRead, status_code=201)
 def create_detection(
     request: Request,
@@ -109,6 +139,7 @@ def list_detections(
     order: str = 'desc',
     include_over_berth_limit: bool = False,
     include_presigned_paths: bool = False,
+    include_ocr_results: bool = True,
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
@@ -122,6 +153,11 @@ def list_detections(
     mặc định `berth` (không bao giờ được nội suy vào SQL). `berth` = thời điểm tàu
     vào vùng neo đậu (`berth_in_time`, fallback `start_time`, `created_at`) — đúng
     thứ tự trang bến đang hiển thị; `time` = thời gian hiển thị của cột "Thời gian".
+
+    `include_ocr_results=False` bỏ hẳn mảng `ocr_results` (99,5 % khối lượng: 18
+    dòng ≈ 2,27 MB) và thay bằng `first_ocr_result_id` — đúng id mà
+    `getDetectionShipLabel` của client dùng làm nhãn tàu dự phòng. Cờ mặc định
+    `True` để mọi caller khác không đổi payload.
     """
     skip, limit = resolve_page(skip, limit)
     occurred_from = as_utc(occurred_from)
@@ -143,7 +179,7 @@ def list_detections(
     set_total_header(response, total)
     rows = detection_repo.get_all(db, skip=skip, limit=limit, **filters)
     camera_map = resolve_camera_in_out(db, [str(r.track_id or '') for r in rows])
-    return [
+    payloads = [
         _detection_to_read(
             db,
             row,
@@ -154,6 +190,17 @@ def list_detections(
         )
         for row in rows
     ]
+    if include_ocr_results:
+        return payloads
+    # `response_model` của route luôn kèm `ocr_results` (và `response_model_exclude`
+    # là cố định theo route, không theo request) nên nhánh rút gọn trả JSON trực
+    # tiếp; `model_dump(mode='json')` cho đúng định dạng như FastAPI serialize.
+    lite = JSONResponse(content=[_detection_to_lite_row(payload) for payload in payloads])
+    # Trả `Response` riêng thì FastAPI bỏ qua `response` được inject ở trên, nên
+    # `X-Total-Count` phải đặt lại trên chính response này — nếu không, trang rút
+    # gọn mất tổng số dòng (lỗi bắt được khi đo qua HTTP thật).
+    set_total_header(lite, total)
+    return lite
 
 
 @router.get('/{detection_id}', response_model=DetectionRead)
