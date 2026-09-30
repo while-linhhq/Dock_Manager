@@ -7,12 +7,18 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
-from app.schemas.stats import DashboardStats, DashboardSummaryRead, DashboardSystemOverviewRead
+from app.schemas.stats import (
+    DashboardDetectionAnalyticsRead,
+    DashboardStats,
+    DashboardSummaryRead,
+    DashboardSystemOverviewRead,
+)
 from app.repositories.vessel_repository import vessel_repo
 from app.repositories.detection_repository import detection_repo
 from app.repositories.order_repository import order_repo
 from app.repositories.invoice_repository import invoice_repo
 from app.repositories.camera_repository import camera_repo
+from app.services.dashboard_analytics_service import build_detection_analytics
 from app.services.dashboard_summary_service import build_dashboard_summary
 from app.services.dashboard_system_service import build_system_overview
 
@@ -31,6 +37,21 @@ def get_dashboard_summary(
 @router.get('/system-overview', response_model=DashboardSystemOverviewRead)
 def get_system_overview(db: Session = Depends(get_db), _=Depends(get_current_user)):
     return build_system_overview(db)
+
+
+@router.get('/detection-analytics', response_model=DashboardDetectionAnalyticsRead)
+def get_detection_analytics(
+    period: Literal['day', 'week', 'month'] = Query('day'),
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Bốn widget phân tích của dashboard, tính bằng aggregate ở SQL.
+
+    Endpoint chỉ kiểm tra tham số rồi gọi service — không có SQL ở đây. Xem
+    `app/services/dashboard_analytics_service.py` để biết cửa sổ thời gian:
+    `by_hour` cố định 24 giờ gần nhất, ba tổng hợp còn lại theo `period`.
+    """
+    return build_detection_analytics(db, period)
 
 
 @router.get('/stats', response_model=DashboardStats)

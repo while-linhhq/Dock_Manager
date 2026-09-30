@@ -1,12 +1,12 @@
-from datetime import date, datetime, time, timezone
-from sqlalchemy import Date, String, case, cast, func, or_, select
+from datetime import date, datetime, time, timedelta, timezone
+from sqlalchemy import Date, String, and_, case, cast, func, or_, select, text
 from sqlalchemy.orm import Query, Session, joinedload
 from app.models.boundary_crossing_event import BoundaryCrossingEvent
 from app.models.camera import Camera
 from app.models.detection import Detection
 from app.models.vessel import Vessel
 from app.utils.sql_filters import ilike_contains
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Nhãn hiển thị khi detection chưa gắn tàu và OCR không đọc được id nào — giữ
 # đúng chuỗi client dùng trong `getDetectionShipLabel`.
@@ -97,6 +97,64 @@ SORT_COLUMNS = {
 
 # Khóa sort cần JOIN `vessels` mới dựng được biểu thức.
 VESSEL_JOIN_SORTS = frozenset({'ship_id'})
+
+
+# --- Tổng hợp cho dashboard (Task 17) -------------------------------------
+#
+# Bốn widget phân tích của dashboard giờ đọc số tổng hợp từ SQL thay vì tự đếm
+# trên 120 row mới nhất mà sidebar tải về. Mỗi hàm dưới đây là MỘT truy vấn
+# GROUP BY; không hàm nào nạp row về Python để đếm.
+
+# Số khung giờ của biểu đồ "24 giờ qua".
+ANALYTICS_HOURS = 24
+
+# Biên + nhãn ba bucket độ tin cậy. Nhãn PHẢI trùng từng ký tự với
+# `buildConfidenceBuckets` của client
+# (client/src/features/dashboard/utils/dashboard-analytics-data.ts):
+# '< 50%' · '50–75%' (gạch ngang en-dash U+2013) · '≥ 75%' (U+2265).
+CONFIDENCE_BUCKET_EDGES = (0.5, 0.75)
+CONFIDENCE_BUCKET_LABELS = ('< 50%', '50–75%', '≥ 75%')
+
+# Thứ tự cố định của donut trạng thái duyệt, khớp `buildAcceptanceSplit`:
+# accepted = is_accepted TRUE ('Đã xác nhận'), rejected = FALSE ('Chưa xác nhận'),
+# pending = NULL ('Chưa gán').
+ACCEPTANCE_KEYS = ('accepted', 'rejected', 'pending')
+
+
+def _period_window_filters(start: datetime, end: datetime) -> list:
+    """Lọc chung của ba widget theo kỳ: chưa xoá mềm + `created_at` ∈ [start, end).
+
+    Cố ý dùng ĐÚNG cách `/dashboard/summary` đang làm: lọc trên `created_at`,
+    nửa khoảng mở, so trực tiếp với biên aware. `created_at` là `timestamp without
+    time zone` chứa giờ UTC (xem `_berth_time_expr`) nên phép so này dựa vào
+    TimeZone của session DB — đúng bằng UTC ở deployment hiện tại, và giữ nguyên
+    con số của summary thay vì tự ý đổi ngữ nghĩa.
+    """
+    return [
+        Detection.deleted_at.is_(None),
+        Detection.created_at >= start,
+        Detection.created_at < end,
+    ]
+
+
+def _ship_count_query(db: Session, start: datetime, end: datetime, limit: int) -> Query:
+    """Query đếm theo nhãn tàu hiển thị — dùng chung cho `top_ship_counts`.
+
+    Nhãn lấy từ `_ship_label_expr()` (port `getDetectionShipLabel` của client),
+    KHÔNG phải `coalesce(vessels.ship_id, track_id)` mà `/dashboard/summary` dùng:
+    widget này hiển thị nhãn của client nên phải khớp `buildTopShipCounts`.
+    """
+    label = _ship_label_expr()
+    count = func.count(Detection.id)
+    return (
+        db.query(label.label('label'), count.label('count'))
+        .select_from(Detection)
+        .outerjoin(Vessel, Detection.vessel_id == Vessel.id)
+        .filter(*_period_window_filters(start, end))
+        .group_by(label)
+        .order_by(count.desc(), label.asc())
+        .limit(limit)
+    )
 
 
 class DetectionRepository:
@@ -311,6 +369,147 @@ class DetectionRepository:
             .order_by(None)
             .count()
         )
+
+    def count_by_hour(
+        self,
+        db: Session,
+        *,
+        hours: int = ANALYTICS_HOURS,
+        now: Optional[datetime] = None,
+    ) -> List[Tuple[datetime, int]]:
+        """Biểu đồ "24 giờ qua" — MỘT truy vấn, trả đủ `hours` bucket tăng dần.
+
+        Port `buildDetectionsByHourLast24h` của client: mốc thời gian là
+        `coalesce(start_time, created_at)` (hai cột naive chứa giờ UTC), bucket là
+        giờ đã cắt phút. Cửa sổ CỐ ĐỊNH `hours` giờ gần nhất, khung giờ hiện tại là
+        bucket cuối (có thể mới chạy được một phần) — đúng như biểu đồ mô tả và
+        KHÔNG phụ thuộc `period`.
+
+        Trục giờ sinh bằng `generate_series` rồi LEFT JOIN nên bucket rỗng vẫn có
+        mặt với `count = 0`: biểu đồ luôn đủ 24 điểm, repository không phải đệm 0 ở
+        Python. Trục để dạng naive-UTC và `date_trunc` cũng trên giá trị naive của
+        row, nên phép so không kéo TimeZone của session DB vào; cột `hour` trả ra
+        được gắn `timezone('UTC', ...)` để client nhận ISO-8601 UTC.
+
+        Row đã xoá mềm bị loại. Row có cả `start_time` lẫn `created_at` NULL không
+        khớp bucket nào nên không được đếm (client cũng bỏ qua row đó).
+
+        `now` (chủ yếu để test) phải là instant; naive được coi là UTC cho khớp hai
+        cột naive của DB.
+        """
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        anchor = moment.astimezone(timezone.utc).replace(
+            minute=0, second=0, microsecond=0, tzinfo=None
+        )
+        start = anchor - timedelta(hours=max(int(hours), 1) - 1)
+        # Trục giờ: một subquery sinh chuỗi giờ liên tiếp rồi LEFT JOIN sang
+        # detections. `generate_series` trả về set nên subquery nở thành `hours`
+        # dòng, và cột được đặt tên tường minh (`AS hour`).
+        axis = select(
+            func.generate_series(start, anchor, text("interval '1 hour'")).label('hour')
+        ).subquery('hours')
+        bucket = func.date_trunc(
+            'hour', func.coalesce(Detection.start_time, Detection.created_at)
+        )
+        return (
+            db.query(
+                func.timezone('UTC', axis.c.hour).label('hour'),
+                func.count(Detection.id).label('count'),
+            )
+            .select_from(axis)
+            .outerjoin(
+                Detection,
+                and_(bucket == axis.c.hour, Detection.deleted_at.is_(None)),
+            )
+            .group_by(axis.c.hour)
+            .order_by(axis.c.hour)
+            .all()
+        )
+
+    def top_ship_counts(
+        self,
+        db: Session,
+        *,
+        start: datetime,
+        end: datetime,
+        limit: int = 8,
+    ) -> List[Tuple[str, int]]:
+        """Top nhãn tàu trong kỳ `[start, end)` — MỘT truy vấn GROUP BY, tối đa `limit`.
+
+        Thứ tự: `count` giảm dần rồi tới nhãn tăng dần. Client cũ sắp chỉ theo
+        `count` (Map giữ thứ tự chèn) nên khi bằng điểm thứ tự khác nhau; tiebreaker
+        theo nhãn để kết quả ổn định giữa các lần gọi.
+        """
+        return _ship_count_query(db, start, end, limit).all()
+
+    def acceptance_split(
+        self, db: Session, *, start: datetime, end: datetime
+    ) -> Dict[str, int]:
+        """Đếm accepted/rejected/pending trong kỳ — MỘT truy vấn GROUP BY.
+
+        Port `buildAcceptanceSplit`: accepted = `is_accepted IS TRUE`, rejected =
+        `is_accepted IS FALSE`, pending = NULL (client gọi nhóm này là "Chưa gán" và
+        xếp series theo đúng thứ tự `ACCEPTANCE_KEYS`).
+        """
+        key = case(
+            (Detection.is_accepted.is_(True), 'accepted'),
+            (Detection.is_accepted.is_(False), 'rejected'),
+            else_='pending',
+        )
+        rows = (
+            db.query(key.label('key'), func.count(Detection.id).label('count'))
+            .select_from(Detection)
+            .filter(*_period_window_filters(start, end))
+            .group_by(key)
+            .all()
+        )
+        # Nhóm vắng mặt trả 0 để donut luôn đủ ba lát.
+        counts = {name: 0 for name in ACCEPTANCE_KEYS}
+        for name, count in rows:
+            counts[name] = int(count)
+        return counts
+
+    def confidence_bucket_counts(
+        self, db: Session, *, start: datetime, end: datetime
+    ) -> List[Tuple[str, int]]:
+        """Ba bucket độ tin cậy trong kỳ — MỘT truy vấn GROUP BY.
+
+        Port `buildConfidenceBuckets`: `conf < 0.5` · `0.5 ≤ conf < 0.75` ·
+        `conf ≥ 0.75`, bỏ row `confidence IS NULL`. Trả đủ ba bucket theo đúng thứ
+        tự nhãn của client, bucket rỗng = 0 (`CONFIDENCE_BUCKET_LABELS`).
+
+        NaN cũng bị loại như client (`Number.isNaN` → `continue`): PostgreSQL coi
+        NaN lớn hơn mọi số nên nếu không lọc, row NaN sẽ rơi nhầm vào bucket
+        "≥ 75%"; `!= 'NaN'::float8` đúng vì NaN = NaN là TRUE trong PostgreSQL.
+        """
+        bucket = case(
+            (
+                Detection.confidence < CONFIDENCE_BUCKET_EDGES[0],
+                CONFIDENCE_BUCKET_LABELS[0],
+            ),
+            (
+                Detection.confidence < CONFIDENCE_BUCKET_EDGES[1],
+                CONFIDENCE_BUCKET_LABELS[1],
+            ),
+            else_=CONFIDENCE_BUCKET_LABELS[2],
+        )
+        rows = (
+            db.query(bucket.label('bucket'), func.count(Detection.id).label('count'))
+            .select_from(Detection)
+            .filter(
+                *_period_window_filters(start, end),
+                Detection.confidence.isnot(None),
+                Detection.confidence != float('nan'),
+            )
+            .group_by(bucket)
+            .all()
+        )
+        counts = {label: 0 for label in CONFIDENCE_BUCKET_LABELS}
+        for label, count in rows:
+            counts[label] = int(count)
+        return [(label, counts[label]) for label in CONFIDENCE_BUCKET_LABELS]
 
     def create(self, db: Session, data) -> Detection:
         payload = data.model_dump() if hasattr(data, 'model_dump') else dict(data)

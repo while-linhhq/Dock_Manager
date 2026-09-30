@@ -56,3 +56,53 @@ class DashboardSystemOverviewRead(BaseModel):
     pending_orders: int
     unpaid_invoices: int
     ai_invoices: int
+
+
+class DetectionAnalyticsHourRead(BaseModel):
+    """Một khung giờ của biểu đồ "24 giờ qua" — `hour` là ISO-8601 UTC."""
+
+    hour: datetime
+    count: int
+
+
+class DetectionAnalyticsShipRead(BaseModel):
+    """Một nhãn tàu (`getDetectionShipLabel` của client) và số lượt trong kỳ."""
+
+    label: str
+    count: int
+
+
+class DetectionAnalyticsBucketRead(BaseModel):
+    """Một bucket độ tin cậy — nhãn trùng `buildConfidenceBuckets` của client."""
+
+    bucket: str
+    count: int
+
+
+class DetectionAnalyticsAcceptanceRead(BaseModel):
+    """Trạng thái duyệt: accepted = TRUE, rejected = FALSE, pending = NULL.
+
+    Client gắn nhãn cho ba khóa này theo đúng thứ tự
+    `['Đã xác nhận', 'Chưa xác nhận', 'Chưa gán']`.
+    """
+
+    accepted: int
+    rejected: int
+    pending: int
+
+
+class DashboardDetectionAnalyticsRead(BaseModel):
+    """`GET /dashboard/detection-analytics` — bốn widget phân tích của dashboard.
+
+    - `by_hour`: luôn đủ 24 khung giờ gần nhất, tăng dần theo UTC (cửa sổ cố định,
+      không phụ thuộc `period`).
+    - `top_ships`: tối đa 8 nhãn, sắp theo `count` giảm dần.
+    - `acceptance`: đủ ba khóa, nhóm vắng mặt = 0.
+    - `confidence_buckets`: đủ ba nhãn `'< 50%'`, `'50–75%'`, `'≥ 75%'` theo thứ tự,
+      bucket vắng mặt = 0.
+    """
+
+    by_hour: List[DetectionAnalyticsHourRead]
+    top_ships: List[DetectionAnalyticsShipRead]
+    acceptance: DetectionAnalyticsAcceptanceRead
+    confidence_buckets: List[DetectionAnalyticsBucketRead]
