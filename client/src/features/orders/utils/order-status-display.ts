@@ -16,5 +16,9 @@ export const statusLabels: Record<string, string> = {
 
 export function normOrderStatus(status: string) {
   const s = status.toLowerCase();
-  return s in statusLabels ? s : 'pending';
+  // Own-property check: `s in statusLabels` đi cả prototype chain, nên một trạng
+  // thái lạ như 'constructor'/'toString' lọt qua và `statusLabels[st]` trả về
+  // function — React nhận function làm child và `statusColors[st]` nhét function
+  // vào className. Chỉ ba khóa thật của statusLabels mới được coi là hợp lệ.
+  return Object.prototype.hasOwnProperty.call(statusLabels, s) ? s : 'pending';
 }

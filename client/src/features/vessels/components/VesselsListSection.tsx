@@ -44,6 +44,11 @@ export type VesselsListSectionProps = {
   vessels: VesselRead[];
   /** Trang hiện tại sau khi áp các bộ lọc chưa có tham số phía server. */
   filteredVessels: VesselRead[];
+  /**
+   * Có tiêu chí "lọc trên trang" đang bật ("Loại tàu", khoảng ngày, "Tạm dừng").
+   * Footer phải nói rõ để không báo tổng của server khi bảng đang trống.
+   */
+  hasPageLocalFilters: boolean;
   isLoading: boolean;
   error: string | null;
   /** Phân trang phía server — state do `usePagedQuery` ở `VesselsView` giữ. */
@@ -76,6 +81,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
   vesselTypes,
   vessels,
   filteredVessels,
+  hasPageLocalFilters,
   isLoading,
   error,
   page,
@@ -337,6 +343,18 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
             </tbody>
           </table>
         </div>
+
+        {/* "Loại tàu" / khoảng ngày / "Tạm dừng" chỉ lọc được trên trang hiện tại
+            (`/vessels/` chưa có tham số cho chúng), nên bảng có thể ít row hơn —
+            kể cả 0 — trong khi footer vẫn hiện tổng của bộ lọc phía server. Nói rõ
+            ở đây để người dùng không bị báo "45 bản ghi" khi bảng trống. */}
+        {hasPageLocalFilters ? (
+          <p className="border-t border-gray-100 px-4 py-2 text-[11px] normal-case text-amber-600 dark:border-white/5 dark:text-amber-400">
+            Đang lọc trên trang: {filteredVessels.length}/{vessels.length} bản ghi của
+            trang này khớp tiêu chí chưa có tham số phía server (Loại tàu / khoảng ngày /
+            “Tạm dừng”). Số ở footer là tổng theo bộ lọc phía server.
+          </p>
+        ) : null}
 
         <DataPagination
           page={page}

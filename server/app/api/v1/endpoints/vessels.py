@@ -313,7 +313,7 @@ def list_vessels(
     db: Session = Depends(get_db),
 ):
     # classification: 'spot' | 'monthly' | 'unclassified' — lọc theo tab UI. None = tất cả.
-    # q: tìm theo ship_id hoặc tên tàu (không phân biệt hoa thường) cho dropdown chọn tàu.
+    # q: tìm theo mã tàu / tên tàu / chủ tàu / số đăng kiểm (không phân biệt hoa thường).
     skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
     total = vessel_repo.count_filtered(
         db, active_only=active_only, classification=classification, q=q

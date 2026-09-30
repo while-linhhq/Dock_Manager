@@ -8,6 +8,7 @@ import type {
   VesselClassificationCounts,
   VesselCreate,
   VesselFilters,
+  VesselPageRequest,
   VesselTypeCreate,
 } from '../services/vesselsApi';
 import type { VesselRead, VesselTypeRead } from '../../../types/api.types';
@@ -127,19 +128,30 @@ export const VesselsView: React.FC = () => {
   }, [activeTab, fetchVesselTypes, fetchShipIdRules]);
 
   // Số tàu mỗi phân loại cho badge trên tab: ba request `limit=1` đọc
-  // `X-Total-Count` (trước đây đếm từ mảng 10 000 dòng đã nạp).
-  const [classificationCounts, setClassificationCounts] = useState<VesselClassificationCounts>({
-    spot: 0,
-    monthly: 0,
-    unclassified: 0,
-  });
+  // `X-Total-Count` (trước đây đếm từ mảng 10 000 dòng đã nạp). `null` = chưa nạp
+  // — tab Loại Tàu / Cấu Hình Nhận Diện không nạp (xem `reloadClassificationCounts`),
+  // nên badge ẩn thay vì hiện số 0 sai.
+  const [classificationCounts, setClassificationCounts] =
+    useState<VesselClassificationCounts | null>(null);
+  // Số đếm còn mới hay không: thao tác ghi làm cũ đi, và số cũ thì không nạp lại
+  // chỉ vì đổi tab — giữ nguyên số request badge như trước cho các tab phân loại.
+  const countsFreshRef = useRef(false);
 
   const reloadClassificationCounts = useCallback(() => {
+    // Tab Loại Tàu / Cấu Hình Nhận Diện không render danh sách nên không cần ba
+    // request đếm. Callback phụ thuộc `activeTab` nên effect bên dưới tự chạy lại
+    // khi vào tab phân loại (lúc đó số thiếu/cũ mới thực sự được nạp).
+    if (!isClassificationTab(activeTab) || countsFreshRef.current) {
+      return;
+    }
     void vesselsApi
       .getClassificationCounts()
-      .then(setClassificationCounts)
+      .then((counts) => {
+        countsFreshRef.current = true;
+        setClassificationCounts(counts);
+      })
       .catch((error) => console.error(error));
-  }, []);
+  }, [activeTab]);
 
   useEffect(() => {
     reloadClassificationCounts();
@@ -155,6 +167,29 @@ export const VesselsView: React.FC = () => {
     [activeTab, vesselQ, vesselActive],
   );
 
+  // Tab Loại Tàu / Cấu Hình Nhận Diện không render danh sách tàu ⇒ chặn ngay ở
+  // `fetcher` để không bắn request `/vessels/` nào (hạ tầng dùng chung
+  // `usePagedQuery` luôn nạp; thêm công tắc vào hook đó sẽ đụng 5 trang khác).
+  // Ref giữ tab hiện tại để identity của fetcher không đổi theo tab — đổi identity
+  // chỉ làm hook cập nhật `fetcherRef`, KHÔNG tự nạp lại. Lần nạp lại khi quay về
+  // tab phân loại vẫn do `vesselFilters.classification` đổi (effect đẩy bộ lọc bên
+  // dưới gọi `setFilters`) — đúng như trước.
+  const activeTabRef = useRef(activeTab);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  const fetchVesselsForActiveTab = useCallback(
+    (request: VesselPageRequest) => {
+      if (!isClassificationTab(activeTabRef.current)) {
+        // Trả trang rỗng TẠI CHỖ: không có HTTP request nào được gửi đi.
+        return Promise.resolve({ items: [] as VesselRead[], total: 0 });
+      }
+      return fetchVesselsPage(request);
+    },
+    [fetchVesselsPage],
+  );
+
   const {
     items: pagedVessels,
     total: vesselsTotal,
@@ -167,7 +202,7 @@ export const VesselsView: React.FC = () => {
     setFilters: setVesselFilters,
     reload: reloadVessels,
   } = usePagedQuery<VesselRead, VesselFilters>({
-    fetcher: fetchVesselsPage,
+    fetcher: fetchVesselsForActiveTab,
     filters: vesselFilters,
   });
 
@@ -183,15 +218,18 @@ export const VesselsView: React.FC = () => {
     setVesselFilters(vesselFilters);
   }, [vesselFilters, setVesselFilters]);
 
-  // Sau mỗi thao tác ghi: nạp lại ĐÚNG trang/bộ lọc đang xem + làm mới badge đếm.
+  // Sau mỗi thao tác ghi: nạp lại ĐÚNG trang/bộ lọc đang xem + đánh dấu số đếm cũ
+  // (badge sẽ nạp lại ngay nếu đang ở tab phân loại, hoặc khi vào tab phân loại).
   const reloadVesselList = useCallback(() => {
+    countsFreshRef.current = false;
     reloadVessels();
     reloadClassificationCounts();
   }, [reloadVessels, reloadClassificationCounts]);
 
   const pageVessels = useMemo(() => {
     // `/vessels/` chưa có tham số cho "Loại tàu" và khoảng ngày, còn `active_only`
-    // chỉ diễn tả được "đang hoạt động" ⇒ ba tiêu chí đó lọc trên trang hiện tại.
+    // chỉ diễn tả được "đang hoạt động" ⇒ ba tiêu chí đó lọc trên trang hiện tại
+    // (xem `hasPageLocalFilters` bên dưới — giữ hai chỗ khớp nhau).
     return pagedVessels.filter((v) => {
       if (vesselTypeFilter && String(v.vessel_type_id ?? '') !== vesselTypeFilter) {
         return false;
@@ -203,6 +241,17 @@ export const VesselsView: React.FC = () => {
       return isoInLocalDateRange(t, vesselDateFrom, vesselDateTo);
     });
   }, [pagedVessels, vesselTypeFilter, vesselActive, vesselDateFrom, vesselDateTo]);
+
+  // Ba tiêu chí CHỈ lọc được trên trang hiện tại — server `/vessels/` không có
+  // tham số cho chúng: "Loại tàu", khoảng ngày và trạng thái "Tạm dừng"
+  // (`active_only` chỉ diễn tả được "đang hoạt động"; `q`/tab thì server lo).
+  // Vì vậy bảng có thể hiện ít row hơn — kể cả 0 — so với `total` của server, nên
+  // footer phải nói rõ chứ không được báo "45 bản ghi" khi bảng trống.
+  const hasPageLocalFilters =
+    Boolean(vesselTypeFilter) ||
+    vesselActive === 'inactive' ||
+    Boolean(vesselDateFrom) ||
+    Boolean(vesselDateTo);
 
   const filteredTypes = useMemo(() => {
     return vesselTypes.filter((t) => matchesAnyField(typeQ, t.type_name, t.description));
@@ -370,9 +419,9 @@ export const VesselsView: React.FC = () => {
         activeTab={activeTab}
         onTabChange={handleTabChange}
         activePatternCount={activePatternCount}
-        spotCount={classificationCounts.spot}
-        monthlyCount={classificationCounts.monthly}
-        unclassifiedCount={classificationCounts.unclassified}
+        spotCount={classificationCounts?.spot}
+        monthlyCount={classificationCounts?.monthly}
+        unclassifiedCount={classificationCounts?.unclassified}
       />
 
       {isClassificationTab(activeTab) && (
@@ -399,6 +448,7 @@ export const VesselsView: React.FC = () => {
           vesselTypes={vesselTypes}
           vessels={pagedVessels}
           filteredVessels={pageVessels}
+          hasPageLocalFilters={hasPageLocalFilters}
           isLoading={vesselsPageLoading}
           error={vesselsError}
           page={vesselsPage}

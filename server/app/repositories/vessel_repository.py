@@ -42,9 +42,12 @@ class VesselRepository:
     ) -> Query:
         """Query đã áp bộ lọc, dùng chung cho `get_all` và `count_filtered`.
 
-        `q` tìm không phân biệt hoa thường trên `ship_id` **và** tên tàu để dropdown
-        chọn tàu không phải tải cả bảng; wildcard trong `q` bị escape nên gõ `%`
-        không biến thành "khớp tất cả".
+        `q` tìm không phân biệt hoa thường trên **cùng bốn cột** mà bộ lọc
+        client-side cũ (`matchesAnyField`) đưa vào: `ship_id`, `name`, `owner` và
+        `registration_number` — nhờ vậy gõ tên chủ tàu hay số đăng kiểm vẫn ra
+        kết quả. (`owner_info` của client chỉ là alias của form: `toApiVesselPayload`
+        gửi nó vào cột `owner` và API không trả về, nên không có cột để OR.)
+        Wildcard trong `q` bị escape nên gõ `%` không biến thành "khớp tất cả".
         """
         query = db.query(Vessel)
         if active_only:
@@ -57,6 +60,8 @@ class VesselRepository:
                 or_(
                     ilike_contains(Vessel.ship_id, needle),
                     ilike_contains(Vessel.name, needle),
+                    ilike_contains(Vessel.owner, needle),
+                    ilike_contains(Vessel.registration_number, needle),
                 )
             )
         return query

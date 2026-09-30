@@ -76,7 +76,7 @@ export type VesselVisualReference = {
 export type VesselFilters = {
   /** Tab phân loại đang mở; `undefined` = mọi phân loại. */
   classification?: VesselClassification;
-  /** Từ khóa — server khớp chứa trên `ship_id` hoặc tên tàu. */
+  /** Từ khóa — server khớp chứa trên mã tàu / tên / chủ tàu / số đăng kiểm. */
   q?: string;
   /** Chỉ lấy tàu đang hoạt động. */
   activeOnly?: boolean;

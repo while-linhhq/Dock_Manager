@@ -326,6 +326,67 @@ def test_vessels_q_escapes_like_wildcards() -> None:
         assert _total(underscore) == 1
 
 
+def test_vessels_q_matches_owner_and_registration_number() -> None:
+    """`q` phủ đủ các trường `matchesAnyField` cũ của trang tàu, không chỉ mã/tên.
+
+    Hồi quy Task 14: bộ lọc client cũ khớp `ship_id`, `name`, `owner`,
+    `owner_info`, `registration_number`; bản server-side đầu tiên chỉ OR `ship_id`
+    + `name` nên gõ tên chủ tàu ra "không có kết quả" dù tàu tồn tại.
+    (`owner_info` chỉ là alias của form client — `toApiVesselPayload` gửi nó vào
+    cột `owner` và API không trả về — nên phía server chỉ có 4 cột thật.)
+    """
+    with _api_client() as (session, client):
+        owner_marker = f'testowner{uuid4().hex[:10]}'
+        reg_marker = f'testreg{uuid4().hex[:10]}'
+        by_owner = Vessel(
+            ship_id=f'PAGE-{uuid4().hex[:10]}',
+            name='Tàu thử chủ tàu',
+            owner=f'Công ty TNHH {owner_marker}',
+            classification='unclassified',
+            is_active=True,
+        )
+        by_registration = Vessel(
+            ship_id=f'PAGE-{uuid4().hex[:10]}',
+            name='Tàu thử đăng kiểm',
+            registration_number=f'DK-{reg_marker}',
+            classification='unclassified',
+            is_active=True,
+        )
+        session.add_all([by_owner, by_registration])
+        session.flush()
+
+        by_owner_response = client.get(
+            VESSELS_URL, params={'q': owner_marker, 'limit': MAX_CATALOG_LIMIT}
+        )
+        assert [item['id'] for item in _items(by_owner_response)] == [by_owner.id]
+        assert _total(by_owner_response) == 1
+
+        # Không phân biệt hoa thường, và `q` được trim (như `matchesAnyField`).
+        assert [
+            item['id']
+            for item in _items(
+                client.get(
+                    VESSELS_URL,
+                    params={'q': f'  {owner_marker.upper()}  ', 'limit': MAX_CATALOG_LIMIT},
+                )
+            )
+        ] == [by_owner.id]
+
+        by_reg_response = client.get(
+            VESSELS_URL, params={'q': reg_marker, 'limit': MAX_CATALOG_LIMIT}
+        )
+        assert [item['id'] for item in _items(by_reg_response)] == [by_registration.id]
+        assert _total(by_reg_response) == 1
+
+        # Từ khóa không khớp gì vẫn phải rỗng — OR thêm cột không được thành "khớp tất cả".
+        no_match = client.get(
+            VESSELS_URL,
+            params={'q': f'khong-co-tau-nao-{owner_marker}', 'limit': MAX_CATALOG_LIMIT},
+        )
+        assert _items(no_match) == []
+        assert _total(no_match) == 0
+
+
 def _seed_users(session, *, count: int) -> list[int]:
     rows = [
         User(
