@@ -64,6 +64,64 @@ export type LogsResponse = {
   requested: number;
 }
 
+/** Bảy bộ lọc của bảng nhận diện — gửi thẳng thành tham số query của API. */
+export type DetectionFilters = {
+  q?: string;
+  isAccepted?: 'all' | 'yes' | 'no';
+  vesselId?: string;
+  vesselTypeId?: string;
+  /** Ngày địa phương `YYYY-MM-DD` (ô lọc `input type="date"`). */
+  dateFrom?: string;
+  dateTo?: string;
+  /** Độ tin cậy tối thiểu theo % (ô lọc nhập 0–100). */
+  minConfidencePct?: string;
+};
+
+/** Khóa sắp xếp hợp lệ — khớp whitelist `SORT_COLUMNS` của API detections. */
+export const DETECTION_SORT_KEYS = [
+  'berth',
+  'time',
+  'ship_id',
+  'confidence',
+  'camera',
+  'status',
+] as const;
+
+export type DetectionSortKey = (typeof DETECTION_SORT_KEYS)[number];
+
+export type DetectionSort = {
+  key: DetectionSortKey;
+  order: 'asc' | 'desc';
+};
+
+export function isDetectionSortKey(value: string): value is DetectionSortKey {
+  return DETECTION_SORT_KEYS.some((key) => key === value);
+}
+
+/**
+ * Ngày địa phương `YYYY-MM-DD` → instant UTC để server so với
+ * `coalesce(start_time, created_at)`. `endOfDay` dành cho mốc "đến ngày"
+ * (23:59:59.999 giờ địa phương) — đúng khoảng ngày mà bộ lọc client-side
+ * trước đây áp dụng.
+ */
+function localDateToUtcIso(value: string | undefined, endOfDay: boolean): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec((value ?? '').trim());
+  if (!match) {
+    return undefined;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = endOfDay
+    ? new Date(year, month - 1, day, 23, 59, 59, 999)
+    : new Date(year, month - 1, day);
+  // `new Date(y, m, d)` tự cuộn ngày/tháng không hợp lệ (31/02 → 02/03) nên so lại.
+  if (date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return undefined;
+  }
+  return date.toISOString();
+}
+
 function toCameraApiPayload(data: CameraCreate | Partial<CameraCreate>): Partial<CameraApiPayload> {
   return {
     ...(data.name != null ? { camera_name: data.name } : {}),
@@ -73,13 +131,38 @@ function toCameraApiPayload(data: CameraCreate | Partial<CameraCreate>): Partial
 }
 
 export const portApi = {
-  getDetections: async (skip: number = 0, limit: number = 100, vesselId?: string): Promise<DetectionRead[]> => {
-    const params = new URLSearchParams({ skip: skip.toString(), limit: limit.toString() });
-    if (vesselId) params.append('vessel_id', vesselId);
-    // include_presigned_paths: đổi s3://... thành URL media qua API để modal đối chiếu
-    // (nhánh fallback khi detection không có bản ghi media) mở được từ trình duyệt ở xa.
-    params.append('include_presigned_paths', 'true');
-    return httpClient.get<DetectionRead[]>(`/detections/?${params.toString()}`);
+  /**
+   * Một trang nhận diện: 7 bộ lọc + sắp xếp chạy ở SQL phía server.
+   * Tham số khớp `fetcher` của `usePagedQuery` (`skip`/`limit`/`filters`/`sort`).
+   */
+  getDetectionsPage: async (request: {
+    skip: number;
+    limit: number;
+    filters: DetectionFilters;
+    sort?: DetectionSort;
+  }): Promise<{ items: DetectionRead[]; total: number }> => {
+    const { skip, limit, filters, sort } = request;
+    const minConfidencePct = (filters.minConfidencePct ?? '').trim();
+    const minConfidence = minConfidencePct ? Number(minConfidencePct) : Number.NaN;
+
+    return httpClient.getPaged<DetectionRead>('/detections/', {
+      skip,
+      limit,
+      q: filters.q || undefined,
+      // "Tất cả" thì bỏ hẳn tham số, chỉ gửi khi người dùng chọn rõ có/chưa duyệt.
+      is_accepted:
+        filters.isAccepted === 'yes' ? true : filters.isAccepted === 'no' ? false : undefined,
+      vessel_id: filters.vesselId || undefined,
+      vessel_type_id: filters.vesselTypeId || undefined,
+      occurred_from: localDateToUtcIso(filters.dateFrom, false),
+      occurred_to: localDateToUtcIso(filters.dateTo, true),
+      min_confidence: Number.isFinite(minConfidence) ? minConfidence / 100 : undefined,
+      sort: sort?.key,
+      order: sort?.order,
+      // include_presigned_paths: đổi s3://... thành URL media qua API để modal đối chiếu
+      // (nhánh fallback khi detection không có bản ghi media) mở được từ trình duyệt ở xa.
+      include_presigned_paths: true,
+    });
   },
   verifyDetection: async (id: string, data: DetectionVerify): Promise<DetectionRead> => {
     return httpClient.post<DetectionRead>(`/detections/${id}/verify`, data);

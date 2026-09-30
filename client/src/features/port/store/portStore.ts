@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DetectionRead, CameraRead } from '../../../types/api.types';
+import type { CameraRead } from '../../../types/api.types';
 import { portApi } from '../services/portApi';
 import type {
   DetectionVerify,
@@ -12,12 +12,10 @@ import type {
 } from '../services/portApi';
 
 interface PortState {
-  detections: DetectionRead[];
   cameras: CameraRead[];
   configs: PortConfigRead[];
   isLoading: boolean;
   error: string | null;
-  fetchDetections: (skip?: number, limit?: number, vesselId?: string) => Promise<void>;
   fetchCameras: (activeOnly?: boolean) => Promise<void>;
   fetchConfigs: () => Promise<void>;
   verifyDetection: (id: string, data: DetectionVerify) => Promise<void>;
@@ -34,39 +32,10 @@ interface PortState {
 }
 
 export const usePortStore = create<PortState>((set, get) => ({
-  detections: [],
   cameras: [],
   configs: [],
   isLoading: false,
   error: null,
-  fetchDetections: async (skip, limit, vesselId) => {
-    set({ isLoading: true, error: null });
-    try {
-      // If caller passes explicit paging, honor it. Otherwise load ALL detections
-      // by paging through the backend so the client table can filter/sort the full set.
-      if (skip !== undefined || limit !== undefined) {
-        const detections = await portApi.getDetections(skip, limit, vesselId);
-        set({ detections, isLoading: false });
-        return;
-      }
-      const pageSize = 500;
-      const all: DetectionRead[] = [];
-      let offset = 0;
-      // Hard ceiling to avoid an infinite loop if the API ever misbehaves.
-      const maxPages = 200;
-      for (let page = 0; page < maxPages; page += 1) {
-        const batch = await portApi.getDetections(offset, pageSize, vesselId);
-        all.push(...batch);
-        if (batch.length < pageSize) {
-          break;
-        }
-        offset += pageSize;
-      }
-      set({ detections: all, isLoading: false });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch detections', isLoading: false });
-    }
-  },
   fetchCameras: async (activeOnly) => {
     set({ isLoading: true, error: null });
     try {
@@ -85,11 +54,14 @@ export const usePortStore = create<PortState>((set, get) => ({
       set({ error: err.message || 'Failed to fetch configs', isLoading: false });
     }
   },
+  // Danh sách nhận diện không còn nằm trong store: `usePagedQuery` ở PortView giữ
+  // trang/bộ lọc/sắp xếp và gọi `reload()` sau mỗi mutation để nạp lại ĐÚNG trang
+  // đang xem (thay cho việc tải lại toàn bộ như trước).
   verifyDetection: async (id, data) => {
     set({ isLoading: true, error: null });
     try {
       await portApi.verifyDetection(id, data);
-      await get().fetchDetections();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to verify detection', isLoading: false });
       throw err;
@@ -99,7 +71,7 @@ export const usePortStore = create<PortState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await portApi.updateDetection(id, data);
-      await get().fetchDetections();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to update detection', isLoading: false });
       throw err;
@@ -167,7 +139,7 @@ export const usePortStore = create<PortState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await portApi.deleteDetection(id);
-      await get().fetchDetections();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to delete detection', isLoading: false });
       throw err;

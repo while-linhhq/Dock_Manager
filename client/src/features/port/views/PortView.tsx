@@ -3,19 +3,19 @@ import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { usePortStore } from '../store/portStore';
-import type {
-  CameraCreate,
-  DetectionUpdate,
-  PortConfigCreate,
-  PortConfigRead,
-} from '../services/portApi';
 import {
-  getDetectionDisplayTimeIso,
-  getDetectionShipLabel,
-  getDetectionSortTs,
-} from '../../../utils/detection-display';
-import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
+  portApi,
+  type CameraCreate,
+  type DetectionFilters,
+  type DetectionSort,
+  type DetectionUpdate,
+  type PortConfigCreate,
+  type PortConfigRead,
+} from '../services/portApi';
+import type { DetectionRead } from '../../../types/api.types';
+import { matchesAnyField } from '../../../utils/table-filters';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
+import { usePagedQuery } from '../../../hooks/usePagedQuery';
 import { cameraSchema, configSchema } from '../port-schemas';
 import { PortMainTabs, type PortMainTab } from '../components/PortMainTabs';
 import { PortDetectionsSection } from '../components/PortDetectionsSection';
@@ -61,10 +61,8 @@ export const PortView: React.FC = () => {
   const [cfgValQ, setCfgValQ] = useState('');
 
   const {
-    detections,
     configs,
     isLoading,
-    fetchDetections,
     fetchConfigs,
     verifyDetection,
     updateDetection,
@@ -77,6 +75,54 @@ export const PortView: React.FC = () => {
     shutdownServer,
   } = usePortStore();
   const { vessels: filterVessels, vesselTypes: filterVesselTypes } = useFilterOptions();
+
+  // Bảy ô lọc của bảng nhận diện → tham số API; server lọc/sắp xếp, client không
+  // còn lọc lại (trước đây `filteredDetections` lọc trên tối đa 200 bản ghi).
+  const detFilters = useMemo<DetectionFilters>(
+    () => ({
+      q: detQ.trim() || undefined,
+      isAccepted: detAccepted,
+      vesselId: detShipIdFilter || undefined,
+      vesselTypeId: detVesselTypeFilter || undefined,
+      dateFrom: detDateFrom || undefined,
+      dateTo: detDateTo || undefined,
+      minConfidencePct: detMinConfPct.trim() || undefined,
+    }),
+    [
+      detQ,
+      detAccepted,
+      detShipIdFilter,
+      detVesselTypeFilter,
+      detDateFrom,
+      detDateTo,
+      detMinConfPct,
+    ],
+  );
+
+  // `usePagedQuery` là nguồn sự thật duy nhất cho trang/bộ lọc/sắp xếp của danh
+  // sách nhận diện; `filters` truyền vào chỉ là giá trị KHỞI TẠO.
+  const {
+    items: detections,
+    total: detectionsTotal,
+    page: detectionsPage,
+    pageSize: detectionsPageSize,
+    isLoading: detectionsLoading,
+    error: detectionsError,
+    setPage: setDetectionsPage,
+    setPageSize: setDetectionsPageSize,
+    setFilters: setDetFilters,
+    setSort: setDetSort,
+    reload: reloadDetections,
+  } = usePagedQuery<DetectionRead, DetectionFilters, DetectionSort>({
+    fetcher: portApi.getDetectionsPage,
+    filters: detFilters,
+  });
+
+  // Đẩy nội dung bộ lọc xuống hook. Object đã được memo hoá nên hiệu ứng chỉ chạy
+  // khi bộ lọc THỰC SỰ đổi; hook tự đưa `page` về 1 rồi debounce trước khi gọi API.
+  useEffect(() => {
+    setDetFilters(detFilters);
+  }, [detFilters, setDetFilters]);
 
   const cameraForm = useForm<CameraCreate>({
     resolver: zodResolver(cameraSchema),
@@ -98,67 +144,11 @@ export const PortView: React.FC = () => {
   };
 
   useEffect(() => {
-    if (activeTab === 'detections') fetchDetections();
+    // Danh sách nhận diện do `usePagedQuery` tự nạp (kèm phân trang/bộ lọc).
     if (activeTab === 'configs' || activeTab === 'payment' || activeTab === 'seam-anchor') {
       fetchConfigs();
     }
-  }, [activeTab, fetchDetections, fetchConfigs]);
-
-  const filteredDetections = useMemo(() => {
-    const matched = detections.filter((det) => {
-      const label = getDetectionShipLabel(det);
-      const iso = getDetectionDisplayTimeIso(det);
-      if (
-        !matchesAnyField(
-          detQ,
-          label,
-          det.track_id,
-          String(det.vessel_id ?? ''),
-          det.vessel?.ship_id,
-        )
-      ) {
-        return false;
-      }
-      if (detAccepted === 'yes' && det.is_accepted !== true) {
-        return false;
-      }
-      if (detAccepted === 'no' && det.is_accepted === true) {
-        return false;
-      }
-      const matchedVessel = filterVessels.find((vessel) => String(vessel.id) === String(det.vessel_id ?? ''));
-      if (detShipIdFilter && String(det.vessel_id ?? matchedVessel?.id ?? '') !== detShipIdFilter) {
-        return false;
-      }
-      if (
-        detVesselTypeFilter &&
-        String(det.vessel?.vessel_type_id ?? matchedVessel?.vessel_type_id ?? '') !== detVesselTypeFilter
-      ) {
-        return false;
-      }
-      if (!isoInLocalDateRange(iso ?? det.created_at, detDateFrom, detDateTo)) {
-        return false;
-      }
-      if (detMinConfPct.trim()) {
-        const min = Number(detMinConfPct);
-        const c = Number(det.confidence ?? 0) * 100;
-        if (!Number.isFinite(min) || c < min) {
-          return false;
-        }
-      }
-      return true;
-    });
-    return matched.sort((a, b) => getDetectionSortTs(b) - getDetectionSortTs(a));
-  }, [
-    detections,
-    detQ,
-    detAccepted,
-    detShipIdFilter,
-    detVesselTypeFilter,
-    detDateFrom,
-    detDateTo,
-    detMinConfPct,
-    filterVessels,
-  ]);
+  }, [activeTab, fetchConfigs]);
 
   const filteredConfigs = useMemo(() => {
     return configs.filter((cfg) => {
@@ -261,15 +251,23 @@ export const PortView: React.FC = () => {
     }
   };
 
+  // Sau mỗi mutation, nạp lại ĐÚNG trang/bộ lọc đang xem (thay vì tải lại cả bảng).
   const handleDeleteDetection = async (id: string) => {
     if (!window.confirm('Xác nhận xóa bản ghi nhận diện này?')) {
       return;
     }
     await deleteDetection(id);
+    reloadDetections();
   };
 
   const handleUpdateDetection = async (id: string, data: DetectionUpdate) => {
     await updateDetection(id, data);
+    reloadDetections();
+  };
+
+  const handleVerifyDetection = async (id: string, data: { is_accepted: boolean }) => {
+    await verifyDetection(id, data);
+    reloadDetections();
   };
 
   return (
@@ -294,13 +292,19 @@ export const PortView: React.FC = () => {
           setDetMinConfPct={setDetMinConfPct}
           resetDetFilters={resetDetFilters}
           detFilterCount={detFilterCount}
-          onRefresh={() => fetchDetections()}
-          isLoading={isLoading}
+          onRefresh={reloadDetections}
+          isLoading={detectionsLoading}
+          error={detectionsError}
           detections={detections}
-          filteredDetections={filteredDetections}
+          page={detectionsPage}
+          pageSize={detectionsPageSize}
+          total={detectionsTotal}
+          onPageChange={setDetectionsPage}
+          onPageSizeChange={setDetectionsPageSize}
+          onSortChange={setDetSort}
           vessels={filterVessels}
           vesselTypes={filterVesselTypes}
-          onVerify={(id, data) => verifyDetection(id, data)}
+          onVerify={handleVerifyDetection}
           onDeleteDetection={handleDeleteDetection}
           onUpdateDetection={handleUpdateDetection}
         />
