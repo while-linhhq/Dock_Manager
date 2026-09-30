@@ -720,22 +720,35 @@ def run_detections(
             # mặc định của endpoint (`berth`), client sắp theo `getDetectionSortTs`.
             order_mismatches += 1
             first = next(
-                position
-                for position, (client_id, sql_id) in enumerate(
-                    zip(expected_order, actual_order)
-                )
-                if client_id != sql_id
+                (
+                    position
+                    for position, (client_id, sql_id) in enumerate(
+                        zip(expected_order, actual_order)
+                    )
+                    if client_id != sql_id
+                ),
+                None,
             )
+            if first is None:
+                # Không có vị trí nào khác nhau trong phần chung ⇒ hai bên chỉ có
+                # thể khác độ dài (id trùng ở một bên). Nói rõ thay vì để `next`
+                # ném StopIteration khó đọc.
+                detail = (
+                    f'lệch thứ tự ở phần đuôi: client {len(expected_order)} id '
+                    f'≠ SQL {len(actual_order)} id'
+                )
+            else:
+                detail = (
+                    f'lệch từ vị trí {first}: client id {expected_order[first]} '
+                    f'≠ SQL id {actual_order[first]}'
+                )
             mismatches.append(
                 Mismatch(
                     group='bến · thứ tự',
                     filters=_describe(filters),
                     only_client=[],
                     only_sql=[],
-                    detail=(
-                        f'lệch từ vị trí {first}: client id {expected_order[first]} '
-                        f'≠ SQL id {actual_order[first]}'
-                    ),
+                    detail=detail,
                 )
             )
         if progress_every and index % progress_every == 0:

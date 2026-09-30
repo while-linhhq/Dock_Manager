@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -29,6 +29,7 @@ from app.services.invoice_snapshot_service import is_invoice_financially_locked
 from app.services.bulk_sepay_service import create_bulk_sepay_session, sync_bulk_sepay_session
 from app.services.invoice_payment_service import bulk_record_payments
 from app.services.sepay_sync_service import sync_sepay_payments
+from app.utils.datetimes import as_utc
 from app.utils.pagination import resolve_page, set_total_header
 
 router = APIRouter()
@@ -46,15 +47,6 @@ def _invoice_to_read(db: Session, inv) -> InvoiceRead:
             'is_outside_operating_hours': outside,
         },
     )
-
-
-def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 @router.get('/', response_model=List[InvoiceRead])
@@ -111,8 +103,8 @@ def list_invoices(
         'q': q,
         'vessel_id': vessel_id,
         'vessel_type_id': vessel_type_id,
-        'created_from': _as_utc(created_from),
-        'created_to': _as_utc(created_to),
+        'created_from': as_utc(created_from),
+        'created_to': as_utc(created_to),
         'min_total': min_total,
         'max_total': max_total,
         'min_berth_minutes': min_berth_minutes,

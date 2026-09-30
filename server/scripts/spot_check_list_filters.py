@@ -553,6 +553,9 @@ def check_q_is_track_only(api: Api, rows: list[dict]) -> int:
     SQL trả về. Nếu ai đó nối lại nhánh nhãn tàu vào `q` thì cột SQL sẽ bằng con số
     OR (lớn hơn) và lượt này báo LỆCH — đúng thứ bản port cũ (port chính phép OR
     của server) không thể phát hiện.
+
+    Nếu không dựng được ca (mọi nhãn tàu đều nằm trong `track_id`) thì báo LỆCH
+    chứ **không** bỏ qua: cổng này không được phép im lặng ĐẠT khi chưa kiểm tra gì.
     """
     needle = next(
         (
@@ -563,8 +566,13 @@ def check_q_is_track_only(api: Api, rows: list[dict]) -> int:
         None,
     )
     if needle is None:
-        print('  (bỏ qua: mọi nhãn tàu đều xuất hiện trong `track_id` — không dựng được ca)')
-        return 0
+        # Cổng chống OR: mọi nhãn tàu đều xuất hiện trong `track_id` nên không dựng
+        # được ca phân biệt — lượt này KHÔNG kiểm tra được gì. Trước đây chỗ này in
+        # "(bỏ qua: …)" rồi trả 0, tức cổng có thể im lặng ĐẠT mà không hề chạy;
+        # giờ báo LỆCH để không bao giờ bỏ qua được.
+        print('  LỆCH q chỉ có trong nhãn tàu: KHÔNG dựng được ca — mọi nhãn tàu đều '
+              'xuất hiện trong `track_id`; cổng chống OR không được phép bỏ qua.')
+        return 1
     by_label = sum(1 for row in rows if contains(row.get('voted_ship_id'), needle))
     by_track = sum(1 for row in rows if contains(row.get('track_id'), needle))
     or_count = sum(

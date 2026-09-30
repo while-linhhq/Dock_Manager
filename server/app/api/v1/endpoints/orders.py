@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
 
@@ -15,18 +15,10 @@ from app.schemas.order import (
 )
 from app.repositories.order_repository import DEFAULT_ORDER, DEFAULT_SORT, order_repo
 from app.services.order_invoice_service import ensure_invoice_for_order
+from app.utils.datetimes import as_utc
 from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 
 router = APIRouter()
-
-
-def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def _prepare_create_payload(data: OrderCreate, db: Session, user_id: int) -> dict:
@@ -86,8 +78,8 @@ def list_orders(
         'q': q,
         'vessel_id': vessel_id,
         'vessel_type_id': vessel_type_id,
-        'created_from': _as_utc(created_from),
-        'created_to': _as_utc(created_to),
+        'created_from': as_utc(created_from),
+        'created_to': as_utc(created_to),
         'min_total': min_total,
         'max_total': max_total,
         'sort': sort,

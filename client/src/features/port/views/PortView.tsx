@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -120,7 +120,14 @@ export const PortView: React.FC = () => {
 
   // Đẩy nội dung bộ lọc xuống hook. Object đã được memo hoá nên hiệu ứng chỉ chạy
   // khi bộ lọc THỰC SỰ đổi; hook tự đưa `page` về 1 rồi debounce trước khi gọi API.
+  // Bỏ qua lần chạy đầu vì hook đã KHỞI TẠO bằng chính `detFilters` (đẩy lại đúng
+  // object đó chỉ làm hook tăng token nạp lại → thêm một request thừa lúc mở trang).
+  const pushedDetFiltersRef = useRef(detFilters);
   useEffect(() => {
+    if (pushedDetFiltersRef.current === detFilters) {
+      return;
+    }
+    pushedDetFiltersRef.current = detFilters;
     setDetFilters(detFilters);
   }, [detFilters, setDetFilters]);
 

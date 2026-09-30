@@ -49,6 +49,8 @@ def _berth_time_expr():
     là `timestamp without time zone` chứa giờ UTC: phải `timezone('UTC', ...)` để
     coalesce cùng kiểu và **không** phụ thuộc timezone của session DB.
     """
+    # Giả định: `start_time`/`created_at` tuy là naive nhưng chứa giờ UTC, không
+    # phải giờ local — nếu không, mốc sort này sẽ lệch so với `getDetectionSortTs`.
     return func.coalesce(
         Detection.berth_in_time,
         func.timezone('UTC', Detection.start_time),

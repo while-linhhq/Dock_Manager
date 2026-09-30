@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
 
 from app.db.session import get_db
@@ -11,18 +11,10 @@ from app.repositories.audit_log_repository import (
     DEFAULT_SORT,
     audit_log_repo,
 )
+from app.utils.datetimes import as_utc
 from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 
 router = APIRouter()
-
-
-def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 @router.get('/', response_model=List[AuditLogRead])
@@ -68,8 +60,8 @@ def list_audit_logs(
         'q': q,
         'action': action,
         'table_name': table_name,
-        'created_from': _as_utc(created_from),
-        'created_to': _as_utc(created_to),
+        'created_from': as_utc(created_from),
+        'created_to': as_utc(created_to),
         'sort': sort,
         'order': order,
     }

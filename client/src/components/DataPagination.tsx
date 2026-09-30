@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type MouseEvent } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { filterControlClass } from './TableFilterPanel/TableFilterPanel';
@@ -77,10 +77,14 @@ export function DataPagination({
 
   // Cờ chỉ sống trong một lần bấm nút: bật ở mousedown (trước blur) và tắt lại ở
   // mouseup/mouseleave để trường hợp bấm rồi kéo ra ngoài không làm treo cờ — nếu
-  // treo, lần gõ số trang sau đó sẽ bị blur bỏ qua một cách khó hiểu.
+  // treo, lần gõ số trang sau đó sẽ bị blur bỏ qua một cách khó hiểu. Chỉ bật với
+  // chuột TRÁI: bấm chuột phải rồi thả ra ngoài không phát mouseup/mouseleave nên
+  // cờ sẽ treo lại.
   const navDraftGuard = {
-    onMouseDown: () => {
-      skipDraftCommitRef.current = true;
+    onMouseDown: (e: MouseEvent) => {
+      if (e.button === 0) {
+        skipDraftCommitRef.current = true;
+      }
     },
     onMouseUp: () => {
       skipDraftCommitRef.current = false;

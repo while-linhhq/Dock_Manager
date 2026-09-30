@@ -10,18 +10,10 @@ from app.api.deps import get_current_user
 from app.schemas.port_log import PortLogCreate, PortLogRead
 from app.repositories.port_log_repository import DEFAULT_ORDER, DEFAULT_SORT, port_log_repo
 from app.services.outside_hours_stats_service import outside_hours_berth_summary
+from app.utils.datetimes import as_utc
 from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 
 router = APIRouter()
-
-
-def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 @router.get('/outside-hours-summary')
@@ -119,8 +111,8 @@ def list_port_logs(
         'q': q,
         'vessel_type_id': vessel_type_id,
         'min_confidence': min_confidence,
-        'logged_from': _as_utc(logged_from),
-        'logged_to': _as_utc(logged_to),
+        'logged_from': as_utc(logged_from),
+        'logged_to': as_utc(logged_to),
         'sort': sort,
         'order': order,
     }

@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import List, Optional
 
 from app.db.session import get_db
@@ -14,8 +14,9 @@ from app.services.detection_invoice_service import recompute_ai_invoice_for_dete
 from app.repositories.detection_repository import detection_repo
 from app.repositories.detection_media_repository import detection_media_repo
 from app.services.storage.s3_service import parse_minio_uri
+from app.utils.datetimes import as_utc
 from app.utils.media_token import build_media_view_url
-from app.utils.pagination import resolve_page, set_total_header
+from app.utils.pagination import DEFAULT_PAGE_SIZE, resolve_page, set_total_header
 from app.services.berth_limit_service import compute_detection_over_berth_limit
 from app.services.detection_camera_service import resolve_camera_in_out
 
@@ -89,21 +90,12 @@ def create_detection(
     return _detection_to_read(db, created, request=request)
 
 
-def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
-    """Chuẩn hoá instant lọc về UTC; giá trị không kèm offset được hiểu là UTC."""
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 @router.get('/', response_model=List[DetectionRead])
 def list_detections(
     request: Request,
     response: Response,
     skip: int = 0,
-    limit: int = 50,
+    limit: int = DEFAULT_PAGE_SIZE,
     vessel_id: Optional[int] = None,
     ship_id: Optional[str] = None,
     event_date: Optional[date] = None,
@@ -132,8 +124,8 @@ def list_detections(
     thứ tự trang bến đang hiển thị; `time` = thời gian hiển thị của cột "Thời gian".
     """
     skip, limit = resolve_page(skip, limit)
-    occurred_from = _as_utc(occurred_from)
-    occurred_to = _as_utc(occurred_to)
+    occurred_from = as_utc(occurred_from)
+    occurred_to = as_utc(occurred_to)
     filters = {
         'vessel_id': vessel_id,
         'ship_id': ship_id,
