@@ -88,6 +88,14 @@ function getInvoiceShipLabel(inv: InvoiceRead, vessels: VesselRead[]): string {
  */
 const INITIAL_INV_SORT: SortState = { key: null, direction: 'asc' };
 
+/**
+ * `useTableSort` ở đây CHỈ giữ trạng thái mũi tên trên tiêu đề: thứ tự của trang do
+ * server quyết định nên hook không được sắp lại trang tại chỗ. Truyền mảng rỗng và
+ * không accessor nào để `sortRows` trả về ngay — trước đây memo sort chạy lại MỖI
+ * render (vì `accessors` là object literal mới) rồi kết quả bị bỏ đi.
+ */
+const NO_INV_SORT_ACCESSORS: SortAccessors<InvoiceRead> = {};
+
 export type RevenueInvoiceSectionProps = {
   isAutoInvoiceTab: boolean;
   invoiceSubTab: InvoiceSubTab;
@@ -190,21 +198,13 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   const noteSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // Sắp xếp do SERVER thực hiện: `useTableSort` chỉ giữ trạng thái mũi tên trên tiêu
-  // đề (`sorted` không dùng — thứ tự trong trang là của server, không sắp lại tại chỗ).
-  const sortAccessors: SortAccessors<InvoiceRead> = {
-    invoice_number: (inv) => inv.invoice_number ?? '',
-    ship_order: (inv) =>
-      isAutoInvoiceTab
-        ? (inv.vessel_ship_id ?? '')
-        : inv.order_id != null && inv.order_id !== ''
-          ? String(inv.order_id)
-          : '',
-    created_at: (inv) => inv.created_at ?? '',
-    deleted_at: (inv) => inv.deleted_at ?? '',
-    payment_status: (inv) => normInvoicePaymentStatus(inv.payment_status),
-    total_amount: (inv) => Number(inv.total_amount ?? 0),
-  };
-  const { sort, setSort } = useTableSort(invoices, sortAccessors, INITIAL_INV_SORT);
+  // đề. Không truyền dòng/accessor nào để hook không sắp lại trang nữa (`sorted`
+  // không dùng — thứ tự trong trang là của server, không sắp lại tại chỗ).
+  const { sort, setSort } = useTableSort<InvoiceRead>(
+    [],
+    NO_INV_SORT_ACCESSORS,
+    INITIAL_INV_SORT,
+  );
 
   /**
    * Đổi cột/chiều: cập nhật mũi tên trên tiêu đề rồi báo server nạp lại trang 1 với

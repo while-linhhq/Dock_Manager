@@ -37,6 +37,13 @@ export const RevenueExcelExportChoiceModal: React.FC<RevenueExcelExportChoiceMod
    * người dùng tưởng file chứa toàn bộ tập lọc.
    */
   const isPageScoped = tabCount > filteredCount;
+  /**
+   * `tabCount` là tổng số hoá đơn khớp TAB + BỘ LỌC đang bật (server trả qua
+   * `X-Total-Count`), KHÔNG phải tổng của riêng tab: khi bộ lọc thu nhỏ tập kết quả
+   * xuống dưới một trang thì con số này chính bằng số sau lọc. Nhãn phải nói đúng
+   * điều đó — «Tab hiện tại: 3» khiến người dùng tưởng tab chỉ có 3 hoá đơn.
+   */
+  const matchedCountLabel = `Khớp tab + bộ lọc: ${tabCount} hóa đơn`;
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Xuất Excel">
       <div className="space-y-4">
@@ -57,8 +64,8 @@ export const RevenueExcelExportChoiceModal: React.FC<RevenueExcelExportChoiceMod
           </p>
           <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
             {isPageScoped
-              ? `Tab hiện tại: ${tabCount} hóa đơn · Đang hiển thị: ${filteredCount} hóa đơn của trang này`
-              : `Tab hiện tại: ${tabCount} hóa đơn · Khớp filter: ${filteredCount}`}
+              ? `${matchedCountLabel} · Đang hiển thị: ${filteredCount} hóa đơn của trang này`
+              : `${matchedCountLabel} · Khớp filter: ${filteredCount}`}
           </p>
         </div>
 
