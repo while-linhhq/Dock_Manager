@@ -52,11 +52,24 @@ function periodLabelVi(p: DashboardPeriod | undefined): string {
 }
 
 /**
- * Biểu đồ lượt nhận diện là cửa sổ cuộn 24 giờ (`by_hour` của API tổng hợp, port
- * `buildDetectionsByHourLast24h`) nên tiêu đề KHÔNG đổi theo nút kỳ ngày/tháng/năm;
- * ba biểu đồ còn lại mới theo kỳ.
+ * Tiêu đề biểu đồ lượt nhận diện khi chuỗi số lấy từ `summary`
+ * (`detection_volume_labels/counts`): trục đã theo kỳ nên tiêu đề phải theo kỳ.
  */
-const DETECTION_VOLUME_CHART_TITLE = 'Lượt nhận diện theo giờ — 24 giờ qua';
+function detectionVolumeChartTitle(p: DashboardPeriod): string {
+  if (p === 'month') {
+    return 'Lượt nhận diện theo ngày trong tháng';
+  }
+  if (p === 'year') {
+    return 'Lượt nhận diện theo tháng trong năm';
+  }
+  return 'Lượt nhận diện theo giờ trong ngày';
+}
+
+/**
+ * Tiêu đề nhánh dự phòng: `summary` không có chuỗi khối lượng theo kỳ nên biểu đồ vẽ
+ * trục giờ dựng từ `analytics.by_hour` — cửa sổ cuộn 24 giờ, KHÔNG đổi theo kỳ.
+ */
+const DETECTION_VOLUME_FALLBACK_TITLE = 'Lượt nhận diện theo giờ — 24 giờ qua';
 
 function boundaryCrossingChartTitle(p: DashboardPeriod): string {
   if (p === 'month') {
@@ -69,11 +82,16 @@ function boundaryCrossingChartTitle(p: DashboardPeriod): string {
 }
 
 export type DashboardAiAnalyticsChartsProps = {
-  /** Số tổng hợp của bốn widget — nguồn DUY NHẤT, không đếm trên mảng detection. */
+  /**
+   * Số tổng hợp của các widget phân tích (donut, top tàu, confidence, và trục giờ dự
+   * phòng của biểu đồ lượt nhận diện) — không đếm trên mảng detection.
+   */
   analytics: DashboardDetectionAnalytics | null;
   stats: DashboardStats | null;
   summary: DashboardSummary | null;
   summaryPeriod: DashboardPeriod;
+  /** Lỗi riêng của `GET /dashboard/detection-analytics` — bốn biểu đồ vẫn vẽ, kèm băng báo lỗi. */
+  analyticsError: string | null;
   isLoading: boolean;
   onRefresh: () => void;
 };
@@ -83,16 +101,30 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
   stats,
   summary,
   summaryPeriod,
+  analyticsError,
   isLoading,
   onRefresh,
 }) => {
   const isDark = useHtmlDarkClass();
   const base = useMemo(() => apexCommon(isDark), [isDark]);
 
-  const volumeSeries = useMemo(
-    () => buildHourAxisFromAnalytics(analytics?.by_hour),
-    [analytics],
-  );
+  const volumeSeries = useMemo(() => {
+    const labels = summary?.detection_volume_labels;
+    const counts = summary?.detection_volume_counts;
+    if (labels && labels.length > 0 && counts && counts.length === labels.length) {
+      return {
+        categories: labels,
+        data: counts.map((n) => Number(n)),
+        fromSummary: true as const,
+      };
+    }
+    // Dự phòng: trục giờ dựng từ `analytics.by_hour` (cửa sổ cuộn 24 giờ của API
+    // tổng hợp) — KHÔNG đếm trên mảng `detections` mà sidebar tải.
+    return {
+      ...buildHourAxisFromAnalytics(analytics?.by_hour),
+      fromSummary: false as const,
+    };
+  }, [summary, analytics]);
 
   const boundarySeries = useMemo(() => {
     const labels = summary?.boundary_volume_labels;
@@ -243,6 +275,16 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
+      {analyticsError ? (
+        <p
+          role="alert"
+          className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-mono uppercase tracking-wide text-rose-600 dark:text-rose-400"
+        >
+          Không tải được số liệu phân tích ({analyticsError}) — bốn biểu đồ bên dưới đang trống. Bấm «Làm
+          mới» để thử lại.
+        </p>
+      ) : null}
+
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <BarChart3 className="h-4 w-4 text-blue-500" />
@@ -251,10 +293,11 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
               Phân tích dữ liệu nhận diện
             </h3>
             <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 max-w-xl">
-              Trạng thái duyệt, top tàu và phân bố độ tin cậy tổng hợp theo kỳ{' '}
-              <span className="font-semibold">{periodLabelVi(summaryPeriod)}</span> (múi giờ VN); biểu đồ lượt
-              nhận diện là cửa sổ cuộn 24 giờ qua. Số liệu do server tổng hợp trên toàn bộ dữ liệu trong kỳ,
-              không đếm trên mảng nhận diện mà sidebar tải. Tab «Xem trực tiếp» — luồng camera.
+              Trạng thái duyệt, top tàu, phân bố độ tin cậy và lượt nhận diện tổng hợp theo kỳ{' '}
+              <span className="font-semibold">{periodLabelVi(summaryPeriod)}</span> (múi giờ VN); chỉ khi API
+              summary thiếu chuỗi khối lượng theo kỳ thì biểu đồ lượt nhận diện mới dùng cửa sổ cuộn 24 giờ
+              qua. Số liệu do server tổng hợp trên toàn bộ dữ liệu trong kỳ, không đếm trên mảng nhận diện mà
+              sidebar tải. Tab «Xem trực tiếp» — luồng camera.
             </p>
           </div>
         </div>
@@ -287,10 +330,14 @@ export const DashboardAiAnalyticsCharts: React.FC<DashboardAiAnalyticsChartsProp
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="lg:col-span-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/80 dark:bg-white/[0.02] p-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-0.5 px-1">
-            {DETECTION_VOLUME_CHART_TITLE}
+            {volumeSeries.fromSummary
+              ? detectionVolumeChartTitle(summaryPeriod)
+              : DETECTION_VOLUME_FALLBACK_TITLE}
           </p>
           <p className="text-[9px] text-gray-500 dark:text-gray-400 px-1 mb-2 leading-snug">
-            Cửa sổ cuộn 24 giờ gần nhất, nhãn là giờ địa phương — không đổi theo nút ngày/tháng/năm ở trên.
+            {volumeSeries.fromSummary
+              ? `Kỳ: ${periodLabelVi(summaryPeriod)} (múi giờ VN) — trục thời gian theo đúng nút ngày/tháng/năm ở trên.`
+              : 'Cửa sổ cuộn 24 giờ gần nhất, nhãn là giờ địa phương — không đổi theo nút ngày/tháng/năm ở trên (API summary chưa có chuỗi khối lượng theo kỳ).'}
           </p>
           <ReactApexChart
             options={areaOptions}
