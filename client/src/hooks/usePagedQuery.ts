@@ -55,6 +55,10 @@ function resolveErrorMessage(error: unknown): string {
  * gọi `fetcher` với `skip = (page - 1) * pageSize`, debounce khi bộ lọc/sắp xếp
  * đổi, và bỏ qua kết quả của request cũ (chống race).
  *
+ * Sau mỗi lần nạp thành công, nếu `total` mới khiến trang hiện tại không còn tồn
+ * tại (`page > totalPages`) thì hook tự lùi về trang cuối và nạp lại — nên phía
+ * consumer không bao giờ phải xử lý trang vượt quá giới hạn.
+ *
  * `filters`/`sort` trong options chỉ là giá trị KHỞI TẠO (không theo dõi thay
  * đổi của prop): muốn đổi bộ lọc/sắp xếp thì gọi `setFilters`/`setSort` —
  * hai hàm này tự đưa `page` về 1.
@@ -76,7 +80,9 @@ export function usePagedQuery<T, F = Record<string, unknown>, S = string>(
   const [pageSize, setPageSizeState] = useState(initialPageSize);
   const [filters, setFiltersState] = useState<F>(() => initialFilters ?? ({} as F));
   const [sort, setSortState] = useState<S | undefined>(initialSort);
-  const [reloadToken, setReloadToken] = useState(0);
+  // Tăng ở MỌI thao tác của người dùng (đổi trang/bộ lọc/sắp xếp/reload) để bảo
+  // đảm effect luôn chạy lại, kể cả khi giá trị state không đổi.
+  const [requestToken, setRequestToken] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -91,6 +97,25 @@ export function usePagedQuery<T, F = Record<string, unknown>, S = string>(
     fetcherRef.current = fetcher;
   }, [fetcher]);
 
+  /**
+   * Bắt đầu một lần nạp mới: bật loading + xoá lỗi NGAY trong event handler (trước
+   * cả debounce) để consumer không hiển thị số trang mới kèm dữ liệu của trang cũ,
+   * đồng thời vô hiệu hoá mọi response đang bay.
+   *
+   * Chỉ tăng `requestIdRef` lúc timer chạy là chưa đủ: một response kịp resolve
+   * trong khoảng debounce (hoặc ngay sau commit, trước khi passive effect flush)
+   * vẫn khớp `requestId` và ghi dữ liệu cũ lên UI.
+   *
+   * Tăng `requestToken` bảo đảm effect luôn chạy lại kể cả khi giá trị state không
+   * đổi, nên không bao giờ có request bị mồ côi làm treo cờ loading.
+   */
+  const beginRefetch = useCallback(() => {
+    setIsLoading(true);
+    setError(null);
+    requestIdRef.current += 1;
+    setRequestToken((token) => token + 1);
+  }, []);
+
   useEffect(() => {
     const filtersChanged = prevFiltersRef.current !== filters;
     const sortChanged = prevSortRef.current !== sort;
@@ -104,8 +129,6 @@ export function usePagedQuery<T, F = Record<string, unknown>, S = string>(
     const timer = setTimeout(() => {
       const requestId = ++requestIdRef.current;
       const skip = (page - 1) * pageSize;
-      setIsLoading(true);
-      setError(null);
 
       void (async () => {
         try {
@@ -120,6 +143,15 @@ export function usePagedQuery<T, F = Record<string, unknown>, S = string>(
           }
           setItems(result.items);
           setTotal(result.total);
+
+          // Trang hiện tại có thể không còn tồn tại sau khi dữ liệu co lại (vd xoá
+          // dòng cuối của trang cuối) → lùi về trang cuối rồi nạp lại. Chỉ chạy khi
+          // `page > totalPages` nên `page` luôn giảm: không thể lặp vô hạn.
+          const totalPages = Math.max(1, Math.ceil(result.total / pageSize));
+          if (page > totalPages) {
+            beginRefetch();
+            setPageState(totalPages);
+          }
         } catch (err) {
           if (cancelled || requestId !== requestIdRef.current) {
             return;
@@ -139,30 +171,46 @@ export function usePagedQuery<T, F = Record<string, unknown>, S = string>(
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [page, pageSize, filters, sort, reloadToken, debounceMs]);
+  }, [page, pageSize, filters, sort, requestToken, debounceMs, beginRefetch]);
 
-  const setPage = useCallback((next: number) => {
-    setPageState(Number.isFinite(next) ? Math.max(1, Math.floor(next)) : 1);
-  }, []);
+  const setPage = useCallback(
+    (next: number) => {
+      setPageState(Number.isFinite(next) ? Math.max(1, Math.floor(next)) : 1);
+      beginRefetch();
+    },
+    [beginRefetch],
+  );
 
-  const setPageSize = useCallback((next: number) => {
-    setPageSizeState(next);
-    setPageState(1); // Đổi kích thước trang ⇒ về trang 1.
-  }, []);
+  const setPageSize = useCallback(
+    (next: number) => {
+      setPageSizeState(next);
+      setPageState(1); // Đổi kích thước trang ⇒ về trang 1.
+      beginRefetch();
+    },
+    [beginRefetch],
+  );
 
-  const setFilters = useCallback((next: F) => {
-    setFiltersState(next);
-    setPageState(1); // Đổi bộ lọc ⇒ về trang 1.
-  }, []);
+  const setFilters = useCallback(
+    (next: F) => {
+      setFiltersState(next);
+      setPageState(1); // Đổi bộ lọc ⇒ về trang 1.
+      beginRefetch();
+    },
+    [beginRefetch],
+  );
 
-  const setSort = useCallback((next: S) => {
-    setSortState(next);
-    setPageState(1); // Đổi sắp xếp ⇒ về trang 1.
-  }, []);
+  const setSort = useCallback(
+    (next: S) => {
+      setSortState(next);
+      setPageState(1); // Đổi sắp xếp ⇒ về trang 1.
+      beginRefetch();
+    },
+    [beginRefetch],
+  );
 
   const reload = useCallback(() => {
-    setReloadToken((token) => token + 1);
-  }, []);
+    beginRefetch();
+  }, [beginRefetch]);
 
   return {
     items,

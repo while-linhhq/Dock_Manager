@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { filterControlClass } from './TableFilterPanel/TableFilterPanel';
@@ -23,8 +23,9 @@ const navButtonClass =
 
 /**
  * Footer phân trang dùng chung cho các bảng phân trang phía server.
- * Trang vượt quá trang cuối vẫn hiển thị bình thường (bảng rỗng + đúng tổng số),
- * không phải lỗi.
+ * `usePagedQuery` đã tự lùi về trang cuối khi trang hiện tại không còn tồn tại;
+ * ở đây vẫn xử lý phòng thủ trường hợp `page` vượt quá trang cuối (bảng rỗng +
+ * đúng tổng số, không hiện dải ngược 201–120, không phải lỗi).
  */
 export function DataPagination({
   page,
@@ -35,6 +36,11 @@ export function DataPagination({
 }: DataPaginationProps) {
   // Ô nhập số trang giữ draft riêng để gõ tự do; chỉ chốt khi Enter/blur.
   const [pageDraft, setPageDraft] = useState<string | null>(null);
+  // Bấm nút chuyển trang trong lúc ô nhập còn draft: blur xảy ra TRƯỚC click
+  // (mousedown → blur → click) và React flush state của blur ngay, nên nếu để
+  // blur chốt draft thì cú click sẽ tính tiếp từ trang vừa chốt (gõ 3 rồi bấm
+  // "Sau" sẽ nhảy 3 → 4). Cờ này để blur bỏ draft thay vì chốt nó.
+  const skipDraftCommitRef = useRef(false);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const isOutOfRange = total > 0 && page > totalPages;
@@ -49,12 +55,39 @@ export function DataPagination({
         : `Hiển thị ${rangeFrom}–${rangeTo} / ${total} bản ghi`;
 
   const commitPageDraft = () => {
+    if (skipDraftCommitRef.current) {
+      skipDraftCommitRef.current = false;
+      setPageDraft(null);
+      return;
+    }
+
     const parsed = Number.parseInt((pageDraft ?? '').trim(), 10);
     setPageDraft(null);
     if (!Number.isFinite(parsed)) {
       return;
     }
     onPageChange(Math.min(Math.max(1, parsed), totalPages));
+  };
+
+  // Nút chuyển trang: bỏ draft đang gõ dở rồi điều hướng từ trang đang hiển thị.
+  const goToPage = (next: number) => {
+    setPageDraft(null);
+    onPageChange(next);
+  };
+
+  // Cờ chỉ sống trong một lần bấm nút: bật ở mousedown (trước blur) và tắt lại ở
+  // mouseup/mouseleave để trường hợp bấm rồi kéo ra ngoài không làm treo cờ — nếu
+  // treo, lần gõ số trang sau đó sẽ bị blur bỏ qua một cách khó hiểu.
+  const navDraftGuard = {
+    onMouseDown: () => {
+      skipDraftCommitRef.current = true;
+    },
+    onMouseUp: () => {
+      skipDraftCommitRef.current = false;
+    },
+    onMouseLeave: () => {
+      skipDraftCommitRef.current = false;
+    },
   };
 
   return (
@@ -80,7 +113,8 @@ export function DataPagination({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => onPageChange(Math.max(1, page - 1))}
+          {...navDraftGuard}
+          onClick={() => goToPage(Math.max(1, page - 1))}
           disabled={page <= 1}
           className={navButtonClass}
         >
@@ -111,7 +145,8 @@ export function DataPagination({
         </label>
         <button
           type="button"
-          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          {...navDraftGuard}
+          onClick={() => goToPage(Math.min(totalPages, page + 1))}
           disabled={page >= totalPages}
           className={navButtonClass}
         >

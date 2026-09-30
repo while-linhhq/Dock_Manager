@@ -31,15 +31,21 @@ export function buildQuery(params?: PagedQueryParams): string {
 /**
  * Đọc tổng số bản ghi từ header `X-Total-Count`.
  * Header thiếu/không parse được ⇒ fallback về số bản ghi của trang hiện tại
- * để UI suy giảm chứ không vỡ.
+ * để UI suy giảm chứ không vỡ. Chỉ nhận chuỗi toàn chữ số (sau khi trim):
+ * `'12.5'`, `'12abc'`, `'-1'`, `''` đều rơi về fallback.
  */
 export function parseTotalCount(rawValue: string | null, fallback: number): number {
   if (rawValue === null) {
     return fallback;
   }
 
-  const parsed = Number.parseInt(rawValue.trim(), 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  const trimmed = rawValue.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed)) {
     return fallback;
   }
 
