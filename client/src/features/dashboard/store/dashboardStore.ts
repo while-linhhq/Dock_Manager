@@ -5,7 +5,7 @@ import type {
   DashboardSummary,
   DetectionRead,
 } from '../../../types/api.types';
-import { dashboardApi } from '../services/dashboardApi';
+import { dashboardApi, DASHBOARD_DETECTIONS_WINDOW } from '../services/dashboardApi';
 import type { PipelineStatus } from '../services/dashboardApi';
 
 interface DashboardState {
@@ -63,7 +63,11 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       const [stats, summary, recentDetections, pipelineStatus] = await Promise.all([
         dashboardApi.getStats(),
         dashboardApi.getSummary(period),
-        dashboardApi.getRecentDetections(120).catch(() => [] as DetectionRead[]),
+        // Cửa sổ này phục vụ CẢ sidebar 18 dòng LẪN các widget phân tích — xem
+        // chú thích `DASHBOARD_DETECTIONS_WINDOW`, không cắt nhỏ mà không đo lại biểu đồ.
+        dashboardApi
+          .getRecentDetections(DASHBOARD_DETECTIONS_WINDOW)
+          .catch(() => [] as DetectionRead[]),
         pipelinePromise,
       ]);
       set({
