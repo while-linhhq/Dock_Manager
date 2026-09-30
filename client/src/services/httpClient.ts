@@ -1,5 +1,7 @@
 import { authStorage } from './authStorage';
 import { getJwtExpMs } from './jwt';
+import { buildQuery, parseTotalCount } from './paged';
+import type { PagedQueryParams, PagedResult } from './paged';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim();
 const BASE_URL = import.meta.env.DEV
@@ -21,6 +23,13 @@ export class ApiError extends Error {
 
 let refreshPromise: Promise<string | null> | null = null;
 const inFlightGetRequests = new Map<string, Promise<unknown>>();
+
+/**
+ * Payload thô của một request: dữ liệu đã parse + Response gốc.
+ * Response được chia sẻ qua bản đồ de-dup nên phải đọc body đúng MỘT lần —
+ * headers vẫn đọc được sau khi body đã tiêu thụ (vd `X-Total-Count`).
+ */
+type ResponsePayload<T> = { data: T; response: Response };
 
 function resolveErrorMessage(errorData: unknown): string {
   if (!errorData || typeof errorData !== 'object') {
@@ -98,11 +107,15 @@ async function maybeProactiveRefresh(): Promise<void> {
   }
 }
 
-async function request<T>(endpoint: string, options: RequestInit = {}, retry = true): Promise<T> {
+async function requestResponse<T>(
+  endpoint: string,
+  options: RequestInit = {},
+  retry = true,
+): Promise<ResponsePayload<T>> {
   const method = (options.method || 'GET').toUpperCase();
   const isGetRequest = method === 'GET';
 
-  const runRequest = async (): Promise<T> => {
+  const runRequest = async (): Promise<ResponsePayload<T>> => {
     await maybeProactiveRefresh();
     const token = authStorage.getToken();
     const headers = new Headers(options.headers);
@@ -124,7 +137,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
       if (retry) {
         const refreshed = await refreshAccessToken();
         if (refreshed) {
-          return request<T>(endpoint, options, false);
+          return requestResponse<T>(endpoint, options, false);
         }
       }
       authStorage.clear();
@@ -138,10 +151,11 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
     }
 
     if (response.status === 204) {
-      return {} as T;
+      return { data: {} as T, response };
     }
 
-    return response.json();
+    const data = (await response.json()) as T;
+    return { data, response };
   };
 
   if (!isGetRequest) {
@@ -150,7 +164,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
 
   const token = authStorage.getToken() || '';
   const requestKey = `${method}:${endpoint}:${token}`;
-  const pending = inFlightGetRequests.get(requestKey) as Promise<T> | undefined;
+  const pending = inFlightGetRequests.get(requestKey) as Promise<ResponsePayload<T>> | undefined;
   if (pending) {
     return pending;
   }
@@ -160,6 +174,11 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
   });
   inFlightGetRequests.set(requestKey, current);
   return current;
+}
+
+async function request<T>(endpoint: string, options: RequestInit = {}, retry = true): Promise<T> {
+  const { data } = await requestResponse<T>(endpoint, options, retry);
+  return data;
 }
 
 async function requestBlob(endpoint: string, options: RequestInit = {}, retry = true): Promise<Response> {
@@ -202,6 +221,20 @@ async function requestBlob(endpoint: string, options: RequestInit = {}, retry = 
 
 export const httpClient = {
   get: <T>(url: string, options?: RequestInit) => request<T>(url, { ...options, method: 'GET' }),
+  /**
+   * GET danh sách phân trang: server trả mảng trần + header `X-Total-Count`.
+   * Thiếu/không parse được header ⇒ `total = items.length`.
+   */
+  getPaged: async <T>(url: string, params?: PagedQueryParams): Promise<PagedResult<T>> => {
+    const { data, response } = await requestResponse<T[]>(`${url}${buildQuery(params)}`, {
+      method: 'GET',
+    });
+    const items = Array.isArray(data) ? data : [];
+    return {
+      items,
+      total: parseTotalCount(response.headers.get('x-total-count'), items.length),
+    };
+  },
   post: <T>(url: string, body?: unknown, options?: RequestInit) =>
     request<T>(url, {
       ...options,
