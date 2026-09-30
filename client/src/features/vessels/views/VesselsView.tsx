@@ -1,13 +1,19 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2 } from 'lucide-react';
 import { useVesselStore } from '../store/vesselStore';
-import type { VesselCreate, VesselTypeCreate } from '../services/vesselsApi';
+import type {
+  VesselClassificationCounts,
+  VesselCreate,
+  VesselFilters,
+  VesselTypeCreate,
+} from '../services/vesselsApi';
 import type { VesselRead, VesselTypeRead } from '../../../types/api.types';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
 import { resolveApiAssetUrl } from '../../../utils/resolve-api-asset-url';
+import { usePagedQuery } from '../../../hooks/usePagedQuery';
 import { vesselSchema, vesselTypeSchema } from '../vessels-schemas';
 import { VesselsMainTabs, type VesselsMainTab } from '../components/VesselsMainTabs';
 import { VesselsListSection } from '../components/VesselsListSection';
@@ -73,10 +79,9 @@ export const VesselsView: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const {
-    vessels,
     vesselTypes,
     isLoading,
-    fetchVessels,
+    fetchVesselsPage,
     fetchVesselTypes,
     upsertVessel,
     upsertVesselType,
@@ -114,64 +119,90 @@ export const VesselsView: React.FC = () => {
       void fetchShipIdRules();
       return;
     }
-    if (isClassificationTab(activeTab)) {
-      // Nạp toàn bộ tàu 1 lần; lọc theo phân loại ở client để có count mỗi tab.
-      fetchVessels(0, 10000);
-      fetchVesselTypes();
+    // Danh mục loại tàu (cột "Loại Tàu" + dropdown lọc) — danh mục nhỏ, ≤1000 dòng.
+    // Danh sách tàu do `usePagedQuery` tự nạp theo trang/bộ lọc.
+    if (isClassificationTab(activeTab) || activeTab === 'types') {
+      void fetchVesselTypes();
+    }
+  }, [activeTab, fetchVesselTypes, fetchShipIdRules]);
+
+  // Số tàu mỗi phân loại cho badge trên tab: ba request `limit=1` đọc
+  // `X-Total-Count` (trước đây đếm từ mảng 10 000 dòng đã nạp).
+  const [classificationCounts, setClassificationCounts] = useState<VesselClassificationCounts>({
+    spot: 0,
+    monthly: 0,
+    unclassified: 0,
+  });
+
+  const reloadClassificationCounts = useCallback(() => {
+    void vesselsApi
+      .getClassificationCounts()
+      .then(setClassificationCounts)
+      .catch((error) => console.error(error));
+  }, []);
+
+  useEffect(() => {
+    reloadClassificationCounts();
+  }, [reloadClassificationCounts]);
+
+  // Ba bộ lọc `/vessels/` có tham số (`classification`, `q`, `active_only`).
+  const vesselFilters = useMemo<VesselFilters>(
+    () => ({
+      classification: isClassificationTab(activeTab) ? activeTab : undefined,
+      q: vesselQ.trim() || undefined,
+      activeOnly: vesselActive === 'active',
+    }),
+    [activeTab, vesselQ, vesselActive],
+  );
+
+  const {
+    items: pagedVessels,
+    total: vesselsTotal,
+    page: vesselsPage,
+    pageSize: vesselsPageSize,
+    isLoading: vesselsPageLoading,
+    error: vesselsError,
+    setPage: setVesselsPage,
+    setPageSize: setVesselsPageSize,
+    setFilters: setVesselFilters,
+    reload: reloadVessels,
+  } = usePagedQuery<VesselRead, VesselFilters>({
+    fetcher: fetchVesselsPage,
+    filters: vesselFilters,
+  });
+
+  // Đẩy nội dung bộ lọc xuống hook; object đã memo hoá nên hiệu ứng chỉ chạy khi
+  // bộ lọc THỰC SỰ đổi. Bỏ qua lần chạy đầu vì hook đã KHỞI TẠO bằng chính
+  // `vesselFilters` (đẩy lại đúng object đó chỉ thêm một request thừa lúc mở trang).
+  const pushedVesselFiltersRef = useRef(vesselFilters);
+  useEffect(() => {
+    if (pushedVesselFiltersRef.current === vesselFilters) {
       return;
     }
-    if (activeTab === 'types') {
-      fetchVesselTypes();
-    }
-  }, [activeTab, fetchVessels, fetchVesselTypes, fetchShipIdRules]);
+    pushedVesselFiltersRef.current = vesselFilters;
+    setVesselFilters(vesselFilters);
+  }, [vesselFilters, setVesselFilters]);
 
-  // Đếm số tàu mỗi phân loại (từ toàn bộ danh sách, không phụ thuộc filter).
-  const classificationCounts = useMemo(() => {
-    const counts = { spot: 0, monthly: 0, unclassified: 0 };
-    for (const v of vessels) {
-      const c = (v.classification ?? 'unclassified') as ClassificationTab;
-      if (c in counts) counts[c] += 1;
-    }
-    return counts;
-  }, [vessels]);
+  // Sau mỗi thao tác ghi: nạp lại ĐÚNG trang/bộ lọc đang xem + làm mới badge đếm.
+  const reloadVesselList = useCallback(() => {
+    reloadVessels();
+    reloadClassificationCounts();
+  }, [reloadVessels, reloadClassificationCounts]);
 
-  const filteredVessels = useMemo(() => {
-    return vessels.filter((v) => {
-      // Lọc theo tab phân loại đang mở (spot/monthly/unclassified).
-      if (isClassificationTab(activeTab)) {
-        const c = v.classification ?? 'unclassified';
-        if (c !== activeTab) {
-          return false;
-        }
-      }
-      if (
-        !matchesAnyField(
-          vesselQ,
-          v.ship_id,
-          v.name,
-          v.owner,
-          v.owner_info,
-          v.registration_number,
-        )
-      ) {
-        return false;
-      }
+  const pageVessels = useMemo(() => {
+    // `/vessels/` chưa có tham số cho "Loại tàu" và khoảng ngày, còn `active_only`
+    // chỉ diễn tả được "đang hoạt động" ⇒ ba tiêu chí đó lọc trên trang hiện tại.
+    return pagedVessels.filter((v) => {
       if (vesselTypeFilter && String(v.vessel_type_id ?? '') !== vesselTypeFilter) {
-        return false;
-      }
-      if (vesselActive === 'active' && !v.is_active) {
         return false;
       }
       if (vesselActive === 'inactive' && v.is_active) {
         return false;
       }
       const t = v.created_at ?? v.last_seen ?? v.updated_at;
-      if (!isoInLocalDateRange(t, vesselDateFrom, vesselDateTo)) {
-        return false;
-      }
-      return true;
+      return isoInLocalDateRange(t, vesselDateFrom, vesselDateTo);
     });
-  }, [vessels, activeTab, vesselQ, vesselTypeFilter, vesselActive, vesselDateFrom, vesselDateTo]);
+  }, [pagedVessels, vesselTypeFilter, vesselActive, vesselDateFrom, vesselDateTo]);
 
   const filteredTypes = useMemo(() => {
     return vesselTypes.filter((t) => matchesAnyField(typeQ, t.type_name, t.description));
@@ -198,6 +229,7 @@ export const VesselsView: React.FC = () => {
       setIsVesselModalOpen(false);
       vesselForm.reset();
       setEditingId(null);
+      reloadVesselList();
     } catch (err) {
       console.error(err);
     }
@@ -211,8 +243,8 @@ export const VesselsView: React.FC = () => {
       typeForm.reset();
       setEditingId(null);
       setTypeMemberIds([]);
-      // Membership đổi classification/vessel_type_id của tàu → nạp lại danh sách tàu.
-      await fetchVessels();
+      // Membership đổi classification/vessel_type_id của tàu → nạp lại trang tàu + badge đếm.
+      reloadVesselList();
     } catch (err) {
       console.error(err);
     }
@@ -247,6 +279,7 @@ export const VesselsView: React.FC = () => {
       return;
     }
     await deleteVessel(id);
+    reloadVesselList();
   };
 
   const handleDeleteType = async (id: string | number) => {
@@ -282,7 +315,7 @@ export const VesselsView: React.FC = () => {
       }
       const latest = await vesselsApi.getVesselReferenceImages(vesselId);
       setReferences(latest.items || []);
-      await fetchVessels();
+      reloadVessels();
       setUploadFiles([]);
       clearUploadPreviews();
     } catch (error) {
@@ -324,7 +357,7 @@ export const VesselsView: React.FC = () => {
       await vesselsApi.deleteVesselReferenceImage(vesselId, pointId);
       setReferences((prev) => prev.filter((ref) => ref.id !== pointId));
       setStatusMessage('Đã xóa ảnh mẫu thành công.');
-      await fetchVessels();
+      reloadVessels();
     } catch (err) {
       console.error(err);
       setStatusMessage('Xóa ảnh mẫu thất bại.');
@@ -364,9 +397,16 @@ export const VesselsView: React.FC = () => {
             setIsVesselModalOpen(true);
           }}
           vesselTypes={vesselTypes}
-          vessels={vessels}
-          filteredVessels={filteredVessels}
-          isLoading={isLoading}
+          vessels={pagedVessels}
+          filteredVessels={pageVessels}
+          isLoading={vesselsPageLoading}
+          error={vesselsError}
+          page={vesselsPage}
+          pageSize={vesselsPageSize}
+          total={vesselsTotal}
+          onPageChange={setVesselsPage}
+          onPageSizeChange={setVesselsPageSize}
+          onRefresh={reloadVessels}
           onEditVessel={handleEditVessel}
           onDeleteVessel={handleDeleteVessel}
           onOpenUploadModal={handleOpenUploadModal}
@@ -407,7 +447,8 @@ export const VesselsView: React.FC = () => {
             <VesselFeeConfigsPanel
               vesselId={Number(editingId)}
               vesselShipId={
-                vessels.find((v) => String(v.id) === editingId)?.ship_id
+                // Tàu đang sửa nằm trên trang hiện tại (modal mở từ một dòng của bảng).
+                pagedVessels.find((v) => String(v.id) === editingId)?.ship_id
               }
             />
           ) : editingId && editingVesselClassification === 'monthly' ? (

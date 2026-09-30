@@ -4,10 +4,15 @@ import type { InvoiceRead } from '../../../types/api.types';
 export type DiscountRequestStatus = 'pending' | 'approved' | 'rejected';
 
 export const discountApprovalApi = {
+  /**
+   * Trang duyệt giảm giá KHÔNG phân trang (endpoint không có `sort` nên chưa
+   * chuyển sắp xếp lên server được) — chỉ nâng `limit` lên đúng trần 200 của
+   * `resolve_page` để không bỏ sót yêu cầu khi có hơn 100 bản ghi.
+   */
   listRequests: async (
     status: DiscountRequestStatus,
     skip = 0,
-    limit = 100,
+    limit = 200,
   ): Promise<InvoiceRead[]> => {
     const q = new URLSearchParams({
       status,

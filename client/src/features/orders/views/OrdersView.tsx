@@ -1,13 +1,17 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useOrderStore } from '../store/orderStore';
 import { useVesselStore } from '../../vessels/store/vesselStore';
-import type { OrderCreate, OrderUpdate } from '../services/ordersApi';
+import type {
+  OrderCreate,
+  OrderFilters,
+  OrderSort,
+  OrderUpdate,
+} from '../services/ordersApi';
 import type { OrderRead } from '../../../types/api.types';
-import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
+import { usePagedQuery } from '../../../hooks/usePagedQuery';
 import { orderSchema } from '../orders-schemas';
-import { normOrderStatus } from '../utils/order-status-display';
 import { OrdersListSection } from '../components/OrdersListSection';
 import { OrderFormModal } from '../components/OrderFormModal';
 
@@ -23,7 +27,7 @@ export const OrdersView: React.FC = () => {
   const [orderMinAmt, setOrderMinAmt] = useState('');
   const [orderMaxAmt, setOrderMaxAmt] = useState('');
 
-  const { orders, isLoading, fetchOrders, createOrder, updateOrder, deleteOrder } = useOrderStore();
+  const { isLoading, fetchOrdersPage, createOrder, updateOrder, deleteOrder } = useOrderStore();
   const { vessels, vesselTypes, fetchVessels, fetchVesselTypes } = useVesselStore();
 
   const form = useForm<OrderCreate>({
@@ -31,65 +35,74 @@ export const OrdersView: React.FC = () => {
     defaultValues: { status: 'pending', total_amount: 0 },
   });
 
+  // Danh mục tàu/loại tàu giữ trong store dùng chung: chỉ nạp khi còn rỗng (không
+  // tải lại mỗi lần mở trang). Danh sách đơn do `usePagedQuery` tự nạp theo trang.
   useEffect(() => {
-    fetchOrders();
-    fetchVessels();
-    fetchVesselTypes();
-  }, [fetchOrders, fetchVessels, fetchVesselTypes]);
+    if (vessels.length === 0) {
+      void fetchVessels();
+    }
+    if (vesselTypes.length === 0) {
+      void fetchVesselTypes();
+    }
+  }, [vessels.length, vesselTypes.length, fetchVessels, fetchVesselTypes]);
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter((order) => {
-      if (
-        !matchesAnyField(
-          orderQ,
-          String(order.id),
-          order.vessel?.ship_id,
-          order.vessel?.name,
-          order.cargo_details,
-        )
-      ) {
-        return false;
-      }
-      if (orderStatusFilter) {
-        const st = normOrderStatus(String(order.status ?? 'pending'));
-        if (st !== orderStatusFilter) {
-          return false;
-        }
-      }
-      const matchedVessel = vessels.find((vessel) => String(vessel.id) === String(order.vessel_id ?? ''));
-      if (orderShipIdFilter && String(order.vessel_id ?? matchedVessel?.id ?? '') !== orderShipIdFilter) {
-        return false;
-      }
-      if (
-        orderVesselTypeFilter &&
-        String(matchedVessel?.vessel_type_id ?? '') !== orderVesselTypeFilter
-      ) {
-        return false;
-      }
-      if (!isoInLocalDateRange(order.created_at, orderDateFrom, orderDateTo)) {
-        return false;
-      }
-      const amt = Number(order.total_amount ?? 0);
-      if (orderMinAmt.trim() && amt < Number(orderMinAmt)) {
-        return false;
-      }
-      if (orderMaxAmt.trim() && amt > Number(orderMaxAmt)) {
-        return false;
-      }
-      return true;
-    });
-  }, [
-    orders,
-    orderQ,
-    orderStatusFilter,
-    orderShipIdFilter,
-    orderVesselTypeFilter,
-    orderDateFrom,
-    orderDateTo,
-    orderMinAmt,
-    orderMaxAmt,
-    vessels,
-  ]);
+  // Tám bộ lọc `/orders/` có tham số ⇒ server lọc, client không lọc lại.
+  const orderFilters = useMemo<OrderFilters>(
+    () => ({
+      q: orderQ.trim() || undefined,
+      status: orderStatusFilter || undefined,
+      vesselId: orderShipIdFilter || undefined,
+      vesselTypeId: orderVesselTypeFilter || undefined,
+      dateFrom: orderDateFrom || undefined,
+      dateTo: orderDateTo || undefined,
+      minTotal: orderMinAmt.trim() || undefined,
+      maxTotal: orderMaxAmt.trim() || undefined,
+    }),
+    [
+      orderQ,
+      orderStatusFilter,
+      orderShipIdFilter,
+      orderVesselTypeFilter,
+      orderDateFrom,
+      orderDateTo,
+      orderMinAmt,
+      orderMaxAmt,
+    ],
+  );
+
+  const {
+    items: orders,
+    total: ordersTotal,
+    page: ordersPage,
+    pageSize: ordersPageSize,
+    isLoading: ordersLoading,
+    error: ordersError,
+    setPage: setOrdersPage,
+    setPageSize: setOrdersPageSize,
+    setFilters: setOrderFilters,
+    setSort: setOrderSort,
+    reload: reloadOrders,
+  } = usePagedQuery<OrderRead, OrderFilters, OrderSort>({
+    fetcher: fetchOrdersPage,
+    filters: orderFilters,
+  });
+
+  // Đẩy nội dung bộ lọc xuống hook; object đã memo hoá nên hiệu ứng chỉ chạy khi
+  // bộ lọc THỰC SỰ đổi. Bỏ qua lần chạy đầu vì hook đã KHỞI TẠO bằng chính
+  // `orderFilters` (đẩy lại đúng object đó chỉ thêm một request thừa lúc mở trang).
+  const pushedOrderFiltersRef = useRef(orderFilters);
+  useEffect(() => {
+    if (pushedOrderFiltersRef.current === orderFilters) {
+      return;
+    }
+    pushedOrderFiltersRef.current = orderFilters;
+    setOrderFilters(orderFilters);
+  }, [orderFilters, setOrderFilters]);
+
+  // Sau mỗi thao tác ghi: nạp lại ĐÚNG trang/bộ lọc đang xem.
+  const reloadOrderList = useCallback(() => {
+    reloadOrders();
+  }, [reloadOrders]);
 
   const orderFilterCount =
     (orderQ.trim() ? 1 : 0) +
@@ -122,6 +135,7 @@ export const OrdersView: React.FC = () => {
       setIsModalOpen(false);
       form.reset();
       setEditingId(null);
+      reloadOrderList();
     } catch (err) {
       console.error(err);
     }
@@ -143,6 +157,7 @@ export const OrdersView: React.FC = () => {
       return;
     }
     await deleteOrder(id);
+    reloadOrderList();
   };
 
   return (
@@ -172,10 +187,16 @@ export const OrdersView: React.FC = () => {
           setIsModalOpen(true);
         }}
         orders={orders}
-        filteredOrders={filteredOrders}
         vessels={vessels}
         vesselTypes={vesselTypes}
-        isLoading={isLoading}
+        isLoading={ordersLoading}
+        error={ordersError}
+        page={ordersPage}
+        pageSize={ordersPageSize}
+        total={ordersTotal}
+        onPageChange={setOrdersPage}
+        onPageSizeChange={setOrdersPageSize}
+        onSortChange={setOrderSort}
         onEdit={handleEdit}
         onDelete={handleDelete}
       />

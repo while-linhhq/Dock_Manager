@@ -127,7 +127,7 @@ export const StatisticsFiltersBar: React.FC<StatisticsFiltersBarProps> = ({
             className="w-full bg-blue-600 hover:bg-blue-700 text-white"
           >
             <Search className="w-4 h-4 mr-2" />
-            Tải lại từ server (theo mã tàu)
+            Tải lại
           </Button>
         </FilterField>
       </TableFilterPanel>

@@ -174,7 +174,8 @@ export const portApi = {
     return httpClient.get<DetectionMediaRead[]>(`/detections/${id}/media`);
   },
   getCameras: async (activeOnly: boolean = false): Promise<CameraRead[]> => {
-    return httpClient.get<CameraRead[]>(`/cameras/?active_only=${activeOnly}`);
+    // Trần danh mục của `/cameras/` là 1000; mặc định server chỉ 100.
+    return httpClient.get<CameraRead[]>(`/cameras/?skip=0&active_only=${activeOnly}&limit=1000`);
   },
   getCamera: async (cameraId: string | number): Promise<CameraRead> => {
     return httpClient.get<CameraRead>(`/cameras/${cameraId}`);
@@ -204,7 +205,9 @@ export const portApi = {
     await httpClient.delete(`/cameras/${id}`);
   },
   getPortConfigs: async (): Promise<PortConfigRead[]> => {
-    return httpClient.get<PortConfigRead[]>('/port-configs/');
+    // Bảng có ~110 khoá còn mặc định danh mục của server là 100 ⇒ thiếu `limit`
+    // thì mất khoá mà không báo lỗi. Trần danh mục là 1000.
+    return httpClient.get<PortConfigRead[]>('/port-configs/?skip=0&limit=1000');
   },
   updatePortConfig: async (key: string, data: PortConfigUpdate): Promise<PortConfigRead> => {
     return httpClient.put<PortConfigRead>(`/port-configs/${key}`, data);

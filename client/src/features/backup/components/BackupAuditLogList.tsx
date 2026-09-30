@@ -1,20 +1,36 @@
 import React from 'react';
 import { Clock, Eye, FileCode, History, Loader2, User } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
+import { DataPagination } from '../../../components/DataPagination';
 import type { AuditLogRead } from '../../../types/api.types';
 import { formatDateTimeVN } from '../../../utils/date-time';
 
 export type BackupAuditLogListProps = {
   isLoading: boolean;
+  error: string | null;
+  /** Đúng MỘT trang audit-log lấy từ server (không phải toàn bộ tập kết quả). */
   auditLogs: AuditLogRead[];
-  filtered: AuditLogRead[];
+  /** Tổng số bản ghi khớp bộ lọc (server trả qua `X-Total-Count`). */
+  total: number;
+  filterCount: number;
+  /** Phân trang phía server — state do `usePagedQuery` ở `BackupView` giữ. */
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
   onRefresh: () => void;
 };
 
 export const BackupAuditLogList: React.FC<BackupAuditLogListProps> = ({
   isLoading,
+  error,
   auditLogs,
-  filtered,
+  total,
+  filterCount,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
   onRefresh,
 }) => {
   return (
@@ -27,8 +43,9 @@ export const BackupAuditLogList: React.FC<BackupAuditLogListProps> = ({
           </h3>
         </div>
         <div className="flex items-center gap-3">
+          {error && <span className="text-[12px] normal-case text-red-500">{error}</span>}
           <span className="text-[10px] font-mono text-gray-500 uppercase">
-            {filtered.length}/{auditLogs.length}
+            {auditLogs.length}/{total}
           </span>
           <Button
             type="button"
@@ -47,8 +64,8 @@ export const BackupAuditLogList: React.FC<BackupAuditLogListProps> = ({
           <div className="p-12 text-center">
             <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
           </div>
-        ) : filtered.length > 0 ? (
-          filtered.map((log) => (
+        ) : auditLogs.length > 0 ? (
+          auditLogs.map((log) => (
             <div
               key={log.id}
               className="p-6 hover:bg-gray-50 dark:hover:bg-white/[0.01] transition-colors group"
@@ -93,12 +110,22 @@ export const BackupAuditLogList: React.FC<BackupAuditLogListProps> = ({
           ))
         ) : (
           <div className="p-12 text-center text-gray-500 text-xs uppercase font-mono tracking-widest">
-            {auditLogs.length === 0
-              ? 'Không có dữ liệu lịch sử'
-              : 'Không có bản ghi khớp bộ lọc'}
+            {total === 0
+              ? filterCount > 0
+                ? 'Không có bản ghi khớp bộ lọc'
+                : 'Không có dữ liệu lịch sử'
+              : 'Trang này không có bản ghi'}
           </div>
         )}
       </div>
+
+      <DataPagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
     </div>
   );
 };

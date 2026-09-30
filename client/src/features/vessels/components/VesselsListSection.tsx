@@ -1,5 +1,14 @@
 import React from 'react';
-import { CheckCircle2, Loader2, Pencil, Plus, Trash2, Upload, XCircle } from 'lucide-react';
+import {
+  CheckCircle2,
+  Loader2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Upload,
+  XCircle,
+} from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
@@ -9,6 +18,7 @@ import {
   TableFilterPanel,
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
+import { DataPagination } from '../../../components/DataPagination';
 import { SortableTh } from '../../../components/SortableTh/SortableTh';
 import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
 import { formatApplicableFee, resolveVesselTypeName } from '../utils/vessel-display-helpers';
@@ -30,9 +40,19 @@ export type VesselsListSectionProps = {
   activeTab: 'spot' | 'monthly' | 'unclassified';
   onOpenAddVessel: () => void;
   vesselTypes: VesselTypeRead[];
+  /** Đúng MỘT trang tàu lấy từ server (không phải toàn bộ tập kết quả). */
   vessels: VesselRead[];
+  /** Trang hiện tại sau khi áp các bộ lọc chưa có tham số phía server. */
   filteredVessels: VesselRead[];
   isLoading: boolean;
+  error: string | null;
+  /** Phân trang phía server — state do `usePagedQuery` ở `VesselsView` giữ. */
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  onRefresh: () => void;
   onEditVessel: (v: VesselRead) => void;
   onDeleteVessel: (id: string) => void;
   onOpenUploadModal: (v: VesselRead) => void;
@@ -57,6 +77,13 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
   vessels,
   filteredVessels,
   isLoading,
+  error,
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  onRefresh,
   onEditVessel,
   onDeleteVessel,
   onOpenUploadModal,
@@ -68,7 +95,9 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
   // Số cột thực tế: 8 cột gốc (có Loại Tàu) +STT nếu bật, -Loại Tàu nếu spot.
   const colCount = 8 + (showIndex ? 1 : 0) - (isSpot ? 1 : 0);
 
-  // Sắp xếp client-side theo cột. STT đánh số theo thứ tự SAU khi đã sort.
+  // Sắp xếp theo cột trên TRANG hiện tại: `/vessels/` chưa có tham số `sort`
+  // (khác `/detections/`, `/invoices/`, `/orders/`) nên chưa thể đẩy xuống server.
+  // STT đánh số theo thứ tự SAU khi đã sort và tiếp nối qua các trang.
   const sortAccessors: SortAccessors<VesselRead> = {
     ship_id: (v) => v.ship_id,
     name: (v) => v.name ?? '',
@@ -78,6 +107,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
     is_active: (v) => v.is_active,
   };
   const { sorted: sortedVessels, sort, toggle } = useTableSort(filteredVessels, sortAccessors);
+  const firstRowNumber = (page - 1) * pageSize + 1;
 
   return (
     <div className="space-y-6">
@@ -136,7 +166,17 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
         </FilterField>
       </TableFilterPanel>
 
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {error && <p className="mr-auto text-[12px] normal-case text-red-500">{error}</p>}
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onRefresh}
+          className="border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400"
+        >
+          <RefreshCw className={cn('w-4 h-4 mr-2', isLoading && 'animate-spin')} />
+          Làm Mới
+        </Button>
         <Button
           type="button"
           onClick={onOpenAddVessel}
@@ -192,7 +232,7 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
                   >
                     {showIndex && (
                       <td className={cn(dt.pad, dt.mono, 'text-center text-gray-500')}>
-                        {idx + 1}
+                        {firstRowNumber + idx}
                       </td>
                     )}
                     <td className={cn(dt.pad, dt.monoAccent)}>{v.ship_id}</td>
@@ -286,15 +326,25 @@ export const VesselsListSection: React.FC<VesselsListSectionProps> = ({
                       dt.empty,
                     )}
                   >
-                    {vessels.length === 0
-                      ? 'Không có dữ liệu tàu'
-                      : 'Không có bản ghi khớp bộ lọc'}
+                    {total === 0
+                      ? vesselFilterCount > 0
+                        ? 'Không có bản ghi khớp bộ lọc'
+                        : 'Không có dữ liệu tàu'
+                      : 'Trang này không có bản ghi'}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+
+        <DataPagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
     </div>
   );

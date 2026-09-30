@@ -8,6 +8,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
+import { DataPagination } from '../../../components/DataPagination';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
@@ -19,13 +20,21 @@ import {
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
 import {
+  isOrderSortKey,
+  type OrderSort,
+} from '../services/ordersApi';
+import {
   normOrderStatus,
   statusColors,
   statusLabels,
 } from '../utils/order-status-display';
-import { OrdersActivityIndicator } from './OrdersActivityIndicator';
 import { SortableTh } from '../../../components/SortableTh/SortableTh';
-import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
+import {
+  useTableSort,
+  type SortAccessors,
+  type SortDirection,
+  type SortState,
+} from '../../../hooks/useTableSort';
 
 export type OrdersListSectionProps = {
   orderQ: string;
@@ -47,14 +56,29 @@ export type OrdersListSectionProps = {
   resetOrderFilters: () => void;
   orderFilterCount: number;
   onOpenCreate: () => void;
+  /** Đúng MỘT trang đơn hàng lấy từ server (không phải toàn bộ tập kết quả). */
   orders: OrderRead[];
-  filteredOrders: OrderRead[];
   vessels: VesselRead[];
   vesselTypes: VesselTypeRead[];
   isLoading: boolean;
+  error: string | null;
+  /** Phân trang phía server — state do `usePagedQuery` ở `OrdersView` giữ. */
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  /** Đổi cột sắp xếp → server nạp lại trang 1 với `sort`/`order` mới. */
+  onSortChange: (sort: OrderSort) => void;
   onEdit: (order: OrderRead) => void;
   onDelete: (id: string) => void;
 };
+
+/**
+ * Mặc định của bảng: không cột nào được chọn nên không gửi `sort`/`order` —
+ * server trả về đúng thứ tự `created_at desc` như trước.
+ */
+const INITIAL_ORDER_SORT: SortState = { key: null, direction: 'asc' };
 
 export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
   orderQ,
@@ -77,14 +101,21 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
   orderFilterCount,
   onOpenCreate,
   orders,
-  filteredOrders,
   vessels,
   vesselTypes,
   isLoading,
+  error,
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  onSortChange,
   onEdit,
   onDelete,
 }) => {
-  // Sắp xếp client-side theo cột dữ liệu.
+  // Sắp xếp do SERVER thực hiện: `useTableSort` chỉ giữ trạng thái mũi tên trên
+  // tiêu đề (`sorted` không dùng — thứ tự trong trang là của server).
   const sortAccessors: SortAccessors<OrderRead> = {
     order_code: (order) => String(order.id),
     vessel: (order) => order.vessel?.ship_id ?? '',
@@ -92,7 +123,21 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
     status: (order) => normOrderStatus(String(order.status ?? 'pending')),
     total_amount: (order) => Number(order.total_amount ?? 0),
   };
-  const { sorted, sort, toggle } = useTableSort(filteredOrders, sortAccessors);
+  const { sort, setSort } = useTableSort(orders, sortAccessors, INITIAL_ORDER_SORT);
+
+  /**
+   * Đổi cột/chiều: cập nhật mũi tên trên tiêu đề rồi báo server nạp lại trang 1
+   * với `sort`/`order` mới (khóa cột trùng whitelist của API đơn hàng).
+   */
+  const handleSortChange = (key: string) => {
+    if (!isOrderSortKey(key)) {
+      return;
+    }
+    const direction: SortDirection =
+      sort.key === key && sort.direction === 'asc' ? 'desc' : 'asc';
+    setSort({ key, direction });
+    onSortChange({ key, order: direction });
+  };
 
   return (
     <>
@@ -186,7 +231,8 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
         </FilterField>
       </TableFilterPanel>
 
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {error && <p className="mr-auto text-[12px] normal-case text-red-500">{error}</p>}
         <Button
           type="button"
           onClick={onOpenCreate}
@@ -202,19 +248,19 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={dt.headRow}>
-                <SortableTh sortKey="order_code" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="order_code" sort={sort} onSort={handleSortChange}>
                   Mã Đơn
                 </SortableTh>
-                <SortableTh sortKey="vessel" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="vessel" sort={sort} onSort={handleSortChange}>
                   Tàu / Hàng Hóa
                 </SortableTh>
-                <SortableTh sortKey="created_at" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="created_at" sort={sort} onSort={handleSortChange}>
                   Thời Gian
                 </SortableTh>
-                <SortableTh sortKey="status" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="status" sort={sort} onSort={handleSortChange}>
                   Trạng Thái
                 </SortableTh>
-                <SortableTh sortKey="total_amount" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="total_amount" sort={sort} onSort={handleSortChange}>
                   Số Tiền
                 </SortableTh>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
@@ -228,8 +274,8 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
                     <span className={cn('font-mono uppercase', dt.empty)}>Đang tải dữ liệu...</span>
                   </td>
                 </tr>
-              ) : sorted.length > 0 ? (
-                sorted.map((order) => {
+              ) : orders.length > 0 ? (
+                orders.map((order) => {
                   const st = normOrderStatus(String(order.status ?? 'pending'));
                   return (
                     <tr
@@ -268,7 +314,6 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
                           {st === 'completed' && (
                             <CheckCircle2 className="w-3.5 h-3.5 mr-1 shrink-0" />
                           )}
-                          {st === 'processing' && <OrdersActivityIndicator />}
                           {st === 'pending' && <Clock className="w-3.5 h-3.5 mr-1 shrink-0" />}
                           {st === 'cancelled' && <AlertCircle className="w-3.5 h-3.5 mr-1 shrink-0" />}
                           {statusLabels[st] || order.status}
@@ -310,9 +355,11 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
                       dt.empty,
                     )}
                   >
-                    {orders.length === 0
-                      ? 'Không có đơn hàng nào'
-                      : 'Không có đơn hàng khớp bộ lọc'}
+                    {total === 0
+                      ? orderFilterCount > 0
+                        ? 'Không có đơn hàng khớp bộ lọc'
+                        : 'Không có đơn hàng nào'
+                      : 'Trang này không có đơn hàng'}
                   </td>
                 </tr>
               )}
@@ -320,27 +367,13 @@ export const OrdersListSection: React.FC<OrdersListSectionProps> = ({
           </table>
         </div>
 
-        <div className="p-4 border-t border-gray-200 dark:border-white/5 flex items-center justify-between bg-gray-50 dark:bg-white/[0.01]">
-          <p className="text-[10px] font-mono text-gray-500 uppercase">
-            Hiển thị {filteredOrders.length}/{orders.length} đơn hàng
-          </p>
-          <div className="flex space-x-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-gray-200 dark:border-white/10 text-xs py-1 px-3 h-auto opacity-50 cursor-not-allowed"
-            >
-              Trước
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-gray-200 dark:border-white/10 text-xs py-1 px-3 h-auto"
-            >
-              Sau
-            </Button>
-          </div>
-        </div>
+        <DataPagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
     </>
   );

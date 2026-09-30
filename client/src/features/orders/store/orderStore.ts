@@ -1,13 +1,19 @@
 import { create } from 'zustand';
 import type { OrderRead } from '../../../types/api.types';
 import { ordersApi } from '../services/ordersApi';
-import type { OrderCreate, OrderUpdate } from '../services/ordersApi';
+import type { OrderCreate, OrderPageRequest, OrderUpdate } from '../services/ordersApi';
 
 interface OrderState {
+  /** Danh mục đơn hàng (dropdown ở trang hoá đơn) — KHÔNG phải trang đang xem. */
   orders: OrderRead[];
   isLoading: boolean;
   error: string | null;
   fetchOrders: (skip?: number, limit?: number, status?: string) => Promise<void>;
+  /**
+   * Một trang đơn hàng cho `usePagedQuery` — không ghi vào danh mục `orders`
+   * (danh mục đó phục vụ dropdown chọn đơn ở trang hoá đơn).
+   */
+  fetchOrdersPage: (request: OrderPageRequest) => Promise<{ items: OrderRead[]; total: number }>;
   createOrder: (data: OrderCreate) => Promise<void>;
   updateOrder: (id: string, data: OrderUpdate) => Promise<void>;
   updateOrderStatus: (id: string, status: string) => Promise<void>;
@@ -18,7 +24,7 @@ export const useOrderStore = create<OrderState>((set, get) => ({
   orders: [],
   isLoading: false,
   error: null,
-  fetchOrders: async (skip = 0, limit = 500, status) => {
+  fetchOrders: async (skip = 0, limit = 200, status) => {
     set({ isLoading: true, error: null });
     try {
       const orders = await ordersApi.getOrders(skip, limit, status);
@@ -26,6 +32,9 @@ export const useOrderStore = create<OrderState>((set, get) => ({
     } catch (err: any) {
       set({ error: err.message || 'Failed to fetch orders', isLoading: false });
     }
+  },
+  fetchOrdersPage: async (request) => {
+    return ordersApi.getOrdersPage(request);
   },
   createOrder: async (data) => {
     set({ isLoading: true, error: null });
