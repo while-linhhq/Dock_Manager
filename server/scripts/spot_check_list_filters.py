@@ -28,9 +28,14 @@ lặp, không mất row — chỗ tiebreaker `id desc` phát huy tác dụng.
 
 Hai điểm ngữ nghĩa cần nhớ khi đọc kết quả:
 
-* `q` của `/port-logs/` gom **hai** ô tìm kiếm của trang (nhãn tàu và `track_id`)
-  vào một phép khớp chứa trên cả hai trường, nên phía A port đúng phép OR đó; ô
-  "Mã tàu" của trang (dropdown mã tàu đúng) đi qua tham số cũ `ship_id`.
+* `/port-logs/` có **hai điều khiển độc lập, AND với nhau**: select "Mã tàu
+  (voted_ship_id)" (giá trị là mã tàu đầy đủ → tham số cũ `ship_id`, khớp đúng)
+  và ô "Track ID (chứa)" (→ tham số `q`, khớp chứa **chỉ** trên `track_id`).
+  Phía A port đúng hai vị từ đó; phép so vì thế không còn vòng tròn — bản đầu port
+  chính phép OR của server nên không thể bất đồng với server (finding của review
+  vòng 1). Tổ hợp có cả `q` lẫn `ship_id` nằm trong lưới, và
+  `check_q_is_track_only` in phần chênh giữa "chỉ nhãn tàu" với "chỉ `track_id`"
+  để chứng minh phép so có teeth.
 * Khoảng ngày của client là **ngày địa phương**; client đổi thành instant rồi mới
   gửi lên, nên pha seed gửi đúng instant của biên ngày địa phương đó.
 
@@ -216,13 +221,20 @@ def orders_client_match(row: dict, f: SimpleNamespace) -> bool:
 
 
 def port_log_client_match(row: dict, f: SimpleNamespace) -> bool:
-    """`StatisticsView.tsx:34-61` + hai tham số cũ `ship_id`/`log_date` của endpoint."""
+    """`StatisticsView.tsx:34-61` — hai điều khiển độc lập, AND với nhau.
+
+    * select "Mã tàu (voted_ship_id)": option là `vessel.ship_id` đầy đủ, phía
+      endpoint đi qua tham số cũ `ship_id` (khớp đúng, ngữ nghĩa không đổi theo
+      ruling vòng sửa 1). Client dùng `includes` trên nhãn nên về lý thuyết còn
+      khớp cả nhãn dài hơn chứa mã này; `check_ship_select_superset` đo phần chênh
+      đó trên dữ liệu thật (không tính vào cổng — `ship_id` là hợp đồng cũ).
+    * ô "Track ID (chứa)": khớp chứa, không phân biệt hoa thường, **chỉ** trên
+      `track_id` → tham số `q`.
+    """
     ship = row.get('voted_ship_id') or row.get('ship_id') or ''
     logged = parse_api_date(row.get('logged_at') or row.get('log_date'))
-    if f.q is not None:
-        # `q` của endpoint = OR hai ô tìm kiếm của trang (nhãn tàu, track_id).
-        if not (contains(ship, f.q) or contains(row.get('track_id'), f.q)):
-            return False
+    if f.q is not None and not contains(row.get('track_id'), f.q):
+        return False
     if f.ship_id and ship != f.ship_id:
         return False
     if f.vessel_type_id and str(
@@ -409,16 +421,54 @@ def live_port_log_cases(rows: list[dict]) -> list[Case]:
     threshold = confidence[len(confidence) // 2]
     day = times[0].date().isoformat()
     middle_day = middle.astimezone().date().isoformat()
+
+    # Cặp (nhãn tàu, mảnh track) lấy từ hai row KHÁC nhãn nhau để dựng tổ hợp
+    # `q` + `ship_id` — đúng hai điều khiển độc lập của trang, AND với nhau.
+    paired = next(
+        (row for row in rows if row.get('track_id') and row.get('voted_ship_id')), None
+    )
+    label_a = (paired or {}).get('voted_ship_id') or ship_ids[0]
+    frag_a = ((paired or {}).get('track_id') or track)[4:16].lower()
+    paired_b = next(
+        (
+            row
+            for row in rows
+            if row.get('track_id') and row.get('voted_ship_id') and row['voted_ship_id'] != label_a
+        ),
+        None,
+    )
+    label_b = (paired_b or {}).get('voted_ship_id') or next(
+        (sid for sid in ship_ids if sid != label_a), label_a
+    )
+    frag_b = ((paired_b or {}).get('track_id') or track)[4:16].lower()
+    # Mốc thời gian/ngưỡng lấy ĐÚNG bằng row `paired` để tổ hợp AND bên dưới chắc
+    # chắn có ít nhất 1 row (không rỗng một cách vô nghĩa).
+    paired = paired or {}
+    ping = parse_api_date(paired.get('logged_at'))
+    ping_iso = ping.isoformat() if ping else times[0].isoformat()
+    ping_conf = float(paired.get('confidence') or 0.0)
+
     return [
         Case.build('không lọc', {}),
-        Case.build(f'q={ship_ids[0]!r} (nhánh nhãn tàu)', {'q': ship_ids[0]}, q=ship_ids[0]),
+        # Ô "Track ID (chứa)": chỉ khớp `track_id` (nhánh track, viết thường).
         Case.build(f'q={track[4:16].lower()!r} (nhánh track_id, viết thường)',
                    {'q': track[4:16].lower()}, q=track[4:16].lower()),
-        Case.build("q='%' (wildcard bị escape)", {'q': '%'}, q='%'),
-        Case.build(f"q={ship_ids[0][:3] + '_'!r} (wildcard '_' bị escape)",
-                   {'q': f'{ship_ids[0][:3]}_'}, q=f'{ship_ids[0][:3]}_'),
-        Case.build(f'ship_id={ship_ids[1]!r} (khớp đúng, tham số cũ)',
-                   {'ship_id': ship_ids[1]}, ship_id=ship_ids[1]),
+        # Nhãn tàu KHÔNG đi qua `q`: needle có thật trong nhãn nhưng không có trong
+        # `track_id` nào → phải 0 row (nếu ai đó nối lại nhánh nhãn tàu thì LỆCH).
+        Case.build(f'q={label_a!r} (chỉ có trong nhãn tàu, không có trong track_id)',
+                   {'q': label_a}, q=label_a),
+        Case.build(f"q='%' (wildcard bị escape)", {'q': '%'}, q='%'),
+        Case.build(f"q={label_a[:3] + '_'!r} (wildcard '_' bị escape)",
+                   {'q': f'{label_a[:3]}_'}, q=f'{label_a[:3]}_'),
+        Case.build(f'ship_id={label_b!r} (select mã tàu, khớp đúng)',
+                   {'ship_id': label_b}, ship_id=label_b),
+        # Hai điều khiển ĐỘC LẬP, AND: track khớp + mã tàu khớp.
+        Case.build(f'q={frag_a!r} + ship_id={label_a!r} (AND, cùng row)',
+                   {'q': frag_a, 'ship_id': label_a}, q=frag_a, ship_id=label_a),
+        Case.build(f'q={frag_b!r} + ship_id={label_a!r} (AND, khác nhãn → thường rỗng)',
+                   {'q': frag_b, 'ship_id': label_a}, q=frag_b, ship_id=label_a),
+        Case.build(f'q={frag_a!r} + ship_id={label_b!r} (AND, khác nhãn → thường rỗng)',
+                   {'q': frag_a, 'ship_id': label_b}, q=frag_a, ship_id=label_b),
         Case.build(f'log_date={day} (tham số cũ)',
                    {'log_date': day}, log_date=day),
         Case.build('min_confidence=0 (thiếu confidence = 0)',
@@ -435,13 +485,14 @@ def live_port_log_cases(rows: list[dict]) -> list[Case]:
             'logged_from': (middle - timedelta(hours=7)).isoformat(),
             'logged_to': (middle + timedelta(hours=7)).isoformat(),
         }, instant_from=middle - timedelta(hours=7), instant_to=middle + timedelta(hours=7)),
-        Case.build('q + min_confidence + khoảng thời gian (AND)', {
-            'q': ship_ids[0],
-            'min_confidence': threshold,
-            'logged_from': times[0].isoformat(),
-            'logged_to': times[-1].isoformat(),
-        }, q=ship_ids[0], min_confidence=threshold,
-            instant_from=times[0], instant_to=times[-1]),
+        Case.build('q (track) + ship_id + min_confidence + khoảng thời gian (AND)', {
+            'q': frag_a,
+            'ship_id': label_a,
+            'min_confidence': ping_conf,
+            'logged_from': ping_iso,
+            'logged_to': ping_iso,
+        }, q=frag_a, ship_id=label_a, min_confidence=ping_conf,
+            instant_from=ping, instant_to=ping),
     ]
 
 
@@ -494,6 +545,70 @@ def live_audit_cases(rows: list[dict], user_id: Optional[int]) -> list[Case]:
 # --------------------------------------------------------------------------- #
 
 
+def check_q_is_track_only(api: Api, rows: list[dict]) -> int:
+    """Chứng minh phép so `q` không còn vòng tròn.
+
+    Chọn một nhãn tàu có thật **không** xuất hiện trong `track_id` nào rồi so ba
+    con số trên cùng tập row: số row khớp nhãn, số row khớp `track_id`, và số row
+    SQL trả về. Nếu ai đó nối lại nhánh nhãn tàu vào `q` thì cột SQL sẽ bằng con số
+    OR (lớn hơn) và lượt này báo LỆCH — đúng thứ bản port cũ (port chính phép OR
+    của server) không thể phát hiện.
+    """
+    needle = next(
+        (
+            label
+            for label in sorted({row['voted_ship_id'] for row in rows if row.get('voted_ship_id')})
+            if not any(contains(row.get('track_id'), label) for row in rows)
+        ),
+        None,
+    )
+    if needle is None:
+        print('  (bỏ qua: mọi nhãn tàu đều xuất hiện trong `track_id` — không dựng được ca)')
+        return 0
+    by_label = sum(1 for row in rows if contains(row.get('voted_ship_id'), needle))
+    by_track = sum(1 for row in rows if contains(row.get('track_id'), needle))
+    or_count = sum(
+        1
+        for row in rows
+        if contains(row.get('voted_ship_id'), needle) or contains(row.get('track_id'), needle)
+    )
+    sql_count = len(api.fetch_ids(PORT_LOGS_URL, {'q': needle}))
+    ok = sql_count == by_track and by_track < or_count
+    print(
+        f'  {"✓" if ok else "LỆCH":<4} q={needle!r} chỉ có trong nhãn tàu: '
+        f'nhãn={by_label:<5} track={by_track:<5} SQL={sql_count:<5} '
+        f'(OR cũ sẽ trả {or_count})'
+    )
+    return 0 if ok else 1
+
+
+def check_ship_select_superset(rows: list[dict]) -> None:
+    """Thông tin (không tính vào cổng): client dùng `includes` cho select mã tàu.
+
+    Select chỉ phát ra `vessel.ship_id` đầy đủ nên `includes` trùng khớp đúng, trừ
+    khi có nhãn tàu **dài hơn** chứa mã đó (dữ liệu thật có vài cặp). Endpoint giữ
+    `ship_id` khớp đúng theo ruling nên phần chênh này được in ra để Task 14 biết,
+    không tính là lỗi của Task 8.
+    """
+    labels = sorted({row['voted_ship_id'] for row in rows if row.get('voted_ship_id')})
+    pairs = [
+        (vessel_id, label)
+        for vessel_id in sorted(VESSEL_BY_SHIP_ID)
+        for label in labels
+        if label != vessel_id and contains(label, vessel_id)
+    ]
+    if not pairs:
+        print('  (thông tin) không có cặp nhãn-dài-hơn-chứa-mã-tàu nào trong dữ liệu thật')
+        return
+    for vessel_id, label in pairs[:6]:
+        includes = sum(1 for row in rows if contains(row.get('voted_ship_id'), vessel_id))
+        exact = sum(1 for row in rows if (row.get('voted_ship_id') or '') == vessel_id)
+        print(
+            f'  (thông tin) ship_id={vessel_id!r}: client `includes`={includes} row, '
+            f'khớp đúng={exact} row — chênh do nhãn {label!r}'
+        )
+
+
 def live_phase(api: Api) -> int:
     mismatches = 0
 
@@ -504,7 +619,9 @@ def live_phase(api: Api) -> int:
                       port_log_client_match, live_port_log_cases(port_rows)),
         port_rows,
     )
+    mismatches += check_q_is_track_only(api, port_rows)
     mismatches += check_ordering(api, 'mặc định (time desc)', PORT_LOGS_URL, {})
+    check_ship_select_superset(port_rows)
 
     audit_rows = api.fetch_all(AUDIT_LOGS_URL, {})
     user_id = next((row.get('user_id') for row in audit_rows if row.get('user_id')), None)

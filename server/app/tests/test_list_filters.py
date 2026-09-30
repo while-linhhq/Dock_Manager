@@ -806,7 +806,8 @@ def test_port_logs_search_and_range(seeded) -> None:
     """`q` = nhãn tàu (`voted_ship_id`) + `track_id`; khoảng `logged_at` theo instant UTC."""
     assert set(_ids_at(seeded, PORT_LOGS_URL, q=seeded.tag)) == set(seeded.log_ids)
 
-    assert set(_ids_at(seeded, PORT_LOGS_URL, q=seeded.ship_a)) == {seeded.pl1_id, seeded.pl2_id}
+    # `q` chỉ khớp `track_id` — nhãn tàu đi qua `ship_id`; xem
+    # `test_port_logs_q_matches_track_id_only`.
     # `track_id` của pl2 viết hoa hậu tố; `q` không phân biệt hoa thường.
     assert _ids_at(seeded, PORT_LOGS_URL, q=f'filtertest-{seeded.tag}-pl2') == [seeded.pl2_id]
     assert set(_ids_at(seeded, PORT_LOGS_URL, q='%')) & set(seeded.log_ids) == set()
@@ -833,6 +834,32 @@ def test_port_logs_search_and_range(seeded) -> None:
     assert set(
         _ids_at(seeded, PORT_LOGS_URL, q=seeded.tag, logged_from='2032-03-01T10:00:00+07:00')
     ) == {seeded.pl1_id, seeded.pl2_id, seeded.pl4_id}
+
+
+def test_port_logs_q_matches_track_id_only(seeded) -> None:
+    """`q` = ô "Track ID (chứa)" của trang; dropdown "Mã tàu" đi qua `ship_id`.
+
+    Chốt hồi quy cho bug của vòng sửa 1: `q` từng là OR trên nhãn tàu + `track_id`,
+    tức là **superset** so với ô tìm kiếm thật của trang (client AND hai điều khiển
+    độc lập: select mã tàu đúng + ô `track_id` chứa). pl1/pl2 có nhãn chứa `ship_a`
+    nhưng `track_id` thì không, nên `q=ship_a` phải trả rỗng.
+    """
+    assert _ids_at(seeded, PORT_LOGS_URL, q=seeded.ship_a) == []
+    assert _ids_at(seeded, PORT_LOGS_URL, q=seeded.ship_b) == []
+    # Nhãn tàu của pl4 (`FILTERTEST-PL-UNMATCHED-<tag>`) cũng không được lọt qua `q`.
+    assert _ids_at(seeded, PORT_LOGS_URL, q=f'FILTERTEST-PL-UNMATCHED-{seeded.tag}') == []
+
+    # Cùng chuỗi đó nếu nằm trong `track_id` thì vẫn khớp (và không phân biệt hoa thường).
+    assert set(_ids_at(seeded, PORT_LOGS_URL, q=f'filtertest-{seeded.tag}')) == set(seeded.log_ids)
+
+    # `q` (track) và `ship_id` (mã tàu đúng) là hai điều kiện ĐỘC LẬP, AND với nhau.
+    assert set(_ids_at(seeded, PORT_LOGS_URL, q=seeded.tag, ship_id=seeded.ship_a)) == {
+        seeded.pl1_id,
+        seeded.pl2_id,
+    }
+    # `q='pl4'` chỉ khớp pl4 còn `ship_id=ship_a` chỉ khớp pl1/pl2 → giao rỗng
+    # (nếu server OR hai tham số thì sẽ ra 3 row).
+    assert _ids_at(seeded, PORT_LOGS_URL, q='pl4', ship_id=seeded.ship_a) == []
 
 
 def test_port_logs_filter_vessel_type_and_confidence(seeded) -> None:

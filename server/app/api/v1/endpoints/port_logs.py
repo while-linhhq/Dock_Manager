@@ -75,7 +75,7 @@ def list_port_logs(
     log_date: Optional[date] = Query(None, description='Một ngày lịch của `logged_at`'),
     q: Optional[str] = Query(
         None,
-        description='Tìm không phân biệt hoa thường trên nhãn tàu (`voted_ship_id`) và `track_id`',
+        description='Ô "Track ID (chứa)" của trang: tìm không phân biệt hoa thường trong `track_id`',
     ),
     vessel_type_id: Optional[int] = Query(
         None, description='Loại tàu, tra qua `vessels.ship_id` = `voted_ship_id`'
@@ -96,11 +96,17 @@ def list_port_logs(
 ):
     """Danh sách nhật ký cảng — 5 bộ lọc của trang thống kê chạy ở SQL.
 
-    Port `StatisticsView.tsx:34-61`: `q` (nhãn tàu hiển thị + `track_id`),
+    Port `StatisticsView.tsx:34-61`: `q` (**chỉ** `track_id` — ô "Track ID (chứa)"),
     `vessel_type_id` (tra loại tàu theo `ship_id` của tàu), `logged_from`/
     `logged_to` (instant UTC — client tự đổi khoảng ngày địa phương) và
     `min_confidence` (thiếu confidence coi là 0). Hai tham số cũ `ship_id` (khớp
-    đúng mã tàu) và `log_date` (một ngày lịch) giữ nguyên ngữ nghĩa.
+    đúng mã tàu — select "Mã tàu (voted_ship_id)" của trang) và `log_date` (một
+    ngày lịch) giữ nguyên ngữ nghĩa; `q` và `ship_id` là hai điều kiện độc lập,
+    AND với nhau — đúng hai điều khiển riêng của trang.
+
+    `q` cố ý hẹp hơn câu chữ của brief (brief chỉ ghi "`q`"): bản đầu cho `q` khớp
+    cả nhãn tàu, tức là superset so với thứ trang biểu đạt được, vì nhãn tàu đã có
+    `ship_id` khớp đúng.
 
     `sort` chỉ nhận `time` (mặc định, = `logged_at`) hoặc `voted_ship_id` — đúng
     hai cột bấm sắp xếp được của bảng; giá trị lạ rơi về mặc định, không bao giờ

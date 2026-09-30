@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Query, Session
 from app.models.port_log import PortLog
 from app.models.vessel import Vessel
@@ -41,15 +41,20 @@ class PortLogRepository:
         Nhờ dùng chung một chỗ dựng query, `X-Total-Count` luôn khớp đúng tập bản
         ghi mà danh sách trả về (kể cả khi bộ lọc đổi về sau).
 
-        Bộ lọc port từ trang thống kê (`StatisticsView.tsx:34-61`), gồm 5 bộ lọc
-        của trang: nhãn tàu (`q`), `vessel_type_id`, `track_id` (`q`),
-        `logged_from`/`logged_to` và `min_confidence`; hai tham số cũ `ship_id`
-        (khớp đúng `voted_ship_id`) và `log_date` (một ngày lịch của `logged_at`)
-        giữ nguyên ngữ nghĩa.
+        Bộ lọc port từ trang thống kê (`StatisticsView.tsx:34-61`) — trang có hai
+        điều khiển **độc lập, AND với nhau**: select "Mã tàu (voted_ship_id)" (giá
+        trị là mã tàu đầy đủ, đi qua tham số cũ `ship_id`, khớp đúng) và ô
+        "Track ID (chứa)" (`q`). Ngoài ra còn `vessel_type_id`, `logged_from`/
+        `logged_to` và `min_confidence`; tham số cũ `log_date` (một ngày lịch của
+        `logged_at`) giữ nguyên ngữ nghĩa.
 
-        `q` tìm không phân biệt hoa thường trên đúng hai trường mà trang tìm:
-        nhãn tàu hiển thị (`voted_ship_id`, port của `portLogShip`) và `track_id`;
-        wildcard của LIKE trong `q` bị escape.
+        `q` — **chỉ** khớp chứa trên `track_id`, đúng ô "Track ID (chứa)" của
+        trang; không phân biệt hoa thường và wildcard của LIKE bị escape. Đây là
+        chỗ cố ý hẹp hơn câu chữ của brief ("`q`" chung cho cả ô tìm kiếm): bản
+        đầu làm `q` thành OR trên nhãn tàu + `track_id`, tức là **superset** so với
+        thứ trang biểu đạt được (nhãn tàu đã có `ship_id` khớp đúng), nên Task 14
+        gửi ô track vào `q` sẽ thấy thêm cả row chỉ khớp nhãn. Mọi tổ hợp AND của
+        trang vẫn biểu đạt được đủ với `q` + `ship_id`, không cần thêm tham số.
 
         `logged_from`/`logged_to` là instant UTC so với `logged_at` — cột
         `timestamp without time zone` chứa giờ UTC, nên ép `timezone('UTC', ...)`
@@ -83,13 +88,8 @@ class PortLogRepository:
                 PortLog.logged_at < date.fromordinal(log_date.toordinal() + 1),
             )
         if q and q.strip():
-            needle = q.strip()
-            query = query.filter(
-                or_(
-                    ilike_contains(PortLog.voted_ship_id, needle),
-                    ilike_contains(PortLog.track_id, needle),
-                )
-            )
+            # Ô "Track ID (chứa)" của trang — không phải nhãn tàu (nhãn đi qua `ship_id`).
+            query = query.filter(ilike_contains(PortLog.track_id, q.strip()))
         if vessel_type_id is not None:
             query = with_vessel(query).filter(Vessel.vessel_type_id == vessel_type_id)
         if min_confidence is not None:
