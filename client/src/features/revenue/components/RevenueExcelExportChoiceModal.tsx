@@ -3,6 +3,7 @@ import { FileSpreadsheet, Loader2 } from 'lucide-react';
 import { Modal } from '../../../components/Modal/Modal';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
+import { PageScopeNotice } from './PageScopeNotice';
 
 export type RevenueExcelExportScope = 'all' | 'filtered';
 
@@ -29,6 +30,13 @@ export const RevenueExcelExportChoiceModal: React.FC<RevenueExcelExportChoiceMod
 }) => {
   const allLabel =
     totalCount > 0 ? `Xuất tất cả (${totalCount})` : 'Xuất tất cả (đang tải…)';
+  /**
+   * `filteredCount` là số dòng ĐANG TẢI (một trang), `tabCount` là tổng số hoá đơn
+   * khớp tab + bộ lọc theo server. Khi tập lọc lớn hơn một trang thì «Xuất theo
+   * filter» chỉ gồm trang hiện tại — nhãn và phần mô tả phải nói rõ, không được để
+   * người dùng tưởng file chứa toàn bộ tập lọc.
+   */
+  const isPageScoped = tabCount > filteredCount;
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Xuất Excel">
       <div className="space-y-4">
@@ -48,9 +56,17 @@ export const RevenueExcelExportChoiceModal: React.FC<RevenueExcelExportChoiceMod
             ) : null}
           </p>
           <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-            Tab hiện tại: {tabCount} hóa đơn · Khớp filter: {filteredCount}
+            {isPageScoped
+              ? `Tab hiện tại: ${tabCount} hóa đơn · Đang hiển thị: ${filteredCount} hóa đơn của trang này`
+              : `Tab hiện tại: ${tabCount} hóa đơn · Khớp filter: ${filteredCount}`}
           </p>
         </div>
+
+        <PageScopeNotice
+          shownCount={filteredCount}
+          filteredTotal={tabCount}
+          action="export"
+        />
 
         <div className="grid gap-3 sm:grid-cols-2">
           <Button
@@ -86,12 +102,16 @@ export const RevenueExcelExportChoiceModal: React.FC<RevenueExcelExportChoiceMod
             ) : (
               <FileSpreadsheet className="w-4 h-4 mr-2" />
             )}
-            Xuất theo filter ({filteredCount})
+            {isPageScoped
+              ? `Xuất theo filter — trang hiện tại (${filteredCount}/${tabCount})`
+              : `Xuất theo filter (${filteredCount})`}
           </Button>
         </div>
 
         <div className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
-          «Xuất theo filter» chỉ gồm hóa đơn đang hiển thị trên tab và bộ lọc hiện tại.
+          {isPageScoped
+            ? `«Xuất theo filter» chỉ gồm ${filteredCount} hóa đơn đang hiển thị trên trang này, không phải toàn bộ ${tabCount} hóa đơn khớp bộ lọc hiện tại.`
+            : '«Xuất theo filter» chỉ gồm hóa đơn đang hiển thị trên tab và bộ lọc hiện tại.'}
         </div>
       </div>
     </Modal>

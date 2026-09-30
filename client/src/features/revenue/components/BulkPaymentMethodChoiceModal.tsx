@@ -3,6 +3,7 @@ import { Banknote, QrCode } from 'lucide-react';
 import { Modal } from '../../../components/Modal/Modal';
 import { cn } from '../../../utils/cn';
 import { formatMoney } from './revenue-invoice-display';
+import { PageScopeNotice } from './PageScopeNotice';
 import type { PaymentMethodChoice } from './PaymentMethodChoiceModal';
 
 export type BulkPaymentMethodChoiceModalProps = {
@@ -11,6 +12,12 @@ export type BulkPaymentMethodChoiceModalProps = {
   invoiceCount: number;
   totalAmount: number;
   hasActiveFilters: boolean;
+  /**
+   * Tổng số hoá đơn chờ thanh toán khớp tab + bộ lọc hiện tại (server trả qua
+   * `X-Total-Count`). Lớn hơn `invoiceCount` nghĩa là danh sách chỉ tải được một
+   * trang → hộp thoại phải nói rõ phạm vi thay vì ngụ ý toàn bộ tập lọc.
+   */
+  filteredTotal?: number;
   onSelect: (method: PaymentMethodChoice) => void;
 };
 
@@ -20,23 +27,37 @@ export const BulkPaymentMethodChoiceModal: React.FC<BulkPaymentMethodChoiceModal
   invoiceCount,
   totalAmount,
   hasActiveFilters,
+  filteredTotal,
   onSelect,
 }) => {
+  const isPageScoped = typeof filteredTotal === 'number' && filteredTotal > invoiceCount;
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Chọn Phương Thức Thanh Toán">
       <div className="space-y-4">
         <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-white/5">
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
-            {hasActiveFilters ? 'Thanh toán tất cả (theo bộ lọc)' : 'Thanh toán tất cả'}
+            {isPageScoped
+              ? hasActiveFilters
+                ? 'Thanh toán theo bộ lọc (trang hiện tại)'
+                : 'Thanh toán theo trang hiện tại'
+              : hasActiveFilters
+                ? 'Thanh toán tất cả (theo bộ lọc)'
+                : 'Thanh toán tất cả'}
           </p>
           <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
             <span className="font-bold text-gray-900 dark:text-white">{invoiceCount}</span> hóa
-            đơn chờ thanh toán
+            đơn chờ thanh toán{isPageScoped ? ' trên trang này' : ''}
           </p>
           <p className="mt-2 text-lg font-bold text-blue-600 dark:text-blue-400">
             {formatMoney(totalAmount)} ₫
           </p>
         </div>
+
+        <PageScopeNotice
+          shownCount={invoiceCount}
+          filteredTotal={filteredTotal ?? invoiceCount}
+          action="payment"
+        />
 
         <div className="grid gap-3 sm:grid-cols-2">
           <button

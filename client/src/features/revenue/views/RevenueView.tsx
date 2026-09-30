@@ -563,7 +563,9 @@ export const RevenueView: React.FC = () => {
 
   const handleExportInvoicesFiltered = async () => {
     // Server chỉ trả một trang, nên «Xuất theo filter» xuất đúng các dòng đang tải
-    // (trang hiện tại + bộ lọc/sub-tab hiện tại) — khớp phần đếm trên modal.
+    // (trang hiện tại + bộ lọc/sub-tab hiện tại) — khớp phần đếm trên modal, và modal
+    // nói rõ phạm vi khi `total > số dòng đang tải` (`PageScopeNotice`). Muốn xuất
+    // toàn bộ tập lọc thì phải có endpoint xuất-theo-bộ-lọc ở server (xem báo cáo).
     if (invoices.length === 0) {
       return;
     }
@@ -694,6 +696,7 @@ export const RevenueView: React.FC = () => {
         invoiceCount={payableInvoices.length}
         totalAmount={bulkPaymentTotal}
         hasActiveFilters={invFilterCount > 0}
+        filteredTotal={invoicesTotal}
         onSelect={(method: PaymentMethodChoice) => {
           setIsBulkPaymentChoiceModalOpen(false);
           if (method === 'transfer') {
@@ -710,6 +713,7 @@ export const RevenueView: React.FC = () => {
         invoiceCount={payableInvoices.length}
         totalAmount={bulkPaymentTotal}
         hasActiveFilters={invFilterCount > 0}
+        filteredTotal={invoicesTotal}
         isLoading={isLoading}
         onConfirm={() => void handleBulkPaymentConfirm()}
       />
@@ -719,6 +723,7 @@ export const RevenueView: React.FC = () => {
         onClose={() => setIsBulkSepayModalOpen(false)}
         invoices={payableInvoices}
         hasActiveFilters={invFilterCount > 0}
+        filteredTotal={invoicesTotal}
         onPaid={() => {
           // Nạp lại đúng trang đang xem sau khi hoá đơn được thanh toán.
           reloadInvoices();

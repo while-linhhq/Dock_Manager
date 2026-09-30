@@ -39,6 +39,7 @@ import {
   renderInvoiceRefFeesCell,
 } from './revenue-invoice-display';
 import { InvoiceDiscountStatusIcon } from './InvoiceDiscountStatusIcon';
+import { PageScopeNotice } from './PageScopeNotice';
 import { SortableTh } from '../../../components/SortableTh/SortableTh';
 import {
   useTableSort,
@@ -220,6 +221,13 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   };
 
   const pageStartIndex = (page - 1) * pageSize;
+
+  /**
+   * Danh sách chỉ tải MỘT trang: khi tập khớp bộ lọc (`total`) lớn hơn số dòng đang
+   * hiển thị thì «Thanh toán tất cả» chỉ trả được các hoá đơn của trang này — nhãn
+   * nút phải nói rõ phạm vi thay vì ngụ ý toàn bộ tập lọc.
+   */
+  const isPageScoped = total > invoices.length;
 
   useEffect(() => {
     const discountTimers = discountSaveTimers.current;
@@ -551,31 +559,36 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
         </div>
 
         {invoiceSubTab === 'pending' && (
-          <div
-            className={cn(
-              'flex flex-wrap items-center gap-3',
-              !isAutoInvoiceTab ? 'justify-between' : 'justify-start',
-            )}
-          >
-            <Button
-              type="button"
-              onClick={onOpenBulkPayment}
-              disabled={payableCount === 0 || isLoading}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+          <div className="space-y-2">
+            <div
+              className={cn(
+                'flex flex-wrap items-center gap-3',
+                !isAutoInvoiceTab ? 'justify-between' : 'justify-start',
+              )}
             >
-              <Banknote className="w-4 h-4 mr-2" />
-              Thanh toán tất cả ({payableCount}) — {formatMoney(bulkPaymentTotal)} ₫
-            </Button>
-            {!isAutoInvoiceTab && (
               <Button
                 type="button"
-                onClick={onOpenCreateInvoice}
-                className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
+                onClick={onOpenBulkPayment}
+                disabled={payableCount === 0 || isLoading}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/20 disabled:opacity-50"
               >
-                <Plus className="w-4 h-4 mr-2" />
-                Tạo Hóa Đơn
+                <Banknote className="w-4 h-4 mr-2" />
+                {isPageScoped
+                  ? `Thanh toán ${payableCount} hoá đơn đang hiển thị / tổng ${total} khớp bộ lọc — ${formatMoney(bulkPaymentTotal)} ₫`
+                  : `Thanh toán tất cả (${payableCount}) — ${formatMoney(bulkPaymentTotal)} ₫`}
               </Button>
-            )}
+              {!isAutoInvoiceTab && (
+                <Button
+                  type="button"
+                  onClick={onOpenCreateInvoice}
+                  className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Tạo Hóa Đơn
+                </Button>
+              )}
+            </div>
+            <PageScopeNotice shownCount={payableCount} filteredTotal={total} action="payment" />
           </div>
         )}
       </div>
