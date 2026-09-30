@@ -1,8 +1,9 @@
 """Payload `/detections/`: cờ opt-in `include_ocr_results` (Task 19).
 
-Vì sao có cờ này: mảng `ocr_results` chiếm **99,5 %** khối lượng phản hồi (đo trên
-DB thật: `limit=18` → 2,27 MB, trong đó `ocr_results` 2,26 MB) trong khi sidebar
-dashboard chỉ cần **id OCR đầu tiên** làm nhãn tàu dự phòng
+Vì sao có cờ này: mảng `ocr_results` chiếm **98,98 %** khối lượng phản hồi (đo trên
+DB thật: `limit=18` → 2 122 689 B, trong đó `ocr_results` 2 101 119 B; nhánh rút
+gọn còn 22 126 B, tức 96 lần nhỏ hơn) trong khi sidebar dashboard chỉ cần **id OCR
+đầu tiên** làm nhãn tàu dự phòng
 (`client/src/utils/detection-display.ts`). Cờ phải **opt-in** (`= True`) để mọi
 caller khác giữ nguyên payload từng byte — vì vậy test ghim cả hai nhánh: mặc
 định không đổi, và nhánh tắt bỏ hẳn trường nặng nhưng vẫn giữ nhãn dự phòng.
@@ -25,6 +26,8 @@ from app.api.deps import get_current_user
 from app.db.session import SessionLocal, get_db
 from app.main import app
 from app.models.detection import Detection
+from app.models.user import User
+from app.models.vessel import Vessel
 from app.utils.pagination import MAX_PAGE_SIZE
 
 LIST_URL = '/api/v1/detections/'
@@ -40,18 +43,42 @@ def _utc(*args: int) -> datetime:
 
 
 def _seed(session) -> SimpleNamespace:
-    """Seed mọi dạng `ocr_results` mà `getDetectionShipLabel` phân biệt."""
+    """Seed mọi dạng `ocr_results` mà `getDetectionShipLabel` phân biệt.
+
+    Thêm row `linked` đã gắn `Vessel` + duyệt đầy đủ để phép so hai nhánh đi qua cả
+    object `vessel` lồng lẫn sáu trường duyệt (xem chú thích trong thân hàm).
+    """
     tag = uuid4().hex[:12]
     rows: dict[str, Detection] = {}
 
-    def add_row(key: str, ocr_results) -> Detection:
+    # Row 'linked' phải trỏ tới `Vessel`/`User` thật: để `vessel_id=None` và
+    # `verified_by=None` như mọi row khác thì phép so "hai nhánh chỉ khác đúng một
+    # khoá" không bao giờ đi qua object `vessel` lồng, cũng không so được sáu
+    # trường luôn NULL (`audit_image_url`, `video_url`, `is_accepted`,
+    # `rejection_reason`, `verified_at`, `verified_by`) — đột biến nhánh rút gọn ở
+    # đúng những chỗ đó sẽ lọt qua test.
+    vessel = Vessel(
+        ship_id=f'OCRPAYLOAD-{tag}',
+        name=f'payload {tag}',
+        classification='unclassified',
+    )
+    verifier = User(
+        username=f'ocrpayload-verifier-{tag}',
+        full_name='OCR payload verifier',
+        is_active=True,
+    )
+    session.add_all([vessel, verifier])
+    session.flush()
+
+    def add_row(key: str, ocr_results, **extra) -> Detection:
+        extra.setdefault('vessel_id', None)  # mặc định không gắn tàu ⇒ nhãn rơi về id OCR
         row = Detection(
             track_id=f'ocrpayload-{tag}-{key}',
-            vessel_id=None,  # không gắn tàu ⇒ nhãn hiển thị rơi về id OCR
             start_time=_utc(2026, 9, 30, 10, 0, 0),
             created_at=_utc(2026, 9, 30, 10, 0, 0),
             ocr_results=ocr_results,
             confidence=0.5,
+            **extra,
         )
         rows[key] = row
         session.add(row)
@@ -67,9 +94,29 @@ def _seed(session) -> SimpleNamespace:
     add_row('empty', [])  # mảng rỗng → nhãn mặc định
     add_row('null', None)  # null → nhãn mặc định
     add_row('big', [{'id': f'BIG-{i}', 'conf': 0.5} for i in range(BIG_OCR_ELEMENTS)])
+    # Đường đi đầy đủ: `vessel` lồng đã điền + cả sáu trường duyệt khác NULL. Đường
+    # dẫn `runs/...` (không phải `minio://`) để `audit_image_url`/`video_url` ổn định
+    # giữa hai lần gọi — URL có token ký theo thời gian sẽ làm phép so byte loé đỏ.
+    add_row(
+        'linked',
+        [{'id': f'LINKED-{tag}', 'conf': 0.7}],
+        vessel_id=vessel.id,
+        is_accepted=True,
+        rejection_reason='ảnh audit mờ, đã duyệt tay',
+        verified_at=_utc(2026, 9, 30, 10, 5, 0),
+        verified_by=verifier.id,
+        audit_image_path='runs/ocrpayload/audit.jpg',
+        video_path='runs/ocrpayload/clip.mp4',
+        berth_in_time=_utc(2026, 9, 30, 9, 55, 0),
+    )
     session.flush()
 
-    return SimpleNamespace(tag=tag, ids={key: row.id for key, row in rows.items()}, total=len(rows))
+    return SimpleNamespace(
+        tag=tag,
+        ids={key: row.id for key, row in rows.items()},
+        total=len(rows),
+        vessel_ship_id=vessel.ship_id,
+    )
 
 
 @contextmanager
@@ -175,6 +222,21 @@ def test_lite_row_is_full_row_minus_ocr_results(seeded) -> None:
     lite = _by_id(_get(seeded, include_ocr_results='false'))
 
     assert set(lite) == set(full), 'hai nhánh phải trả về đúng cùng tập row'
+    # Chốt chống mù: row 'linked' phải thật sự mang object `vessel` lồng và sáu
+    # trường duyệt khác NULL, nếu không vòng so ngay dưới đây không chạm tới chúng.
+    linked = full[seeded.ids['linked']]
+    for field in (
+        'vessel',
+        'audit_image_url',
+        'video_url',
+        'is_accepted',
+        'rejection_reason',
+        'verified_at',
+        'verified_by',
+    ):
+        assert linked[field] is not None, f"row 'linked' phải có {field} khác NULL"
+    assert linked['vessel']['ship_id'] == seeded.vessel_ship_id
+    assert lite[seeded.ids['linked']]['vessel'] == linked['vessel']
     for row_id, row in lite.items():
         assert set(row) == (set(full[row_id]) - {'ocr_results'}) | {'first_ocr_result_id'}
         assert {k: v for k, v in row.items() if k != 'first_ocr_result_id'} == {

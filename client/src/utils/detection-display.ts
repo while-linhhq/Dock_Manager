@@ -21,7 +21,7 @@ function readOcrShipId(value: unknown): string | null {
  *
  * Id OCR đến từ hai dạng payload: danh sách đầy đủ (`ocr_results[0].id` — trang
  * bến vẫn gọi vậy) hoặc bản rút gọn của dashboard (`first_ocr_result_id`, khi
- * sidebar tắt `include_ocr_results` để không tải 99,5 % khối lượng thừa). Hai
+ * sidebar tắt `include_ocr_results` để không tải 98,98 % khối lượng thừa). Hai
  * dạng cho **cùng một nhãn**: `readOcrShipId` là chỗ duy nhất trim/kiểm rỗng.
  */
 export function getDetectionShipLabel(det: DetectionRead): string {
