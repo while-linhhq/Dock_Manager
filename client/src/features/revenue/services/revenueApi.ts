@@ -1,5 +1,7 @@
 import { httpClient } from '../../../services/httpClient';
 import type { InvoiceRead, FeeConfigRead, PaymentRead } from '../../../types/api.types';
+// Chỉ import KIỂU (bị xoá khi biên dịch) nên không tạo vòng lặp runtime với store.
+import type { InvoiceListKind, InvoiceSubTab } from '../store/revenueStore';
 
 export type InvoiceCreate = {
   order_id: string;
@@ -92,40 +94,137 @@ export type InvoiceUpdatePayload = {
   notes?: string;
 };
 
-export type InvoiceListParams = {
-  skip?: number;
-  limit?: number;
-  /** Exact backend status e.g. PAID */
-  paymentStatus?: string;
-  /** Chờ thanh toán: mọi trạng thái trừ PAID */
-  awaitingPayment?: boolean;
-  /** Hóa đơn đã xóa mềm */
-  deletedOnly?: boolean;
-  /** Chỉ HĐ tự động (AI) */
-  creationSource?: string;
-  /** Ẩn một nguồn (dùng AI để tab hóa đơn thường) */
-  excludeCreationSource?: string;
+/**
+ * Tám bộ lọc của bảng hoá đơn (giữ nguyên tên state ở `RevenueView`) cộng với
+ * chế độ đang xem — tất cả gửi thẳng thành tham số query của API.
+ *
+ * `created_from`/`created_to` là tên tham số của endpoint hoá đơn (không phải
+ * `occurred_from`/`occurred_to` như bảng nhận diện).
+ */
+export type InvoiceFilters = {
+  /** Sub-tab đang chọn — quyết định tập bản ghi server trả về. */
+  subTab: InvoiceSubTab;
+  /** Tab «Hóa đơn» vs «Hóa đơn tự động» — quyết định nguồn tạo. */
+  listKind: InvoiceListKind;
+  /** Từ khoá: số HĐ, order/vessel/detection id, mã tàu, nhãn người tạo. */
+  q?: string;
+  /** Số phút neo đậu tối thiểu, tính từ `(end_time - start_time)` của detection. */
+  minBerthMinutes?: string;
+  /** `vessels.id` (không phải `ship_id`). */
+  vesselId?: string;
+  vesselTypeId?: string;
+  /** Ngày địa phương `YYYY-MM-DD` (ô lọc `input type="date"`). */
+  dateFrom?: string;
+  dateTo?: string;
+  /** Tổng tiền tối thiểu / tối đa (₫). */
+  minTotal?: string;
+  maxTotal?: string;
 };
 
+/**
+ * Khóa sắp xếp hợp lệ — khớp whitelist `SORT_COLUMNS` của API hoá đơn.
+ * Khoá `time` của whitelist là thứ tự MẶC ĐỊNH (không có cột nào trên bảng), nên
+ * không xuất hiện ở đây: chưa sắp xếp cột nào thì không gửi `sort`/`order`.
+ */
+export const INVOICE_SORT_KEYS = [
+  'invoice_number',
+  'ship_order',
+  'created_at',
+  'deleted_at',
+  'payment_status',
+  'total_amount',
+] as const;
+
+export type InvoiceSortKey = (typeof INVOICE_SORT_KEYS)[number];
+
+export type InvoiceSort = {
+  key: InvoiceSortKey;
+  order: 'asc' | 'desc';
+};
+
+export function isInvoiceSortKey(value: string): value is InvoiceSortKey {
+  return INVOICE_SORT_KEYS.some((key) => key === value);
+}
+
+/** Một trang hoá đơn — khớp tham số `fetcher` của `usePagedQuery`. */
+export type InvoicePageRequest = {
+  skip: number;
+  limit: number;
+  filters: InvoiceFilters;
+  sort?: InvoiceSort;
+};
+
+/**
+ * Ngày địa phương `YYYY-MM-DD` → instant UTC để server so với `created_at` —
+ * đúng khoảng ngày mà bộ lọc client-side trước đây áp dụng (`dayStartMs`/
+ * `dayEndMs`). `endOfDay` dành cho mốc "đến ngày" (23:59:59.999 giờ địa phương).
+ */
+function localDateToUtcIso(value: string | undefined, endOfDay: boolean): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec((value ?? '').trim());
+  if (!match) {
+    return undefined;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = endOfDay
+    ? new Date(year, month - 1, day, 23, 59, 59, 999)
+    : new Date(year, month - 1, day);
+  // `new Date(y, m, d)` tự cuộn ngày/tháng không hợp lệ (31/02 → 02/03) nên so lại.
+  if (date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return undefined;
+  }
+  return date.toISOString();
+}
+
+/**
+ * Ô lọc số → số hữu hạn; rỗng hoặc không phải số thì bỏ hẳn tham số.
+ * Giữ đúng hành vi cũ: bộ lọc tiền không phải số bị bỏ qua
+ * (`total < NaN` luôn false), riêng ô phút neo rỗng cũng không lọc gì.
+ */
+function toFiniteFilterNumber(value: string | undefined): number | undefined {
+  const raw = (value ?? '').trim();
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export const revenueApi = {
-  getInvoices: async (params: InvoiceListParams = {}): Promise<InvoiceRead[]> => {
-    const q = new URLSearchParams({
-      skip: String(params.skip ?? 0),
-      limit: String(params.limit ?? 1000),
+  /**
+   * Một trang hoá đơn: 8 bộ lọc, sub-tab và sắp xếp chạy ở SQL phía server.
+   * `total` là tổng số bản ghi khớp bộ lọc (đọc từ `X-Total-Count`), không phải
+   * số dòng của trang.
+   */
+  getInvoicesPage: async (request: InvoicePageRequest): Promise<{ items: InvoiceRead[]; total: number }> => {
+    const { skip, limit, filters, sort } = request;
+    const { subTab, listKind } = filters;
+
+    return httpClient.getPaged<InvoiceRead>('/invoices/', {
+      skip,
+      limit,
+      // Sub-tab: đúng ba nhánh lọc cũ của store (đã xoá / đã thanh toán / chờ thanh toán).
+      deleted_only: subTab === 'trash' ? true : undefined,
+      payment_status: subTab === 'paid' ? 'PAID' : undefined,
+      awaiting_payment: subTab === 'pending' ? true : undefined,
+      // Tab «Hóa đơn tự động» chỉ lấy nguồn AI; tab thường loại trừ nguồn AI.
+      creation_source: listKind === 'ai' ? 'AI' : undefined,
+      exclude_creation_source: listKind === 'ai' ? undefined : 'AI',
+      q: filters.q?.trim() || undefined,
+      vessel_id: filters.vesselId || undefined,
+      vessel_type_id: filters.vesselTypeId || undefined,
+      created_from: localDateToUtcIso(filters.dateFrom, false),
+      created_to: localDateToUtcIso(filters.dateTo, true),
+      min_total: toFiniteFilterNumber(filters.minTotal),
+      max_total: toFiniteFilterNumber(filters.maxTotal),
+      min_berth_minutes: toFiniteFilterNumber(filters.minBerthMinutes),
+      // Chỉ gửi khi có cột đang sắp xếp. Không gửi thì server dùng mặc định
+      // `time`/`desc` (= `created_at`/`deleted_at` desc theo sub-tab, kèm
+      // tiebreaker `id desc`) — đúng thứ tự bảng vẫn hiển thị từ trước tới nay.
+      sort: sort?.key,
+      order: sort?.order,
     });
-    if (params.deletedOnly) {
-      q.set('deleted_only', 'true');
-    } else if (params.awaitingPayment) {
-      q.set('awaiting_payment', 'true');
-    } else if (params.paymentStatus) {
-      q.set('payment_status', params.paymentStatus);
-    }
-    if (params.creationSource) {
-      q.set('creation_source', params.creationSource);
-    } else if (params.excludeCreationSource) {
-      q.set('exclude_creation_source', params.excludeCreationSource);
-    }
-    return httpClient.get<InvoiceRead[]>(`/invoices/?${q.toString()}`);
   },
   getInvoice: async (id: string): Promise<InvoiceRead> => {
     return httpClient.get<InvoiceRead>(`/invoices/${id}`);

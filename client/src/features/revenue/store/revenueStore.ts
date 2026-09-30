@@ -5,6 +5,7 @@ import type {
   BulkPaymentCreate,
   BulkPaymentRead,
   InvoiceCreate,
+  InvoicePageRequest,
   PaymentCreate,
   FeeConfigCreate,
   FeeConfigUpdatePayload,
@@ -26,7 +27,16 @@ interface RevenueState {
   error: string | null;
   setInvoiceListKind: (kind: InvoiceListKind) => void;
   setInvoiceSubTab: (tab: InvoiceSubTab) => void;
-  fetchInvoices: () => Promise<void>;
+  /**
+   * Nạp ĐÚNG một trang hoá đơn (8 bộ lọc + sub-tab + sắp xếp do server xử lý) và
+   * lưu vào `invoices`. Là `fetcher` của `usePagedQuery` ở `RevenueView`: hook giữ
+   * trang/bộ lọc/sắp xếp, store giữ dòng của trang đang xem để các thao tác tại chỗ
+   * (ghi chú, giảm giá, thanh toán hàng loạt) vẫn cập nhật được dòng đó.
+   */
+  fetchInvoicesPage: (request: InvoicePageRequest) => Promise<{
+    items: InvoiceRead[];
+    total: number;
+  }>;
   fetchFeeConfigs: (activeOnly?: boolean) => Promise<void>;
   createInvoice: (data: InvoiceCreate) => Promise<void>;
   recordPayment: (invoiceId: string | number, data: PaymentCreate) => Promise<void>;
@@ -88,30 +98,28 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
   },
 
   setInvoiceSubTab: (invoiceSubTab) => {
+    // Không tự nạp lại: đổi sub-tab làm `filters` của `usePagedQuery` đổi, hook tự
+    // đưa về trang 1 rồi nạp lại (một nguồn sự thật duy nhất cho trang).
     set({ invoiceSubTab });
-    void get().fetchInvoices();
   },
 
-  fetchInvoices: async () => {
+  fetchInvoicesPage: async (request) => {
     set({ isLoading: true, error: null });
     try {
-      const tab = get().invoiceSubTab;
-      const kind = get().invoiceListKind;
-      const sourceFilter =
-        kind === 'ai'
-          ? { creationSource: 'AI' as const }
-          : { excludeCreationSource: 'AI' as const };
-      let invoices: InvoiceRead[];
-      if (tab === 'trash') {
-        invoices = await revenueApi.getInvoices({ deletedOnly: true, ...sourceFilter });
-      } else if (tab === 'paid') {
-        invoices = await revenueApi.getInvoices({ paymentStatus: 'PAID', ...sourceFilter });
-      } else {
-        invoices = await revenueApi.getInvoices({ awaitingPayment: true, ...sourceFilter });
-      }
-      set({ invoices, isLoading: false });
+      const page = await revenueApi.getInvoicesPage(request);
+      // Dòng của trang mới và cờ loading được ghi trong CÙNG một lần `set`: sau mỗi
+      // lần đổi trang/bộ lọc/reload, `invoices` là đúng các dòng đang hiển thị,
+      // không bao giờ là trang cũ trộn với metadata mới.
+      set({ invoices: page.items, isLoading: false });
+      return page;
     } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch invoices', isLoading: false });
+      set({
+        invoices: [],
+        error: err.message || 'Failed to fetch invoices',
+        isLoading: false,
+      });
+      // Ném lại để `usePagedQuery` cũng xoá `items`/`total` và hiện lỗi của hook.
+      throw err;
     }
   },
 
@@ -125,11 +133,14 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
     }
   },
 
+  // Các mutation dưới đây KHÔNG tự nạp lại danh sách: trang/bộ lọc/sắp xếp nằm ở
+  // `usePagedQuery` của `RevenueView`, nên view gọi `reload()` sau mỗi mutation để
+  // nạp lại ĐÚNG trang đang xem (thay vì tải lại toàn bộ như trước).
   createInvoice: async (data) => {
     set({ isLoading: true, error: null });
     try {
       await revenueApi.createInvoice(data);
-      await get().fetchInvoices();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to create invoice', isLoading: false });
       throw err;
@@ -140,7 +151,6 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await revenueApi.createPayment(invoiceId, data);
-      await get().fetchInvoices();
       set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to record payment', isLoading: false });
@@ -156,12 +166,14 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
         result = await revenueApi.createBulkPayments(data);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+          // Đường dự phòng chỉ có `state.invoices` = các dòng của TRANG đang xem,
+          // nên chỉ thanh toán được những hoá đơn đang tải (đúng danh sách mà nút
+          // «Thanh toán tất cả» đang đếm).
           result = await recordBulkPaymentsSequential(get(), data);
         } else {
           throw err;
         }
       }
-      await get().fetchInvoices();
       set({ isLoading: false });
       return result;
     } catch (err: any) {
@@ -174,7 +186,7 @@ export const useRevenueStore = create<RevenueState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await revenueApi.deleteInvoice(id);
-      await get().fetchInvoices();
+      set({ isLoading: false });
     } catch (err: any) {
       set({ error: err.message || 'Failed to delete invoice', isLoading: false });
       throw err;
