@@ -11,6 +11,7 @@ TensorRT (API ``set_tensor_address`` + ``execute_async_v3``). Nhờ vậy KHÔNG
 from __future__ import annotations
 
 import logging
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,14 @@ class TensorRTModule:
     Chỉ hỗ trợ 1 input + 1 output (đúng nhu cầu của các backbone trong dự án).
     Batch động trong khoảng optimization profile của engine; batch lớn hơn hoặc
     engine cố định batch khác sẽ được tự động chia nhỏ và ghép lại.
+
+    An toàn luồng: TensorRT KHÔNG bảo đảm an toàn luồng cho execution context. Pipeline
+    gọi cùng một extractor từ nhiều luồng (2 luồng camera + luồng visual-id + verifier
+    seam-anchor), nên mọi thao tác trên context được tuần tự hoá bằng ``_lock``. Không có
+    khoá này, hai luồng cùng đổi input shape rồi cùng execute sẽ phá graph Myelin và/hoặc
+    làm luồng này cấp phát bộ đệm theo shape của luồng kia — TensorRT ghi quá bộ đệm và
+    tiến trình backend abort (SIGABRT). Xem test:
+    ``app/tests/test_trt_engine_thread_safety.py``.
     """
 
     def __init__(
@@ -105,6 +114,7 @@ class TensorRTModule:
             raise FileNotFoundError(f'Không thấy engine TensorRT: {path}')
 
         self._torch = torch
+        self._lock = threading.Lock()
         self._device = torch.device(f'cuda:{device}' if str(device).isdigit() else str(device))
         self._logger = trt.Logger(trt.Logger.WARNING)
         self._runtime = trt.Runtime(self._logger)
@@ -192,21 +202,24 @@ class TensorRTModule:
         torch = self._torch
         data = tensor.to(device=self._device, dtype=self._in_dtype).contiguous()
 
-        if not self._context.set_input_shape(self._input_name, tuple(data.shape)):
-            raise RuntimeError(
-                f'Engine không nhận shape {tuple(data.shape)} '
-                f'(batch cho phép {self._min_batch}..{self._max_batch})'
-            )
+        # Toàn bộ thao tác trên execution context phải nằm trong khoá: context là tài
+        # nguyên dùng chung, không an toàn luồng (xem docstring của lớp).
+        with self._lock:
+            if not self._context.set_input_shape(self._input_name, tuple(data.shape)):
+                raise RuntimeError(
+                    f'Engine không nhận shape {tuple(data.shape)} '
+                    f'(batch cho phép {self._min_batch}..{self._max_batch})'
+                )
 
-        out_shape = tuple(int(d) for d in self._context.get_tensor_shape(self._output_name))
-        output = torch.empty(out_shape, dtype=self._out_dtype, device=self._device)
+            out_shape = tuple(int(d) for d in self._context.get_tensor_shape(self._output_name))
+            output = torch.empty(out_shape, dtype=self._out_dtype, device=self._device)
 
-        self._context.set_tensor_address(self._input_name, data.data_ptr())
-        self._context.set_tensor_address(self._output_name, output.data_ptr())
-        if not self._context.execute_async_v3(torch.cuda.current_stream().cuda_stream):
-            raise RuntimeError('TensorRT execute_async_v3 thất bại')
-        torch.cuda.synchronize()
+            self._context.set_tensor_address(self._input_name, data.data_ptr())
+            self._context.set_tensor_address(self._output_name, output.data_ptr())
+            if not self._context.execute_async_v3(torch.cuda.current_stream().cuda_stream):
+                raise RuntimeError('TensorRT execute_async_v3 thất bại')
+            torch.cuda.synchronize()
 
-        if self._output_dim <= 0 and output.numel():
-            self._output_dim = int(output.reshape(int(data.shape[0]), -1).shape[-1])
+            if self._output_dim <= 0 and output.numel():
+                self._output_dim = int(output.reshape(int(data.shape[0]), -1).shape[-1])
         return output.reshape(int(data.shape[0]), -1).to(torch.float32)
