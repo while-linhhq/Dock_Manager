@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,14 @@ def _torch_loads() -> bool:
 
 
 class TorchYoloWrapper:
+    """Bọc ultralytics YOLO và tự tuần tự hoá lời gọi suy luận.
+
+    `ultralytics.YOLO.predict` không an toàn luồng: mô hình giữ trạng thái, và khi chạy
+    `.engine` thì bên trong là một execution context TensorRT. Detector này được dùng chung
+    từ nhiều luồng (per-camera, yolo_worker, endpoint test-video), nên khoá đặt ngay tại biên
+    module để không phụ thuộc việc từng chỗ gọi có nhớ lấy khoá hay không.
+    """
+
     def __init__(
         self,
         model,
@@ -88,24 +97,26 @@ class TorchYoloWrapper:
         self.conf = conf
         self.target_classes = target_classes
         self.imgsz = max(32, int(imgsz))
+        self._lock = threading.Lock()
 
     def predict_boxes(self, frame):
-        results = self.model.predict(
-            source=frame,
-            conf=self.conf,
-            classes=self.target_classes,
-            imgsz=self.imgsz,
-            verbose=False,
-            device=self.device,
-        )
-        boxes_list = []
-        det_confs: list[float] = []
-        for r in results:
-            for box in r.boxes:
-                b = box.xyxy[0].cpu().numpy().astype(int)
-                boxes_list.append(b)
-                det_confs.append(float(box.conf[0].cpu().item()))
-        return boxes_list, det_confs
+        with self._lock:
+            results = self.model.predict(
+                source=frame,
+                conf=self.conf,
+                classes=self.target_classes,
+                imgsz=self.imgsz,
+                verbose=False,
+                device=self.device,
+            )
+            boxes_list = []
+            det_confs: list[float] = []
+            for r in results:
+                for box in r.boxes:
+                    b = box.xyxy[0].cpu().numpy().astype(int)
+                    boxes_list.append(b)
+                    det_confs.append(float(box.conf[0].cpu().item()))
+            return boxes_list, det_confs
 
 
 def resolve_target_classes(model, *, model_path: str = '') -> list[int]:
