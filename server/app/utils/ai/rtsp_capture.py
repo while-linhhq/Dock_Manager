@@ -352,7 +352,7 @@ def _build_nvdec_cmd(
             '-i',
             url,
             '-vf',
-            f'hwdownload,format=bgr24,scale={width}:{height}:flags=fast_bilinear',
+            f'hwdownload,format=nv12,scale={width}:{height}:flags=fast_bilinear,format=bgr24',
             *tail,
         ]
     return [
