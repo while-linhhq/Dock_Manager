@@ -1,9 +1,10 @@
-"""LicenseService — máy trạng thái license cục bộ (chưa gọi Keygate).
+"""LicenseService — máy trạng thái + orchestration license Keygate.
 
-Task này chỉ gồm phần state/accessor: tính status hiệu lực từ row
-``license_state``, cache snapshot trong RAM, kiểm tra máy có bị đổi không và
-các helper enforcement. Việc activate/verify mạng nằm ở task sau; module này
-không import HTTP client và không gọi mạng.
+Bao gồm: tính status hiệu lực từ row ``license_state``, cache snapshot trong
+RAM, kiểm tra máy có bị đổi không, các helper enforcement, và phần gọi mạng
+``activate``/``verify`` với Keygate. HTTP client được inject qua constructor
+(``LicenseService(client=...)``) nên test không cần chạm mạng thật; token
+license được verify offline bằng Ed25519 với public key cache trong DB.
 """
 from __future__ import annotations
 
@@ -17,11 +18,13 @@ from uuid import uuid4
 from app.core.config import settings
 from app.core.license.features import max_cameras as registry_max_cameras
 from app.core.license.features import normalize_features
+from app.core.license.keygate_client import KeygateClient, KeygateError, KeygateNetworkError
 from app.core.license.machine import resolve_machine_code
+from app.core.license.token import LicenseTokenError, verify_license_token
 from app.db.session import SessionLocal
 from app.models.license_state import LicenseState
 from app.repositories.license_state_repository import license_state_repo
-from app.utils.crypto import decrypt_secret
+from app.utils.crypto import decrypt_secret, encrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,17 @@ USABLE_STATUSES = frozenset({'valid', 'grace'})
 _TERMINAL_STATUSES = frozenset({'suspended', 'revoked', 'expired', 'invalid'})
 _DATE_BASED_STATUSES = frozenset({'active', 'trialing', 'past_due', 'valid', 'grace'})
 _NOT_INITIALIZED = 'LicenseService not initialized'
+
+# Keygate verify trả các trạng thái này khi license còn dùng được; DB chỉ lưu
+# một trạng thái trung tính 'active', hạn dùng (valid_until/grace_days) quyết
+# định valid/grace/expired. Các trạng thái khác giữ nguyên để hiển thị đúng.
+_VERIFY_ACTIVE_STATUSES = frozenset({'active', 'trialing', 'past_due'})
+_STATUS_BY_ACTIVATE_CODE = {
+    'LICENSE_SUSPENDED': 'suspended',
+    'LICENSE_REVOKED': 'revoked',
+    'LICENSE_EXPIRED': 'expired',
+    'LICENSE_CANCELED': 'expired',
+}
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -48,6 +62,52 @@ def _initial_enforcement_mode() -> str:
     """
     mode = str(getattr(settings, 'LICENSE_ENFORCEMENT', '') or '').strip().lower()
     return mode if mode in ENFORCEMENT_MODES else 'warn'
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    """Parse mốc thời gian ISO-8601 từ Keygate (chấp nhận hậu tố ``Z``).
+
+    Giá trị thiếu/rỗng/không parse được trả ``None`` — service coi như license
+    không đặt hạn, không để dữ liệu lỗi làm crash vòng verify.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith(('Z', 'z')):
+        text = text[:-1] + '+00:00'
+    try:
+        return _as_utc(datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """Ép ``value`` sang int; ``bool``/giá trị hỏng rơi về ``default``."""
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _stored_status_from_verify(raw: Any) -> str:
+    """Chuyển status của verify 200 sang status lưu DB.
+
+    ``active|trialing|past_due`` đều lưu ``active``; status khác (nếu có) giữ
+    nguyên chữ thường để ``compute_effective_status`` xử lý (status lạ →
+    ``invalid``, fail closed). Thiếu status nhưng verify 200 → ``active``.
+    """
+    status = str(raw or '').strip().lower()
+    if not status:
+        return 'active'
+    if status in _VERIFY_ACTIVE_STATUSES:
+        return 'active'
+    return status
 
 
 def compute_effective_status(
@@ -129,9 +189,15 @@ class LicenseSnapshot:
 
 
 class LicenseService:
-    """Singleton giữ snapshot license và các accessor thuần (không HTTP)."""
+    """Singleton giữ snapshot license, gọi Keygate và các accessor enforcement."""
 
-    def __init__(self) -> None:
+    def __init__(self, client: KeygateClient | None = None) -> None:
+        # Client injectable: production dùng KeygateClient thật, test dùng fake
+        # để không bao giờ gọi mạng. Constructor client không thực hiện HTTP.
+        self.client = client if client is not None else KeygateClient(
+            settings.LICENSE_SERVER_URL,
+            settings.LICENSE_HTTP_TIMEOUT_SEC,
+        )
         self._snapshot: LicenseSnapshot | None = None
         self._machine_code = ''
 
@@ -197,6 +263,190 @@ class LicenseService:
     def _stored_instance_id(db) -> str:
         row = license_state_repo.get(db)
         return str(row.instance_id or '').strip() if row is not None else ''
+
+    # --- Keygate activation/verify -----------------------------------------
+
+    def activate(self, license_key: str, *, label: str = '') -> dict[str, Any]:
+        """Kích hoạt key với Keygate, lưu key đã mã hoá rồi verify ngay.
+
+        Key chỉ được lưu sau khi activate thành công. Lỗi Keygate/mạng được ném
+        nguyên cho endpoint xử lý (Task 8 map sang HTTP 400/503).
+        """
+        key = str(license_key or '')
+        self.client.activate(key, self.machine_code(), label)
+        self._persist_key(key)
+        return self.verify_now()
+
+    def verify_now(self) -> dict[str, Any]:
+        """Gọi Keygate verify và áp kết quả vào row ``license_state``.
+
+        Không ném lỗi mạng/nghiệp vụ: lỗi tạm thời giữ nguyên snapshot đã cache
+        (chỉ ghi ``last_error``), verify 404 được phân loại qua ``activate``.
+        Trả ``{'status', 'features', 'last_error'}`` với ``status`` là trạng
+        thái hiệu lực ngay sau lần verify.
+        """
+        license_key = self._decrypt_license_key()
+        if not license_key:
+            return self._result()
+
+        try:
+            data = self.client.verify(license_key, self.machine_code())
+        except KeygateNetworkError as exc:
+            return self._record_error(f'verify network error: {exc}')
+        except KeygateError as exc:
+            if exc.status == 404:
+                return self._classify_verify_404(license_key)
+            detail = exc.code or str(exc) or 'unknown'
+            return self._record_error(f'verify failed (HTTP {exc.status}): {detail}')
+        return self._apply_verify_data(data)
+
+    def _apply_verify_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Áp response verify 200 vào DB; token hỏng/thiếu không xoá features."""
+        payload = data if isinstance(data, dict) else {}
+        now = datetime.now(timezone.utc)
+        raw_token = payload.get('token')
+        token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
+
+        # 200 là server xác nhận license dùng được: luôn cập nhật metadata +
+        # features + hạn dùng; token chỉ cập nhật khi verify offline thành công.
+        fields: dict[str, Any] = {
+            'status': _stored_status_from_verify(payload.get('status')),
+            'license_id': payload.get('license_id'),
+            'plan_name': payload.get('plan_name'),
+            'valid_until': _parse_iso_datetime(payload.get('valid_until')),
+            'grace_days': _as_int(payload.get('grace_days'), 0),
+            'features': normalize_features(payload.get('features') or {}),
+            'last_verified_at': now,
+        }
+        last_error = None
+        if token is None:
+            # Giữ token cũ (nếu có) để offline cache không bị xoá bởi response
+            # thiếu token; features/valid_until vẫn được cập nhật bình thường.
+            last_error = 'verify response missing token'
+        else:
+            pubkey = self._stored_pubkey()
+            if not pubkey:
+                pubkey = self._fetch_public_key()
+            if not pubkey:
+                # Không verify được token → giữ token/token_exp cũ, chỉ báo lỗi.
+                last_error = 'token verify failed: missing Keygate public key'
+            else:
+                try:
+                    claims = verify_license_token(
+                        token,
+                        pubkey,
+                        expected_identifier=self.machine_code(),
+                        now=now,
+                    )
+                except LicenseTokenError as exc:
+                    # Token không verify được: giữ token cũ (nếu có), không tin
+                    # ``exp`` của token mới; features/valid_until vẫn đã cập nhật.
+                    last_error = f'token verify failed: {exc}'
+                else:
+                    fields['token'] = token
+                    fields['token_exp'] = datetime.fromtimestamp(claims.exp, tz=timezone.utc)
+                    fields['pubkey'] = pubkey
+
+        fields['last_error'] = last_error
+        self._persist_fields(fields)
+        return self._result()
+
+    def _classify_verify_404(self, license_key: str) -> dict[str, Any]:
+        """Verify 404 là câu trả lời dứt khoát — dùng activate để biết lý do.
+
+        403 kèm code map sang suspended/revoked/expired; activate lỗi khác hoặc
+        không kết nối được → ``invalid``. Activate thành công (máy đã activate
+        trước đó) nghĩa là license vẫn dùng được: giữ nguyên trạng thái cũ.
+        """
+        try:
+            self.client.activate(license_key, self.machine_code())
+        except KeygateNetworkError as exc:
+            return self._persist_classified('invalid', f'verify 404; activate unreachable: {exc}')
+        except KeygateError as exc:
+            if exc.status == 403:
+                status = _STATUS_BY_ACTIVATE_CODE.get(str(exc.code or '').upper(), 'invalid')
+                detail = exc.code or 'HTTP 403'
+                return self._persist_classified(status, f'verify 404; activate: {detail}')
+            return self._persist_classified(
+                'invalid', f'verify 404; activate failed (HTTP {exc.status})'
+            )
+        return self._record_error('verify 404 but activate ok')
+
+    def _record_error(self, message: str) -> dict[str, Any]:
+        """Ghi ``last_error`` nhưng giữ nguyên status/features đã cache."""
+        logger.warning('License verify error (giữ trạng thái cache): %s', message)
+        self._persist_fields({'last_error': message})
+        return self._result()
+
+    def _persist_classified(self, status: str, message: str) -> dict[str, Any]:
+        self._persist_fields({'status': status, 'last_error': message})
+        return self._result()
+
+    def _persist_key(self, license_key: str) -> None:
+        """Lưu key đã mã hoá + ``instance_id`` hiện tại (helper của activate/test)."""
+        fields: dict[str, Any] = {'license_key_enc': encrypt_secret(str(license_key or ''))}
+        machine_code = self.machine_code()
+        if machine_code:
+            fields['instance_id'] = machine_code
+        self._persist_fields(fields)
+
+    def _persist_fields(self, fields: dict[str, Any]) -> None:
+        """Cập nhật row id=1 rồi commit; lỗi rollback và ném lại cho caller."""
+        db = SessionLocal()
+        try:
+            row = license_state_repo.get(db)
+            if row is None:
+                raise RuntimeError('license_state row does not exist; call initialize() first')
+            license_state_repo.update(db, **fields)
+            db.commit()
+            db.refresh(row)
+            snapshot = self._build_snapshot(row)
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+        self._snapshot = snapshot
+
+    def _decrypt_license_key(self) -> str | None:
+        """Đọc + giải mã key trong DB; thiếu/hỏng (SECRET_KEY đổi) trả ``None``."""
+        db = SessionLocal()
+        try:
+            row = license_state_repo.get(db)
+            if row is None or not row.license_key_enc:
+                return None
+            key = decrypt_secret(row.license_key_enc)
+        finally:
+            db.close()
+        if not key:
+            logger.warning('Stored license key cannot be decrypted; treating as unlicensed')
+        return key
+
+    def _stored_pubkey(self) -> str:
+        db = SessionLocal()
+        try:
+            row = license_state_repo.get(db)
+            return str(row.pubkey or '').strip() if row is not None else ''
+        finally:
+            db.close()
+
+    def _fetch_public_key(self) -> str:
+        """Lấy pubkey Keygate; lỗi mạng/response hỏng chỉ log, token bị đánh lỗi."""
+        try:
+            pubkey = self.client.public_key()
+        except Exception as exc:  # response lỗi không được làm sập verify 200
+            logger.warning('Cannot fetch Keygate public key: %s', exc)
+            return ''
+        return str(pubkey or '').strip()
+
+    def _result(self) -> dict[str, Any]:
+        """Payload gọn trả cho caller (status hiệu lực + features đã chuẩn hoá)."""
+        snapshot = self.snapshot()
+        return {
+            'status': self.status(),
+            'features': dict(snapshot.features),
+            'last_error': snapshot.last_error,
+        }
 
     @staticmethod
     def _build_snapshot(row: LicenseState) -> LicenseSnapshot:
