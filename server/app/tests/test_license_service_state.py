@@ -27,6 +27,7 @@ from app.utils.crypto import encrypt_secret
 
 NOW = datetime(2026, 11, 9, tzinfo=timezone.utc)
 MACHINE_CODE = 'DSIGHT-TEST-0001'
+TEST_LICENSE_KEY = 'KEYGATE-TEST-ABCD-1234'
 
 
 def _now() -> datetime:
@@ -73,6 +74,17 @@ def _service(monkeypatch, code: str = MACHINE_CODE) -> LicenseService:
 
 
 def _seed_row(instance_id: str = 'DSIGHT-OLD-0000', **fields) -> None:
+    # Row active/valid/grace phải có license key thì mới thực sự usable; fixture
+    # tự gắn key để test đúng ngữ cảnh row thật. Truyền license_key_enc=None
+    # khi cần test trường hợp active nhưng thiếu key.
+    if 'license_key_enc' not in fields and str(fields.get('status') or '').lower() in {
+        'active',
+        'valid',
+        'grace',
+        'trialing',
+        'past_due',
+    }:
+        fields['license_key_enc'] = encrypt_secret(TEST_LICENSE_KEY)
     db = SessionLocal()
     try:
         license_state_repo.ensure(db, instance_id)
@@ -106,6 +118,7 @@ def _snapshot_kwargs(**overrides):
         'last_verified_at': None,
         'last_error': None,
         'enforcement_mode': 'warn',
+        '_has_key': True,
     }
     values.update(overrides)
     return values
@@ -218,6 +231,39 @@ def test_initialize_is_idempotent(monkeypatch):
     assert svc.snapshot().instance_id == MACHINE_CODE
 
 
+@pytest.mark.parametrize('mode', ['enforce', 'off'])
+def test_initialize_seeds_enforcement_mode_from_settings_on_fresh_row(monkeypatch, mode):
+    monkeypatch.setattr(
+        service_module.settings, 'LICENSE_ENFORCEMENT', mode, raising=False
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    assert svc.enforcement_mode() == mode
+    row = _row()
+    assert row is not None and row.enforcement_mode == mode
+
+
+def test_initialize_preserves_admin_set_enforcement_mode_on_later_boots(monkeypatch):
+    monkeypatch.setattr(
+        service_module.settings, 'LICENSE_ENFORCEMENT', 'enforce', raising=False
+    )
+    first = _service(monkeypatch)
+    first.initialize()
+    first.set_enforcement_mode('off')  # admin đổi runtime, không sửa .env
+
+    # Env đổi giữa hai lần boot cũng không được ghi đè mode đã lưu trong DB.
+    monkeypatch.setattr(
+        service_module.settings, 'LICENSE_ENFORCEMENT', 'warn', raising=False
+    )
+    second = _service(monkeypatch)
+    second.initialize()
+
+    assert second.enforcement_mode() == 'off'
+    row = _row()
+    assert row is not None and row.enforcement_mode == 'off'
+
+
 def test_initialize_falls_back_to_persisted_uuid(monkeypatch, caplog):
     monkeypatch.setattr(service_module, 'resolve_machine_code', lambda: '')
     svc = LicenseService()
@@ -266,6 +312,55 @@ def test_initialize_keeps_state_when_machine_matches(monkeypatch):
     assert snap.status == 'active'
     assert snap.last_error is None
     assert svc.status() == 'valid'
+
+
+def test_active_row_without_license_key_reports_unlicensed(monkeypatch):
+    _seed_row(
+        MACHINE_CODE,
+        status='active',
+        valid_until=_now() + timedelta(days=30),
+        license_key_enc=None,
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    snap = svc.snapshot()
+    assert snap.status == 'active'
+    assert snap.effective_status == 'unlicensed'
+    assert svc.status() == 'unlicensed'
+    assert svc.is_usable() is False
+
+
+def test_machine_change_without_license_key_reports_unlicensed(monkeypatch):
+    _seed_row(
+        status='active',
+        valid_until=_now() + timedelta(days=30),
+        license_key_enc=None,
+    )
+
+    svc = _service(monkeypatch, code='DSIGHT-NEW-0002')
+    svc.initialize()
+
+    snap = svc.snapshot()
+    assert snap.instance_id == 'DSIGHT-OLD-0000'
+    assert snap.status == 'invalid'
+    assert snap.last_error == 'machine changed'
+    assert snap.effective_status == 'unlicensed'
+    assert svc.status() == 'unlicensed'
+
+
+def test_snapshot_status_is_normalized_to_lowercase(monkeypatch):
+    _seed_row(
+        MACHINE_CODE,
+        status='ACTIVE',
+        valid_until=_now() + timedelta(days=30),
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    snap = svc.snapshot()
+    assert snap.status == 'active'
+    assert snap.effective_status == 'valid'
 
 
 def test_snapshot_is_cached_until_refresh(monkeypatch):
@@ -326,7 +421,12 @@ def test_should_block_new_behavior(monkeypatch):
 
     db = SessionLocal()
     try:
-        license_state_repo.update(db, status='active', valid_until=_now() + timedelta(days=1))
+        license_state_repo.update(
+            db,
+            status='active',
+            valid_until=_now() + timedelta(days=1),
+            license_key_enc=encrypt_secret(TEST_LICENSE_KEY),
+        )
         db.commit()
     finally:
         db.close()

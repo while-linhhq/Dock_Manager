@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from app.core.config import settings
 from app.core.license.features import max_cameras as registry_max_cameras
 from app.core.license.features import normalize_features
 from app.core.license.machine import resolve_machine_code
@@ -36,6 +37,17 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _initial_enforcement_mode() -> str:
+    """Enforcement mặc định cho lần tạo row đầu tiên (env chỉ là default).
+
+    ``settings.LICENSE_ENFORCEMENT`` đã được pydantic validate thành
+    ``off|warn|enforce``; vẫn chuẩn hoá phòng khi test/override truyền giá trị
+    lạ, fallback ``warn`` (an toàn, không tự bật chặn).
+    """
+    mode = str(getattr(settings, 'LICENSE_ENFORCEMENT', '') or '').strip().lower()
+    return mode if mode in ENFORCEMENT_MODES else 'warn'
 
 
 def compute_effective_status(
@@ -92,6 +104,10 @@ class LicenseSnapshot:
     last_verified_at: datetime | None
     last_error: str | None
     enforcement_mode: str
+    # Nội bộ: row có ``license_key_enc`` hay không. Không phải field public của
+    # snapshot (giữ đúng các field mirror row theo brief); mặc định False
+    # (fail-closed) cho snapshot dựng thủ công không có ngữ cảnh row.
+    _has_key: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Chốt status hiệu lực ngay khi snapshot được tạo: thời gian trôi qua
@@ -100,7 +116,7 @@ class LicenseSnapshot:
             self,
             '_effective_status',
             compute_effective_status(
-                has_key=self.status != 'unlicensed',
+                has_key=bool(self._has_key),
                 stored_status=self.status,
                 valid_until=self.valid_until,
                 grace_days=self.grace_days,
@@ -132,6 +148,7 @@ class LicenseService:
         computed = str(resolve_machine_code() or '').strip()
         db = SessionLocal()
         try:
+            is_new = license_state_repo.get(db) is None
             if not computed:
                 logger.warning(
                     'No readable host identity; using persisted license instance id fallback'
@@ -159,6 +176,13 @@ class LicenseService:
                         last_error='machine changed',
                     )
 
+            # Env chỉ là default cho lần tạo row đầu tiên; các lần boot sau
+            # tuyệt đối không ghi đè mode admin đã đổi runtime.
+            if is_new:
+                row = license_state_repo.update(
+                    db, enforcement_mode=_initial_enforcement_mode()
+                )
+
             db.commit()
             db.refresh(row)
             self._machine_code = computed or str(row.instance_id or '').strip()
@@ -176,7 +200,7 @@ class LicenseService:
 
     @staticmethod
     def _build_snapshot(row: LicenseState) -> LicenseSnapshot:
-        status = str(row.status or '').strip() or 'unlicensed'
+        status = str(row.status or '').strip().lower() or 'unlicensed'
         enforcement = str(row.enforcement_mode or '').strip().lower()
         if enforcement not in ENFORCEMENT_MODES:
             enforcement = 'warn'
@@ -194,6 +218,9 @@ class LicenseService:
             last_verified_at=row.last_verified_at,
             last_error=row.last_error,
             enforcement_mode=enforcement,
+            # `has_key` lấy từ chính row: status='active' nhưng thiếu
+            # license_key_enc phải là unlicensed, không được fail-open.
+            _has_key=bool(row.license_key_enc),
         )
 
     def snapshot(self) -> LicenseSnapshot:
