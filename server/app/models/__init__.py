@@ -18,6 +18,7 @@ from app.models.camera import Camera
 from app.models.camera_group import CameraGroup, CameraGroupMember
 from app.models.anchored_identity import AnchoredIdentity
 from app.models.boundary_crossing_event import BoundaryCrossingEvent
+from app.models.license_state import LicenseState
 
 __all__ = [
     'Role',
@@ -41,4 +42,5 @@ __all__ = [
     'CameraGroupMember',
     'AnchoredIdentity',
     'BoundaryCrossingEvent',
+    'LicenseState',
 ]

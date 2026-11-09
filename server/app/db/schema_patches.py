@@ -447,6 +447,56 @@ def _ensure_anchored_identities() -> None:
         raise
 
 
+def _ensure_license_state() -> None:
+    try:
+        inspector = inspect(engine)
+        if inspector.has_table('license_state'):
+            return
+    except Exception as err:
+        logger.warning('schema_patches: could not inspect license_state table: %s', err)
+        return
+
+    dialect = engine.dialect.name
+    if dialect != 'postgresql':
+        logger.warning(
+            'schema_patches: unknown dialect %s — create license_state table manually',
+            dialect,
+        )
+        return
+
+    stmt = text(
+        """
+        CREATE TABLE IF NOT EXISTS license_state (
+            id INTEGER PRIMARY KEY,
+            instance_id VARCHAR(64) NOT NULL,
+            license_key_enc TEXT,
+            license_id VARCHAR(64),
+            plan_name VARCHAR(120),
+            status VARCHAR(32) NOT NULL DEFAULT 'unlicensed',
+            valid_until TIMESTAMPTZ,
+            grace_days INTEGER NOT NULL DEFAULT 0,
+            features JSONB NOT NULL DEFAULT '{}'::jsonb,
+            token TEXT,
+            token_exp TIMESTAMPTZ,
+            pubkey TEXT,
+            last_verified_at TIMESTAMPTZ,
+            last_error TEXT,
+            enforcement_mode VARCHAR(16) NOT NULL DEFAULT 'warn',
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            CONSTRAINT chk_license_state_single_row CHECK (id = 1)
+        )
+        """
+    )
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        _patch_done('ensured license_state table')
+    except Exception as err:
+        logger.error('schema_patches: failed to ensure license_state table: %s', err)
+        raise
+
+
 def _ensure_sepay_port_configs() -> None:
     try:
         inspector = inspect(engine)
@@ -2825,6 +2875,7 @@ def apply_schema_patches(*, quiet: bool = False) -> list[str]:
     _ensure_camera_groups()
     _ensure_camera_groups_layout_pipeline()
     _ensure_anchored_identities()
+    _ensure_license_state()
     _ensure_sepay_port_configs()
     _ensure_visual_stack_port_configs()
     _ensure_reid_overlap_merge_port_configs()
