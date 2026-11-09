@@ -27,6 +27,7 @@ import { cn } from '../utils/cn';
 import { RouteErrorBoundary } from '../components/RouteErrorBoundary/RouteErrorBoundary';
 import { formatTimeVN } from '../utils/date-time';
 import { ALL_MENU_KEYS, getAccessibleMenus, type MenuKey } from '../utils/rbac';
+import { LicenseActivationView, useLicenseStore } from '../features/license';
 
 const navItems: Array<{ key: MenuKey; path: string; label: string; icon: LucideIcon }> = [
   { key: 'dashboard', path: PATHS.HOME, label: 'Bảng Điều Khiển', icon: LayoutDashboard },
@@ -47,12 +48,20 @@ export const MainLayout: React.FC = () => {
   const navigate = useNavigate();
   const { user, logout, isAuthenticated } = useAuthStore();
   const { isDarkMode, toggleTheme } = useThemeStore();
+  const licenseStatus = useLicenseStore((state) => state.status);
+  const isLicenseLoading = useLicenseStore((state) => state.isLoading);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [systemClock, setSystemClock] = useState<Date>(() => new Date());
   // Sau reload: có token nhưng user chưa fetch — tạm hiện đủ mục để sidebar không trống; RBAC thật khi có user.
   const accessibleMenus =
     user != null ? getAccessibleMenus(user) : isAuthenticated ? ALL_MENU_KEYS : [];
   const visibleNavItems = navItems.filter((item) => accessibleMenus.includes(item.key));
+  // License chỉ chặn nội dung route khi backend trả đúng `unlicensed`; lỗi mạng giữ app ở chế độ cảnh báo.
+  const showLicenseActivation = licenseStatus?.status === 'unlicensed';
+
+  useEffect(() => {
+    void useLicenseStore.getState().fetchStatus();
+  }, []);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -290,19 +299,26 @@ export const MainLayout: React.FC = () => {
         </header>
 
         {/* Content Area */}
-        <div className={cn(
-          'flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8 relative transition-colors duration-300 pb-[max(1rem,env(safe-area-inset-bottom))]',
-          isDarkMode ? "bg-[#0a0a0b]" : "bg-gray-50"
-        )}>
+        <div
+          aria-busy={isLicenseLoading}
+          className={cn(
+            'flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8 relative transition-colors duration-300 pb-[max(1rem,env(safe-area-inset-bottom))]',
+            isDarkMode ? "bg-[#0a0a0b]" : "bg-gray-50"
+          )}
+        >
           {/* Background Grid Pattern */}
           <div className={cn(
             "absolute inset-0 opacity-[0.03] pointer-events-none",
               isDarkMode ? "bg-[radial-gradient(#ffffff_1px,transparent_1px)] bg-size-[18px_18px]" : "bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] bg-size-[16px_16px]"
           )} />
           <div className="relative z-10 mx-auto w-full max-w-[1600px]">
-            <RouteErrorBoundary key={location.pathname}>
-              <Outlet />
-            </RouteErrorBoundary>
+            {showLicenseActivation ? (
+              <LicenseActivationView />
+            ) : (
+              <RouteErrorBoundary key={location.pathname}>
+                <Outlet />
+              </RouteErrorBoundary>
+            )}
           </div>
         </div>
       </main>

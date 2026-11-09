@@ -1,5 +1,6 @@
 export { licenseApi } from './services/licenseApi';
 export { useLicenseStore } from './store/licenseStore';
+export { LicenseActivationView } from './views/LicenseActivationView';
 export type {
   LicenseActivateRequest,
   LicenseEnforcementMode,
