@@ -48,3 +48,14 @@ def require_discount_approver(current_user=Depends(get_current_user)):
             detail='Không có quyền duyệt giảm giá',
         )
     return current_user
+
+
+def require_admin(current_user=Depends(get_current_user)):
+    from app.utils.rbac import is_admin_user
+
+    if not is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Chỉ admin được thao tác license',
+        )
+    return current_user
