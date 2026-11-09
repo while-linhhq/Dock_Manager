@@ -1,13 +1,15 @@
 """Enforcement license ở tầng nghiệp vụ (Keygate).
 
-Quota camera đếm TOÀN BỘ row trong bảng ``cameras`` — kể cả camera đang tắt —
-theo đúng hợp đồng với Keygate: tạo camera tiêu tốn slot, xoá camera giải
-phóng slot. Vì vậy chỉ ``create_camera`` bị chặn, không chặn update/delete.
+Gồm quota camera và gate bắt đầu pipeline mới. Quota camera đếm TOÀN BỘ row
+trong bảng ``cameras`` — kể cả camera đang tắt — theo đúng hợp đồng với
+Keygate: tạo camera tiêu tốn slot, xoá camera giải phóng slot. Vì vậy chỉ
+``create_camera`` bị chặn, không chặn update/delete.
 """
 from __future__ import annotations
 
 import logging
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.license.service import license_service
@@ -50,3 +52,19 @@ def check_camera_quota(db: Session) -> None:
 def camera_quota_snapshot(db: Session) -> tuple[int, int]:
     """Trả ``(current, limit)`` để UI hiển thị mức dùng quota camera."""
     return camera_repo.count_all(db), license_service.max_cameras()
+
+
+def enforce_pipeline_start() -> None:
+    """Chặn bắt đầu pipeline MỚI khi license không dùng được (mode ``enforce``).
+
+    Chỉ gọi ở luồng start; pipeline đang chạy vẫn tiếp tục (stop/status/logs
+    không bị ảnh hưởng).
+    """
+    if license_service.should_block_new_behavior():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'License không hợp lệ hoặc đã hết hạn. Không thể bắt đầu pipeline mới; '
+                'pipeline đang chạy vẫn tiếp tục.'
+            ),
+        )

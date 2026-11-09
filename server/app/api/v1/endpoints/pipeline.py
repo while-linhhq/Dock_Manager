@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.config import settings
+from app.core.license.enforcement import enforce_pipeline_start
 from app.db.session import SessionLocal, get_db
 from app.repositories.camera_group_repository import camera_group_repo
 from app.repositories.camera_repository import camera_repo
@@ -37,6 +38,8 @@ class PipelineTestVideoRequest(BaseModel):
 async def start_pipeline(req: PipelineStartRequest, db: Session = Depends(get_db)):
     if pipeline_service.is_running:
         return {"message": "Pipeline is already running"}
+    # License gate: chỉ chặn bắt đầu MỚI; pipeline đang chạy đã early-return ở trên.
+    enforce_pipeline_start()
     try:
         group = camera_group_repo.get(db, req.camera_group_id)
         if not group:
