@@ -1,5 +1,5 @@
 import React from 'react';
-import { Camera, Plus, Trash2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Camera, Plus, Trash2 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { cn } from '../../../utils/cn';
 import type { CameraRead } from '../../../types/api.types';
@@ -22,6 +22,12 @@ export type PortCamerasSectionProps = {
   isLoading: boolean;
   onEditCamera: (cam: CameraRead) => void;
   onDeleteCamera: (cam: CameraRead) => void;
+  /** Giới hạn camera của license hiện tại; `0` = chưa biết/chưa cấp. */
+  licenseLimit: number;
+  /** `true` khi license ở chế độ `enforce` (chặn thật ở server). */
+  licenseEnforced: boolean;
+  /** Lỗi từ API khi thêm/sửa camera (vd 403 CAMERA_LIMIT). */
+  cameraError: string | null;
 };
 
 export const PortCamerasSection: React.FC<PortCamerasSectionProps> = ({
@@ -37,7 +43,22 @@ export const PortCamerasSection: React.FC<PortCamerasSectionProps> = ({
   isLoading,
   onEditCamera,
   onDeleteCamera,
+  licenseLimit,
+  licenseEnforced,
+  cameraError,
 }) => {
+  const remainingSlots = Math.max(0, licenseLimit - cameras.length);
+  const showNearLimitWarning =
+    licenseLimit > 0 && licenseLimit - cameras.length <= 2;
+  const addCameraDisabled = licenseEnforced && cameras.length >= licenseLimit;
+  const addCameraTitle = addCameraDisabled
+    ? licenseLimit > 0
+      ? `Đã đạt giới hạn ${licenseLimit} camera của license (hiện có ${cameras.length}). Liên hệ DTG để nâng giới hạn.`
+      : 'License hiện tại không cho phép tạo camera. Liên hệ DTG để được cấp giới hạn.'
+    : licenseLimit > 0
+      ? `License cho phép tối đa ${licenseLimit} camera (hiện có ${cameras.length}).`
+      : undefined;
+
   return (
     <div className="space-y-6">
       <TableFilterPanel
@@ -74,12 +95,37 @@ export const PortCamerasSection: React.FC<PortCamerasSectionProps> = ({
         <Button
           type="button"
           onClick={onOpenAddCamera}
+          disabled={addCameraDisabled}
+          title={addCameraTitle}
           className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
         >
           <Plus className="w-4 h-4 mr-2" />
           Thêm Camera
         </Button>
       </div>
+
+      {showNearLimitWarning && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+        >
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            {`Sắp đạt giới hạn camera: ${cameras.length}/${licenseLimit} — còn ${remainingSlots} slot. Liên hệ DTG để nâng giới hạn.`}
+          </span>
+        </div>
+      )}
+
+      {cameraError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300"
+        >
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{cameraError}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredCameras.length > 0 ? (
           filteredCameras.map((cam) => (
