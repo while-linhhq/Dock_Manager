@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, require_admin
 from app.core.license.keygate_client import KeygateError, KeygateNetworkError
-from app.core.license.service import license_service
+from app.core.license.service import USABLE_STATUSES, license_service
 from app.schemas.license import (
     LicenseActivateRequest,
     LicenseEnforcementUpdate,
@@ -15,10 +15,14 @@ from app.schemas.license import (
 router = APIRouter()
 
 _NETWORK_ERROR_DETAIL = 'Không kết nối được license server'
+_ACTIVATION_UNVERIFIED_DETAIL = (
+    'Đã lưu license key nhưng chưa xác thực được license server. '
+    'Vui lòng kiểm tra kết nối và thử lại.'
+)
 
 
 def _status_payload() -> LicenseStatusRead:
-    """Dựng payload từ snapshot; key chỉ trả về hint 4 ký tự cuối."""
+    """Dựng payload từ **một** lần đọc snapshot; key chỉ trả về hint cuối."""
     snapshot = license_service.snapshot()
     # `effective_status` là status đã tính cả hạn dùng/has_key; fallback cho
     # snapshot thay thế (test double) không có property này.
@@ -27,13 +31,13 @@ def _status_payload() -> LicenseStatusRead:
         status=effective_status,
         plan_name=snapshot.plan_name,
         valid_until=snapshot.valid_until,
-        days_left=license_service.days_left(),
+        days_left=license_service.days_left(snapshot=snapshot),
         grace_days=snapshot.grace_days,
         features=dict(snapshot.features),
         enforcement_mode=snapshot.enforcement_mode,
         instance_id=snapshot.instance_id,
         machine_code=license_service.machine_code(),
-        license_key_hint=license_service.license_key_hint(),
+        license_key_hint=license_service.license_key_hint(snapshot=snapshot),
         last_verified_at=snapshot.last_verified_at,
         last_error=snapshot.last_error,
     )
@@ -45,6 +49,7 @@ def get_license_status(_=Depends(get_current_user)):
     return _status_payload()
 
 
+@router.get('', response_model=LicenseStatusRead, include_in_schema=False)
 @router.get('/', response_model=LicenseStatusRead)
 def get_license_state(_=Depends(require_admin)):
     """Cùng payload /status nhưng chỉ admin (ops xem đầy đủ)."""
@@ -55,7 +60,7 @@ def get_license_state(_=Depends(require_admin)):
 def activate_license(data: LicenseActivateRequest, _=Depends(require_admin)):
     """Kích hoạt key với Keygate rồi verify ngay; lỗi nghiệp vụ → 400, mạng → 503."""
     try:
-        license_service.activate(data.license_key, label=data.label)
+        result = license_service.activate(data.license_key, label=data.label)
     except KeygateNetworkError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -68,6 +73,14 @@ def activate_license(data: LicenseActivateRequest, _=Depends(require_admin)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'{code}: {exc}',
         ) from exc
+    # Key đã được service lưu (mã hoá) trước khi verify; nếu verify không đưa
+    # license về trạng thái dùng được, trả 503 để FE giữ màn hình nhập key cho
+    # người dùng thử lại thay vì 200 với status invalid.
+    if result.get('status') not in USABLE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_ACTIVATION_UNVERIFIED_DETAIL,
+        )
     return _status_payload()
 
 

@@ -29,7 +29,11 @@ export const SingleCameraListView: React.FC = () => {
   const licenseStatus = useLicenseStore((state) => state.status);
   const licenseLimit = Number(licenseStatus?.features?.max_cameras ?? 0);
   const licenseEnforced = licenseStatus?.enforcement_mode === 'enforce';
-  const showNearLimitWarning = licenseLimit > 0 && licenseLimit - cameras.length <= 2;
+  const remainingLicenseSlots = Math.max(0, licenseLimit - cameras.length);
+  const showNearLimitWarning =
+    licenseLimit > 0 &&
+    cameras.length > 0 &&
+    (remainingLicenseSlots <= 2 || cameras.length / licenseLimit >= 0.9);
   const cameraLimitReached = licenseEnforced && cameras.length >= licenseLimit;
   const addCameraTitle = cameraLimitReached
     ? `Đã đạt giới hạn ${licenseLimit} camera của license (hiện có ${cameras.length}). Liên hệ DTG để nâng giới hạn.`
@@ -108,7 +112,7 @@ export const SingleCameraListView: React.FC = () => {
     try {
       await upsertCamera(editingId, data);
     } catch (err) {
-      // Giữ modal mở để người dùng thấy camera chưa được lưu (vd 403 CAMERA_LIMIT).
+      // Giữ modal mở để người dùng thấy camera chưa được lưu (vd 403 license/quota).
       setCameraError(err instanceof Error ? err.message : 'Không lưu được camera');
       return;
     }
@@ -173,7 +177,7 @@ export const SingleCameraListView: React.FC = () => {
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            {`Sắp đạt giới hạn camera: ${cameras.length}/${licenseLimit} — còn ${licenseLimit - cameras.length} slot. Liên hệ DTG để nâng giới hạn.`}
+            {`Sắp đạt giới hạn camera: ${cameras.length}/${licenseLimit} — còn ${remainingLicenseSlots} slot. Liên hệ DTG để nâng giới hạn.`}
           </span>
         </div>
       )}
@@ -249,6 +253,15 @@ export const SingleCameraListView: React.FC = () => {
         title={editingId ? 'Chỉnh Sửa Camera' : 'Thêm Camera Mới'}
       >
         <form onSubmit={cameraForm.handleSubmit(onCameraSubmit)} className="space-y-4">
+          {cameraError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{cameraError}</span>
+            </div>
+          )}
           <Input
             label="Tên Camera"
             placeholder="VD: Camera Cảng Trước"

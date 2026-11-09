@@ -67,9 +67,15 @@ def _patch_status(monkeypatch, snapshot=None, days_left=365, hint='****1234'):
         'snapshot',
         lambda: snapshot if snapshot is not None else _snapshot(),
     )
-    monkeypatch.setattr(service_module.license_service, 'days_left', lambda: days_left)
+    monkeypatch.setattr(
+        service_module.license_service, 'days_left', lambda snapshot=None: days_left
+    )
     monkeypatch.setattr(service_module.license_service, 'machine_code', lambda: 'DSIGHT-TEST-0001')
-    monkeypatch.setattr(service_module.license_service, 'license_key_hint', lambda: hint)
+    monkeypatch.setattr(
+        service_module.license_service,
+        'license_key_hint',
+        lambda snapshot=None: hint,
+    )
 
 
 def test_status_requires_auth():
@@ -93,8 +99,13 @@ def test_status_returns_snapshot(monkeypatch):
             last_error=None,
         ),
     )
-    monkeypatch.setattr(service_module.license_service, 'days_left', lambda: 365)
-    monkeypatch.setattr(service_module.license_service, 'license_key_hint', lambda: '****1234', raising=False)
+    monkeypatch.setattr(service_module.license_service, 'days_left', lambda snapshot=None: 365)
+    monkeypatch.setattr(
+        service_module.license_service,
+        'license_key_hint',
+        lambda snapshot=None: '****1234',
+        raising=False,
+    )
     body = client.get('/api/v1/license/status').json()
     assert body['status'] == 'valid' and body['features'] == {'max_cameras': 12}
     app.dependency_overrides.clear()
@@ -139,6 +150,37 @@ def test_admin_state_endpoint_returns_snapshot(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()['status'] == 'valid'
+
+
+def test_admin_state_alias_without_trailing_slash_does_not_redirect(monkeypatch):
+    app.dependency_overrides[get_current_user] = lambda: _user(admin=True)
+    _patch_status(monkeypatch)
+
+    response = client.get('/api/v1/license', follow_redirects=False)
+
+    assert response.status_code == 200
+    assert response.json()['status'] == 'valid'
+
+
+def test_status_payload_reads_snapshot_once(monkeypatch):
+    app.dependency_overrides[get_current_user] = lambda: _user()
+    calls = []
+    snapshot = _snapshot()
+    monkeypatch.setattr(
+        service_module.license_service,
+        'snapshot',
+        lambda: calls.append(True) or snapshot,
+    )
+    monkeypatch.setattr(service_module.license_service, 'days_left', lambda snapshot=None: 10)
+    monkeypatch.setattr(
+        service_module.license_service, 'license_key_hint', lambda snapshot=None: '****1234'
+    )
+    monkeypatch.setattr(service_module.license_service, 'machine_code', lambda: 'DSIGHT-TEST-0001')
+
+    response = client.get('/api/v1/license/status')
+
+    assert response.status_code == 200
+    assert len(calls) == 1
 
 
 def test_activate_calls_service_and_returns_status(monkeypatch):
@@ -190,6 +232,23 @@ def test_activate_maps_network_error_to_503(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()['detail'] == 'Không kết nối được license server'
+
+
+def test_activate_returns_503_when_post_verify_status_not_usable(monkeypatch):
+    app.dependency_overrides[get_current_user] = lambda: _user(admin=True)
+    monkeypatch.setattr(
+        service_module.license_service,
+        'activate',
+        lambda key, label='': {'status': 'invalid', 'features': {}, 'last_error': 'boom'},
+    )
+
+    response = client.post('/api/v1/license/activate', json={'license_key': 'K'})
+
+    assert response.status_code == 503
+    assert response.json()['detail'] == (
+        'Đã lưu license key nhưng chưa xác thực được license server. '
+        'Vui lòng kiểm tra kết nối và thử lại.'
+    )
 
 
 def test_refresh_calls_verify_now_and_returns_status(monkeypatch):

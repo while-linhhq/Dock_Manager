@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -32,7 +32,8 @@ ENFORCEMENT_MODES = ('off', 'warn', 'enforce')
 USABLE_STATUSES = frozenset({'valid', 'grace'})
 _TERMINAL_STATUSES = frozenset({'suspended', 'revoked', 'expired', 'invalid'})
 _DATE_BASED_STATUSES = frozenset({'active', 'trialing', 'past_due', 'valid', 'grace'})
-_NOT_INITIALIZED = 'LicenseService not initialized'
+_OFFLINE_TOKEN_EXPIRED_ERROR = 'offline token expired; check-in required'
+_LICENSE_UNAVAILABLE_ERROR = 'license service unavailable'
 
 # Keygate verify trả các trạng thái này khi license còn dùng được; DB chỉ lưu
 # một trạng thái trung tính 'active', hạn dùng (valid_until/grace_days) quyết
@@ -95,19 +96,48 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _stored_status_from_verify(raw: Any) -> str:
+def _offline_token_expired(
+    token_exp: datetime | None,
+    last_verified_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Token cache đã quá ``exp`` và chưa có verify thành công nào mới hơn.
+
+    ``last_verified_at`` chỉ được cập nhật khi Keygate verify trả 200. Nếu lần
+    verify thành công gần nhất xảy ra **sau** mốc token hết hạn thì app không
+    phụ thuộc vào token cũ nữa (không hạ status). Ngược lại, token hết hạn
+    nghĩa là bản cài đã offline quá TTL → phải check-in lại.
+    """
+    if not isinstance(token_exp, datetime):
+        return False
+    moment = _as_utc(now) if now is not None else datetime.now(timezone.utc)
+    expires_at = _as_utc(token_exp)
+    if moment <= expires_at:
+        return False
+    if isinstance(last_verified_at, datetime) and _as_utc(last_verified_at) > expires_at:
+        return False
+    return True
+
+
+def _stored_status_from_verify(raw: Any) -> str | None:
     """Chuyển status của verify 200 sang status lưu DB.
 
-    ``active|trialing|past_due`` đều lưu ``active``; status khác (nếu có) giữ
-    nguyên chữ thường để ``compute_effective_status`` xử lý (status lạ →
-    ``invalid``, fail closed). Thiếu status nhưng verify 200 → ``active``.
+    ``active|trialing|past_due`` đều lưu ``active``; ``canceled`` lưu
+    ``expired``; các trạng thái kết thúc đã biết giữ nguyên. Status thiếu hoặc
+    lạ trả ``None`` — caller giữ status đã cache và ghi ``last_error`` thay vì
+    mặc định về ``active`` (fail closed).
     """
     status = str(raw or '').strip().lower()
     if not status:
-        return 'active'
+        return None
     if status in _VERIFY_ACTIVE_STATUSES:
         return 'active'
-    return status
+    if status == 'canceled':
+        return 'expired'
+    if status in _TERMINAL_STATUSES or status in {'valid', 'grace'}:
+        return status
+    return None
 
 
 def compute_effective_status(
@@ -117,13 +147,17 @@ def compute_effective_status(
     valid_until: datetime | None,
     grace_days: int,
     now: datetime | None = None,
+    token_exp: datetime | None = None,
+    last_verified_at: datetime | None = None,
 ) -> str:
-    """Tính trạng thái hiệu lực từ trạng thái lưu DB + hạn dùng.
+    """Tính trạng thái hiệu lực từ trạng thái lưu DB + hạn dùng + token offline.
 
     Thứ tự ưu tiên: chưa có key → ``unlicensed``; suspend/revoke (và các trạng
     thái kết thúc ``expired``/``invalid``) thắng ngay, không được grace; trạng
-    thái lạ → ``invalid``. Còn lại hạn dùng quyết định ``valid`` → ``grace`` →
-    ``expired``. Không có ``valid_until`` được coi là không hết hạn.
+    thái lạ → ``invalid``. Token cache hết hạn (``now > token_exp``) khi chưa có
+    verify thành công mới hơn → ``expired`` (buộc check-in lại). Còn lại hạn
+    dùng quyết định ``valid`` → ``grace`` → ``expired``. Không có
+    ``valid_until`` được coi là không hết hạn.
     """
     if not has_key:
         return 'unlicensed'
@@ -133,10 +167,13 @@ def compute_effective_status(
         return status
     if status not in _DATE_BASED_STATUSES:
         return 'invalid'
+
+    moment = _as_utc(now) if now is not None else datetime.now(timezone.utc)
+    if _offline_token_expired(token_exp, last_verified_at, now=moment):
+        return 'expired'
     if valid_until is None:
         return 'valid'
 
-    moment = _as_utc(now) if now is not None else datetime.now(timezone.utc)
     expires_at = _as_utc(valid_until)
     if moment <= expires_at:
         return 'valid'
@@ -171,17 +208,23 @@ class LicenseSnapshot:
 
     def __post_init__(self) -> None:
         # Chốt status hiệu lực ngay khi snapshot được tạo: thời gian trôi qua
-        # không tự đổi status cho tới lần refresh/verify kế tiếp.
-        object.__setattr__(
-            self,
-            '_effective_status',
-            compute_effective_status(
-                has_key=bool(self._has_key),
-                stored_status=self.status,
-                valid_until=self.valid_until,
-                grace_days=self.grace_days,
-            ),
+        # không tự đổi status cho tới lần refresh/verify kế tiếp. Token offline
+        # hết hạn (không có verify thành công mới hơn) hạ status về ``expired``.
+        moment = datetime.now(timezone.utc)
+        effective = compute_effective_status(
+            has_key=bool(self._has_key),
+            stored_status=self.status,
+            valid_until=self.valid_until,
+            grace_days=self.grace_days,
+            now=moment,
+            token_exp=self.token_exp,
+            last_verified_at=self.last_verified_at,
         )
+        object.__setattr__(self, '_effective_status', effective)
+        if effective == 'expired' and _offline_token_expired(
+            self.token_exp, self.last_verified_at, now=moment
+        ):
+            object.__setattr__(self, 'last_error', _OFFLINE_TOKEN_EXPIRED_ERROR)
 
     @property
     def effective_status(self) -> str:
@@ -200,6 +243,8 @@ class LicenseService:
         )
         self._snapshot: LicenseSnapshot | None = None
         self._machine_code = ''
+        self._initialized = False
+        self._init_failure_logged = False
 
     def initialize(self) -> None:
         """Nạp/tạo row license_state và chốt mã máy; không gọi mạng.
@@ -249,10 +294,23 @@ class LicenseService:
                     db, enforcement_mode=_initial_enforcement_mode()
                 )
 
+            # Bootstrap một lần từ LICENSE_KEY (spec cho phép): chỉ áp khi DB
+            # chưa có key. Không bao giờ log key; sau khi lưu, ops nên xoá
+            # LICENSE_KEY khỏi .env.
+            env_key = str(getattr(settings, 'LICENSE_KEY', '') or '').strip()
+            if env_key and not row.license_key_enc:
+                row = license_state_repo.update(db, license_key_enc=encrypt_secret(env_key))
+                logger.warning(
+                    'Bootstrapped LICENSE_KEY from environment into encrypted DB state; '
+                    'remove LICENSE_KEY from .env'
+                )
+
             db.commit()
             db.refresh(row)
             self._machine_code = computed or str(row.instance_id or '').strip()
             self._snapshot = self._build_snapshot(row)
+            self._initialized = True
+            self._init_failure_logged = False
         except Exception:
             db.rollback()
             raise
@@ -301,35 +359,70 @@ class LicenseService:
         return self._apply_verify_data(data)
 
     def _apply_verify_data(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Áp response verify 200 vào DB; token hỏng/thiếu không xoá features."""
+        """Áp response verify 200 vào DB; response hỏng không được fail-open.
+
+        Quy tắc fail-closed:
+        - ``status`` thiếu/lạ → giữ status đã cache + ghi ``last_error``.
+        - ``valid_until`` có mặt nhưng không parse được → giữ hạn cũ + ghi
+          ``last_error`` (không lưu None kiểu "không hết hạn").
+        - Token thiếu/hỏng → giữ token/token_exp cũ, features/hạn vẫn cập nhật.
+        """
         payload = data if isinstance(data, dict) else {}
         now = datetime.now(timezone.utc)
         raw_token = payload.get('token')
         token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
+        errors: list[str] = []
 
         # 200 là server xác nhận license dùng được: luôn cập nhật metadata +
         # features + hạn dùng; token chỉ cập nhật khi verify offline thành công.
         fields: dict[str, Any] = {
-            'status': _stored_status_from_verify(payload.get('status')),
             'license_id': payload.get('license_id'),
             'plan_name': payload.get('plan_name'),
-            'valid_until': _parse_iso_datetime(payload.get('valid_until')),
             'grace_days': _as_int(payload.get('grace_days'), 0),
             'features': normalize_features(payload.get('features') or {}),
-            'last_verified_at': now,
         }
-        last_error = None
+
+        status = _stored_status_from_verify(payload.get('status'))
+        if status is None:
+            raw_status = str(payload.get('status') or '').strip()
+            errors.append(
+                f'verify response unknown status: {raw_status}'
+                if raw_status
+                else 'verify response missing status'
+            )
+        else:
+            fields['status'] = status
+            # Chỉ response có status hợp lệ mới được coi là "verify thành công
+            # mới hơn" cho mục đích miễn trừ token TTL.
+            fields['last_verified_at'] = now
+
+        if 'valid_until' in payload:
+            raw_valid_until = payload.get('valid_until')
+            if raw_valid_until is None:
+                # Keygate trả null rõ ràng cho license không hạn (lifetime).
+                fields['valid_until'] = None
+            else:
+                parsed = _parse_iso_datetime(raw_valid_until)
+                if parsed is None:
+                    # Không ghi đè hạn cũ bằng None — tránh biến license có hạn
+                    # thành vô hạn chỉ vì một response lỗi định dạng.
+                    errors.append('verify response malformed valid_until')
+                else:
+                    fields['valid_until'] = parsed
+        else:
+            errors.append('verify response missing valid_until')
+
         if token is None:
             # Giữ token cũ (nếu có) để offline cache không bị xoá bởi response
             # thiếu token; features/valid_until vẫn được cập nhật bình thường.
-            last_error = 'verify response missing token'
+            errors.append('verify response missing token')
         else:
             pubkey = self._stored_pubkey()
             if not pubkey:
                 pubkey = self._fetch_public_key()
             if not pubkey:
                 # Không verify được token → giữ token/token_exp cũ, chỉ báo lỗi.
-                last_error = 'token verify failed: missing Keygate public key'
+                errors.append('token verify failed: missing Keygate public key')
             else:
                 try:
                     claims = verify_license_token(
@@ -341,13 +434,13 @@ class LicenseService:
                 except LicenseTokenError as exc:
                     # Token không verify được: giữ token cũ (nếu có), không tin
                     # ``exp`` của token mới; features/valid_until vẫn đã cập nhật.
-                    last_error = f'token verify failed: {exc}'
+                    errors.append(f'token verify failed: {exc}')
                 else:
                     fields['token'] = token
                     fields['token_exp'] = datetime.fromtimestamp(claims.exp, tz=timezone.utc)
                     fields['pubkey'] = pubkey
 
-        fields['last_error'] = last_error
+        fields['last_error'] = '; '.join(errors) if errors else None
         self._persist_fields(fields)
         return self._result()
 
@@ -443,7 +536,7 @@ class LicenseService:
         """Payload gọn trả cho caller (status hiệu lực + features đã chuẩn hoá)."""
         snapshot = self.snapshot()
         return {
-            'status': self.status(),
+            'status': snapshot.effective_status,
             'features': dict(snapshot.features),
             'last_error': snapshot.last_error,
         }
@@ -474,9 +567,61 @@ class LicenseService:
         )
 
     def snapshot(self) -> LicenseSnapshot:
-        if self._snapshot is None:
-            raise RuntimeError(_NOT_INITIALIZED)
-        return self._snapshot
+        """Trả snapshot license; tự thử initialize và fallback thay vì ném 500.
+
+        App vẫn phải boot/đọc dữ liệu khi DB license lỗi tạm thời: nếu
+        ``initialize()`` thất bại, trả snapshot ``unlicensed`` với
+        ``last_error='license service unavailable'`` và enforcement mặc định
+        theo env (enforce → các gate fail-closed bằng 403).
+        """
+        if not self._initialized:
+            self._ensure_initialized()
+        snapshot = self._snapshot if self._snapshot is not None else self._fallback_snapshot()
+        # Token offline có TTL tuyệt đối: snapshot cache không được giữ status
+        # usable sau khi ``token_exp`` trôi qua (kể cả khi chưa tới kỳ check-in).
+        if (
+            snapshot.effective_status in USABLE_STATUSES
+            and _offline_token_expired(snapshot.token_exp, snapshot.last_verified_at)
+        ):
+            refreshed = replace(snapshot)
+            if self._snapshot is not None:
+                self._snapshot = refreshed
+            return refreshed
+        return snapshot
+
+    def _ensure_initialized(self) -> None:
+        """Thử initialize một lần; lỗi được log (một lần) và giữ fallback."""
+        try:
+            self.initialize()
+        except Exception:
+            if not self._init_failure_logged:
+                logger.exception(
+                    'License service unavailable; serving fallback license snapshot'
+                )
+                self._init_failure_logged = True
+
+    def _fallback_snapshot(self) -> LicenseSnapshot:
+        """Snapshot an toàn khi không đọc được ``license_state``."""
+        return LicenseSnapshot(
+            instance_id=self._machine_code,
+            license_id=None,
+            plan_name=None,
+            status='unlicensed',
+            valid_until=None,
+            grace_days=0,
+            features={},
+            token=None,
+            token_exp=None,
+            pubkey=None,
+            last_verified_at=None,
+            last_error=_LICENSE_UNAVAILABLE_ERROR,
+            enforcement_mode=_initial_enforcement_mode(),
+            _has_key=False,
+        )
+
+    def is_initialized(self) -> bool:
+        """True khi ``initialize()`` đã nạp được row license_state."""
+        return self._initialized
 
     def refresh_snapshot(self) -> LicenseSnapshot:
         """Đọc lại row từ DB và thay snapshot đang cache."""
@@ -486,6 +631,7 @@ class LicenseService:
             if row is None:
                 raise RuntimeError('license_state row does not exist; call initialize() first')
             self._snapshot = self._build_snapshot(row)
+            self._initialized = True
             return self._snapshot
         finally:
             db.close()
@@ -526,8 +672,8 @@ class LicenseService:
             db.close()
         self.refresh_snapshot()
 
-    def days_left(self) -> int | None:
-        valid_until = self.snapshot().valid_until
+    def days_left(self, snapshot: LicenseSnapshot | None = None) -> int | None:
+        valid_until = (snapshot if snapshot is not None else self.snapshot()).valid_until
         if valid_until is None:
             return None
         remaining = (_as_utc(valid_until) - datetime.now(timezone.utc)).total_seconds()
@@ -535,9 +681,10 @@ class LicenseService:
             return 0
         return int(math.ceil(remaining / 86400))
 
-    def license_key_hint(self) -> str | None:
+    def license_key_hint(self, snapshot: LicenseSnapshot | None = None) -> str | None:
         """4 ký tự cuối của license key (đã giải mã), ``None`` khi chưa có key."""
-        if self.status() == 'unlicensed':
+        effective = (snapshot if snapshot is not None else self.snapshot()).effective_status
+        if effective == 'unlicensed':
             return None
         db = SessionLocal()
         try:

@@ -195,10 +195,36 @@ def test_snapshot_effective_status_is_computed_when_created():
 # --- service ---------------------------------------------------------------
 
 
-def test_snapshot_before_initialize_raises():
-    svc = LicenseService()
-    with pytest.raises(RuntimeError, match='LicenseService not initialized'):
-        svc.snapshot()
+def test_snapshot_lazily_initializes(monkeypatch):
+    """``snapshot()`` tự gọi initialize một lần khi service chưa init."""
+    svc = _service(monkeypatch)
+    assert svc.is_initialized() is False
+
+    snap = svc.snapshot()
+
+    assert svc.is_initialized() is True
+    assert snap.instance_id == MACHINE_CODE
+    assert snap.effective_status == 'unlicensed'
+
+
+def test_snapshot_falls_back_when_initialize_fails(monkeypatch):
+    """DB lỗi khi init không được làm /status/camera gate ném 500."""
+    svc = _service(monkeypatch)
+
+    def _boom(db):
+        raise RuntimeError('db unavailable')
+
+    monkeypatch.setattr(service_module.license_state_repo, 'get', _boom)
+
+    snap = svc.snapshot()
+
+    assert snap.effective_status == 'unlicensed'
+    assert snap.last_error == 'license service unavailable'
+    assert svc.status() == 'unlicensed'
+    assert svc.is_usable() is False
+    assert svc.enforcement_mode() == service_module._initial_enforcement_mode()
+    assert svc.snapshot().last_error == 'license service unavailable'
+    assert svc.is_initialized() is False
 
 
 def test_initialize_creates_row_and_snapshot(monkeypatch):
@@ -455,3 +481,76 @@ def test_license_key_hint_is_none_when_unlicensed(monkeypatch):
     svc.initialize()
 
     assert svc.license_key_hint() is None
+
+
+# --- offline token TTL -----------------------------------------------------
+
+
+def test_offline_token_expiry_degrades_lifetime_license(monkeypatch):
+    """Lifetime (valid_until=None) không được miễn trừ token TTL."""
+    expired = _now() - timedelta(hours=1)
+    _seed_row(
+        MACHINE_CODE,
+        status='active',
+        valid_until=None,
+        token_exp=expired,
+        last_verified_at=expired - timedelta(days=1),
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    snap = svc.snapshot()
+    assert snap.valid_until is None
+    assert snap.effective_status == 'expired'
+    assert svc.status() == 'expired'
+    assert svc.is_usable() is False
+    assert snap.last_error == 'offline token expired; check-in required'
+
+
+def test_offline_token_expiry_degrades_future_valid_until(monkeypatch):
+    expired = _now() - timedelta(hours=1)
+    _seed_row(
+        MACHINE_CODE,
+        status='active',
+        valid_until=_now() + timedelta(days=365),
+        token_exp=expired,
+        last_verified_at=expired - timedelta(days=1),
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    assert svc.status() == 'expired'
+    assert svc.is_usable() is False
+    assert svc.snapshot().last_error == 'offline token expired; check-in required'
+
+
+def test_fresh_offline_token_keeps_license_usable(monkeypatch):
+    _seed_row(
+        MACHINE_CODE,
+        status='active',
+        valid_until=None,
+        token_exp=_now() + timedelta(days=7),
+        last_verified_at=_now(),
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    assert svc.status() == 'valid'
+    assert svc.is_usable() is True
+
+
+def test_offline_token_expiry_ignored_after_fresher_verify(monkeypatch):
+    """Verify thành công sau mốc token hết hạn = không còn dựa vào token cũ."""
+    token_exp = _now() - timedelta(hours=2)
+    _seed_row(
+        MACHINE_CODE,
+        status='active',
+        valid_until=_now() + timedelta(days=30),
+        token_exp=token_exp,
+        last_verified_at=token_exp + timedelta(hours=1),
+    )
+    svc = _service(monkeypatch)
+    svc.initialize()
+
+    assert svc.status() == 'valid'
+    assert svc.is_usable() is True

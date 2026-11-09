@@ -259,8 +259,12 @@ class Settings(BaseSettings):
     # Licensing (Keygate) — kiểm tra bản quyền định kỳ qua license.dtgsoft.vn
     LICENSE_SERVER_URL: str = 'https://license.dtgsoft.vn'
     # Key nhập từ trang quản trị; chỉ lưu DB dưới dạng đã mã hoá (xem utils/crypto.py).
+    # Chỉ dùng để bootstrap MỘT LẦN khi DB chưa có key (dev/di trú); app mã hoá
+    # vào DB rồi ops nên xoá biến này khỏi .env.
     LICENSE_KEY: str = ''
-    # Mã định danh instance do Keygate cấp (để trống thì tự sinh).
+    # CHỈ dev: override "mã máy" (identifier) gửi Keygate. Production để trống —
+    # mã máy thật tính từ hardware fingerprint (/etc/machine-id + DMI,
+    # xem app/core/license/machine.py và scripts/install_license_identity.sh).
     LICENSE_INSTANCE_ID: str = ''
     # off = tắt kiểm tra, warn = chỉ cảnh báo, enforce = chặn khi hết hạn.
     LICENSE_ENFORCEMENT: Literal['off', 'warn', 'enforce'] = 'warn'

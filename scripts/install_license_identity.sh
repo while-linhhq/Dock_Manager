@@ -82,9 +82,11 @@ check_compose_mounts() {
   fi
 
   missing=''
-  grep -Fq '/etc/machine-id:/host/etc/machine-id:ro' "$COMPOSE_FILE" ||
+  # Chỉ match dòng mount thật (bắt đầu bằng "- " trong YAML), không match
+  # chuỗi nằm trong comment/giá trị khác của cả file.
+  grep -Eq '^[[:space:]]*-[[:space:]]*/etc/machine-id:/host/etc/machine-id:ro([[:space:]]|$)' "$COMPOSE_FILE" ||
     missing="$missing /etc/machine-id"
-  grep -Fq '/sys/class/dmi/id:/host/sys/class/dmi/id:ro' "$COMPOSE_FILE" ||
+  grep -Eq '^[[:space:]]*-[[:space:]]*/sys/class/dmi/id:/host/sys/class/dmi/id:ro([[:space:]]|$)' "$COMPOSE_FILE" ||
     missing="$missing /sys/class/dmi/id"
 
   if [ -n "$missing" ]; then

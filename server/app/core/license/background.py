@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from app.core.config import settings
 from app.core.license.service import license_service
@@ -22,19 +23,33 @@ _task: asyncio.Task | None = None
 def _interval_seconds() -> float:
     """Chu kỳ check-in (giây) từ ``LICENSE_CHECKIN_HOURS``.
 
-    Kẹp tối thiểu 1 giây để cấu hình 0/âm không biến vòng lặp thành busy-loop.
+    Giá trị 0/âm/không hữu hạn rơi về mặc định 6h (không phải 1 giây) để cấu
+    hình hỏng không biến vòng lặp thành busy-loop.
     """
     try:
         hours = float(settings.LICENSE_CHECKIN_HOURS)
     except (TypeError, ValueError):
         hours = 6.0
-    return max(hours * 3600, 1.0)
+    if not math.isfinite(hours) or hours <= 0:
+        hours = 6.0
+    return max(hours * 3600.0, 1.0)
 
 
 async def _checkin_loop() -> None:
     """Verify license mỗi chu kỳ; lỗi tạm thời chỉ trì hoãn chu kỳ kế tiếp."""
     while True:
         interval = _interval_seconds()
+        # Lazy init retry: lần boot đầu có thể fail (DB chưa sẵn sàng); thử lại
+        # trước mỗi verify thay vì để service kẹt ở fallback mãi mãi.
+        try:
+            if not license_service.is_initialized():
+                license_service.initialize()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('License background initialization retry failed')
+            await asyncio.sleep(min(300.0, interval))
+            continue
         try:
             await asyncio.to_thread(license_service.verify_now)
         except asyncio.CancelledError:
@@ -64,5 +79,7 @@ async def stop_license_background() -> None:
         await _task
     except asyncio.CancelledError:
         pass
+    except Exception:
+        logger.exception('License background check-in task failed during shutdown')
     _task = None
     logger.info('License background check-in task stopped')

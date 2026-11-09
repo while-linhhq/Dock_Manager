@@ -56,8 +56,11 @@ export const MainLayout: React.FC = () => {
   const accessibleMenus =
     user != null ? getAccessibleMenus(user) : isAuthenticated ? ALL_MENU_KEYS : [];
   const visibleNavItems = navItems.filter((item) => accessibleMenus.includes(item.key));
-  // License chỉ chặn nội dung route khi backend trả đúng `unlicensed`; lỗi mạng giữ app ở chế độ cảnh báo.
-  const showLicenseActivation = licenseStatus?.status === 'unlicensed';
+  // License chặn nội dung route khi backend trả `unlicensed` (chưa có key) hoặc
+  // `invalid` (key đã lưu nhưng chưa xác thực được) để người dùng thử lại.
+  // Lỗi mạng khi tải status giữ app ở chế độ cảnh báo.
+  const showLicenseActivation =
+    licenseStatus?.status === 'unlicensed' || licenseStatus?.status === 'invalid';
 
   useEffect(() => {
     void useLicenseStore.getState().fetchStatus();

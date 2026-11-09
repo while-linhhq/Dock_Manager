@@ -17,6 +17,11 @@ from app.repositories.camera_repository import camera_repo
 
 logger = logging.getLogger(__name__)
 
+_LICENSE_BLOCKED_CAMERA_DETAIL = (
+    'License không hợp lệ hoặc đã hết hạn. Không thể tạo camera mới; '
+    'dữ liệu hiện có vẫn giữ nguyên.'
+)
+
 
 class CameraLimitExceeded(Exception):
     """License không cho tạo thêm camera vì đã đạt ``limit``."""
@@ -31,11 +36,18 @@ class CameraLimitExceeded(Exception):
 
 
 def check_camera_quota(db: Session) -> None:
-    """Chặn tạo camera mới khi đã đạt ``max_cameras`` của license.
+    """Chặn tạo camera mới khi license không dùng được hoặc đã đạt quota.
 
-    Trả về bình thường khi còn slot hoặc enforcement mode là ``warn``/``off``;
+    Thứ tự: license không usable (enforce) → 403 license; sau đó mới kiểm tra
+    ``max_cameras``. Trả về bình thường khi còn slot hoặc mode ``warn``/``off``;
     chỉ raise :class:`CameraLimitExceeded` khi mode ``enforce`` và đã đầy.
     """
+    if license_service.should_block_new_behavior():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=_LICENSE_BLOCKED_CAMERA_DETAIL,
+        )
+
     limit = license_service.max_cameras()
     mode = license_service.enforcement_mode()
     current = camera_repo.count_all(db)

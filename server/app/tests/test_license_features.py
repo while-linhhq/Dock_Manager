@@ -16,3 +16,10 @@ def test_bool_feature_stays_bool():
 def test_unknown_feature_is_preserved_but_not_coerced():
     out = normalize_features({'custom_flag': 'yes'})
     assert out['custom_flag'] == 'yes'
+
+
+def test_negative_int_feature_is_clamped_to_zero():
+    assert normalize_features({'max_cameras': '-3'}) == {'max_cameras': 0}
+    assert normalize_features({'max_cameras': -5}) == {'max_cameras': 0}
+    assert feature_int({'max_cameras': '-1'}, 'max_cameras') == 0
+    assert max_cameras({'max_cameras': -2}) == 0

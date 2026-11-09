@@ -14,6 +14,31 @@ from app.utils.port_config_runtime import effective_device, effective_model_path
 log = logging.getLogger('app.startup')
 
 _BANNER = '─' * 52
+_INSECURE_SECRET_KEYS = frozenset({'', 'secret'})
+
+
+def warn_if_insecure_secret_key() -> bool:
+    """Cảnh báo lớn (không crash) khi ``SECRET_KEY`` rỗng hoặc mặc định ``secret``.
+
+    ``SECRET_KEY`` dẫn xuất Fernet key mã hoá license key lưu DB; giá trị mặc
+    định công khai trong source thì ciphertext không còn được bảo vệ. App vẫn
+    boot bình thường — chỉ log cảnh báo để ops sửa trước lần activate đầu tiên.
+    Trả ``True`` khi cấu hình không an toàn.
+    """
+    secret = str(getattr(settings, 'SECRET_KEY', '') or '').strip()
+    if secret not in _INSECURE_SECRET_KEYS:
+        return False
+    shown = '(rỗng)' if not secret else '"secret" (giá trị mặc định trong source)'
+    log.warning(
+        '  ⚠ SECRET_KEY %s — license key lưu DB KHÔNG được bảo vệ at-rest!',
+        shown,
+    )
+    log.warning(
+        '    Đặt SECRET_KEY mạnh TRƯỚC lần activate đầu tiên: '
+        'python -c "import secrets;print(secrets.token_hex(32))"'
+    )
+    return True
+
 
 
 def _mask_db_url(url: str) -> str:
@@ -167,6 +192,8 @@ def run_startup_checks() -> None:
     log.info(_BANNER)
     log.info('  Dock Manager API — startup')
     log.info(_BANNER)
+
+    warn_if_insecure_secret_key()
 
     if not _check_database():
         raise RuntimeError('Database connection failed')

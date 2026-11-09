@@ -8,7 +8,7 @@
 > 1. **1 license = 1 máy.** Không nâng `max_activations` lên 2 để "cho tiện"; đổi máy thì xoá activation cũ.
 > 2. **Không commit license key / admin API key / `.env`** vào git, chat, ticket hay log.
 > 3. **Không xoá license** trên Keygate — chỉ `suspend` / `revoke` để giữ audit (Keygate không cho xoá license).
-> 4. **Không đặt `LICENSE_KEY` trong `server/.env`** — key bị bake vào image và nằm trong file; nhập qua màn hình first-run, app lưu DB đã mã hoá.
+> 4. **Không đặt `LICENSE_KEY` trong `server/.env`** — key bị bake vào image và nằm trong file; nhập qua màn hình first-run, app lưu DB đã mã hoá. App có bootstrap MỘT LẦN từ `LICENSE_KEY` nếu DB chưa có key (chỉ dùng cho dev/di trú) rồi ops phải xoá biến này khỏi `.env`.
 > 5. `SECRET_KEY` của app **phải khác giá trị mặc định `secret`** vì nó dẫn xuất khoá mã hoá license key at-rest.
 
 ---
@@ -51,6 +51,14 @@
   Thiếu mount → app không đọc được host identity, fallback UUID lưu DB + log warning (chỉ chấp nhận ở dev).
 - **`SECRET_KEY`** trong `server/.env` phải là giá trị ngẫu nhiên mạnh, **không phải `secret`** (mặc định trong code). `app/utils/crypto.py` dẫn xuất khoá Fernet từ `SECRET_KEY` để mã hoá license key trước khi lưu DB; ai biết `SECRET_KEY` mặc định có thể giải mã key đã lưu. Đổi `SECRET_KEY` **sau khi đã activate** làm ciphertext cũ không giải mã được, nhưng app **không** chuyển sang `unlicensed` và **không** hiện màn hình nhập key: verify bị bỏ qua âm thầm (chỉ log warning), `/license/status` có thể vẫn báo `valid`/`grace` đã cache, `license_key_hint` thành `null`. Vì vậy **đặt `SECRET_KEY` mạnh trước lần activate đầu tiên** và **không rotate trên máy khách khi chưa có kế hoạch activate lại** — chi tiết + quy trình phục hồi ở §16.3. Không mất dữ liệu nghiệp vụ khác.
 - Không cần mở port inbound nào cho license; chỉ outbound 443.
+
+**Bước 0 — trước lần activate đầu tiên:** kiểm tra `SECRET_KEY` trong `server/.env` là chuỗi ngẫu nhiên mạnh, **không phải `secret` và không rỗng**. Sinh giá trị:
+
+```bash
+python -c "import secrets;print(secrets.token_hex(32))"
+```
+
+Nếu vẫn để `secret`/rỗng, app chỉ log **cảnh báo lớn** lúc startup (không crash) nhưng license key lưu DB không được bảo vệ at-rest; đổi `SECRET_KEY` sau khi đã activate sẽ làm ciphertext cũ không giải mã được (xem §16.3). Làm bước này **trước** khi nhập key.
 
 ### 0.2 Phía ops
 
@@ -481,7 +489,7 @@ curl -sS "$KG/api/v1/admin/licenses/$LICENSE_ID" \
 ### 10.3 Nhập lại key sau khi giải phóng slot
 
 - **Cài mới hoàn toàn / DB mới:** trạng thái `unlicensed` → màn hình nhập key first-run hiện ra; đăng nhập admin, nhập key, bấm Kích hoạt. Activation mới mang mã máy mới.
-- **Giữ DB cũ (thay phần cứng):** backend đã đánh dấu `invalid`; UI tối giản hiện tại **chỉ** hiện màn hình first-run khi `unlicensed`, nên dùng API admin để nhập lại key:
+- **Giữ DB cũ (thay phần cứng):** backend đã đánh dấu `invalid`; UI hiện màn hình nhập key cho cả `unlicensed` và `invalid`, nên admin có thể nhập lại key ngay trên màn hình. Cách khác qua API admin (key nhập ẩn, không nằm trên command line/history):
   ```bash
   # Đăng nhập DSight lấy access token (không đưa password vào history: dùng read -rs)
   DSIGHT='https://dock.khach-hang.example'
@@ -492,12 +500,16 @@ curl -sS "$KG/api/v1/admin/licenses/$LICENSE_ID" \
     --data-urlencode "username=$DS_USER" --data-urlencode "password=$DS_PASS" \
     | jq -r '.access_token')
 
-  curl -sS -X POST "$DSIGHT/api/v1/license/activate" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d '{"license_key":"<KEY>","label":"Thay phần cứng"}' | jq .
+  # Key đọc từ terminal, đưa vào curl qua stdin (printf là shell builtin).
+  read -rsp 'License key: ' DS_LICENSE_KEY; echo
+  printf '{"license_key":"%s","label":"Thay phần cứng"}\n' "$DS_LICENSE_KEY" |
+    curl -sS -X POST "$DSIGHT/api/v1/license/activate" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H 'Content-Type: application/json' \
+      --data-binary @- | jq .
+  unset DS_LICENSE_KEY
   ```
-  Kỳ vọng `status: valid`, `machine_code` = mã mới. Nếu key cũ bị lộ/hết hạn thì rotate trước (§12) rồi dùng key mới.
+  Kỳ vọng `status: valid`, `machine_code` = mã mới. Nếu nhận **503** `Đã lưu license key nhưng chưa xác thực được license server...` thì key đã được lưu (mã hoá) nhưng lần verify chưa thành công — kiểm tra mạng rồi thử lại, không cần nhập lại key. Nếu key cũ bị lộ/hết hạn thì rotate trước (§12) rồi dùng key mới.
 - Cách khác cho reinstall sạch: xoá luôn volume DB → app tạo DB mới → `unlicensed` → first-run screen (chỉ làm khi chấp nhận mất dữ liệu; không phải quy trình chuẩn).
 
 ### 10.4 Lỗi thường gặp
@@ -522,7 +534,7 @@ curl -sS -X POST "$KG/api/v1/admin/licenses/$LICENSE_ID/suspend" \
   -H "Authorization: Bearer $KG_ADMIN_KEY" | jq .
 ```
 
-Khách nhận hiệu lực ở lần check-in kế tiếp (≤6h) hoặc refresh ngay (§14.1). Verify trả 404; DSight phân loại qua `activate` → banner "tạm ngưng".
+Khách nhận hiệu lực ở lần check-in kế tiếp (≤6h) hoặc refresh ngay (§14.1). Verify trả 404; DSight phân loại qua `activate` → `status=suspended` + `last_error` (không có banner UI; màn hình nhập key chỉ hiện với `unlicensed`/`invalid`). Pipeline đang chạy vẫn tiếp tục; `enforce` chặn tạo camera/start pipeline mới.
 
 ### 11.2 Mở lại — `reinstate`
 
@@ -556,7 +568,7 @@ curl -sS -X POST "$KG/api/v1/admin/licenses/$LICENSE_ID/rotate-key" \
 
 - Key cũ **chết ngay**, toàn bộ activation cũ bị xoá (`devices_removed`), slot được giải phóng.
 - Key mới chỉ trả về trong response này; gửi khách qua kênh an toàn.
-- Khách nhập key mới: màn hình first-run nếu DB mới/unlicensed; nếu DB cũ đang `invalid`, dùng `POST /api/v1/license/activate` như §10.3.
+- Khách nhập key mới: màn hình nhập key hiện khi DB mới/`unlicensed` hoặc khi DB cũ đang `invalid` (admin bấm Kích hoạt lại); cách khác dùng `POST /api/v1/license/activate` như §10.3.
 - Sau rotate, kiểm tra license `status` vẫn `active`/`trialing` và chưa có activation cũ.
 
 ---
@@ -569,7 +581,7 @@ DSight có 3 mode:
 |---|---|
 | `off` | Không kiểm tra/không chặn (vẫn verify nền để cập nhật trạng thái) |
 | `warn` (mặc định khi tạo DB lần đầu) | Chỉ log/cảnh báo; không chặn tạo camera/pipeline |
-| `enforce` | Chặn **hành vi mới**: tạo camera vượt `max_cameras` → 403 `CAMERA_LIMIT`; start pipeline khi license không dùng được → 403. **Không** chặn login/đọc dữ liệu/stop/WS/pipeline đang chạy |
+| `enforce` | Chặn **hành vi mới**: tạo camera khi license không dùng được **hoặc** vượt `max_cameras` → 403 kèm `detail` tiếng Việt (không có mã `CAMERA_LIMIT`); start pipeline khi license không dùng được → 403. **Không** chặn login/đọc dữ liệu/stop/WS/pipeline đang chạy |
 
 `LICENSE_ENFORCEMENT` trong `.env` **chỉ là default lúc tạo row `license_state` lần đầu**; giá trị hiệu lực lưu DB và đổi runtime bằng API (không cần sửa `.env`/restart). Mọi thay đổi đi qua audit middleware của DSight.
 
@@ -635,13 +647,16 @@ Script `server/scripts/license_probe.py` gọi thẳng Keygate (không qua DSigh
 ```bash
 cd server
 
-# Probe trên staging với license tạm (KHÔNG dùng key khách thật)
-LICENSE_PROBE_URL=https://stg-license.dtgsoft.vn \
-LICENSE_PROBE_KEY='<key>' \
-python scripts/license_probe.py
+# Probe trên staging với license tạm (KHÔNG dùng key khách thật).
+# Key đọc ẩn từ terminal, không nằm trên command line/history:
+read -rsp 'License key (probe tạm): ' LICENSE_PROBE_KEY; echo
+export LICENSE_PROBE_KEY
+LICENSE_PROBE_URL=https://stg-license.dtgsoft.vn python scripts/license_probe.py
+unset LICENSE_PROBE_KEY
 ```
 
 - Env tuỳ chọn `LICENSE_PROBE_IDENTIFIER`; mặc định `probe-<uuid4>` (mỗi lần chạy là "máy" mới — license 1 activation sẽ báo `409 ACTIVATION_LIMIT` nếu chạy lại; đặt identifier cố định hoặc dùng license throwaway).
+- Env tuỳ chọn `LICENSE_HTTP_TIMEOUT_SEC` (mặc định 5.0 giây) khi mạng chậm.
 - Kỳ vọng trial: `status: active`/`trialing`, `features: {"max_cameras": "2"}`, `token: OK (...)`, `PROBE OK`, exit 0.
 - Script **không in license key**; mọi lỗi được redact. Exit 2 = thiếu env; exit 1 = API/token lỗi.
 - Dọn dẹp sau probe: revoke license tạm (`POST /admin/licenses/{id}/revoke`) hoặc xoá activation probe (`DELETE /admin/activations/{id}`). Không để license probe/activation rác.
@@ -649,8 +664,8 @@ python scripts/license_probe.py
 
 ### 14.3 Khi mất mạng/Keygate down
 
-- DSight dùng token cache đã lưu; license giữ trạng thái tới khi token hết hạn (`exp`, bị clamp theo `valid_until + grace_days`).
-- Timeout/5xx/mất mạng = lỗi tạm thời: giữ cache, ghi `last_error`, **không** đánh invalid ngay.
+- DSight dùng token cache đã lưu; token có `exp` do Keygate clamp theo `valid_until + grace_days`. Khi `now > token_exp` và chưa có lần verify thành công nào mới hơn, status hiệu lực hạ về `expired` với `last_error='offline token expired; check-in required'`. Bản cài offline lâu hơn TTL của token (mặc định 7 ngày) phải kết nối lại license server; pipeline đang chạy không bị dừng, `enforce` chặn hành vi mới.
+- Timeout/5xx/mất mạng = lỗi tạm thời: giữ cache, ghi `last_error`, **không** đánh invalid ngay; nhưng nếu token cache đã hết hạn thì status vẫn `expired` cho tới lần verify thành công kế tiếp.
 - Verify **404** mới là câu trả lời dứt khoát của server → invalid ngay.
 - App vẫn boot/login/đọc dữ liệu; `enforce` chỉ chặn hành vi mới nếu license không dùng được.
 
@@ -663,15 +678,16 @@ python scripts/license_probe.py
 | `POST /license/activate` trả **404** | Key sai/không tồn tại | Kiểm tra đúng key/product; key chỉ có ở response create/rotate. `GET /admin/licenses/{id}/key` để reveal (có audit, hạn chế dùng) |
 | Verify **404** nhưng key đúng | Máy chưa activate; mã máy đổi; activation cũ chưa xoá; license suspended/revoked/hết hạn quá grace | `POST /license/activate` với key đã lưu: 403 `LICENSE_SUSPENDED/REVOKED/EXPIRED/CANCELED` cho biết lý do; 404 = key không dùng được/chưa activate máy này. Đối chiếu identifier + xoá activation cũ nếu cần |
 | `409 ACTIVATION_LIMIT` | Đã activate máy khác; activation cũ chưa xoá | `GET /admin/licenses/{id}` → xoá `DELETE /admin/activations/{id}`; **không** tăng max_activations |
-| `403 CAMERA_LIMIT` (enforce) | Tổng camera rows ≥ `max_cameras` (kể cả inactive) | Xoá bớt camera hoặc tăng addon `value` (khách mua thêm); refresh license |
+| `403` khi tạo camera (enforce) | License không dùng được (chưa activate/hết hạn/token offline hết hạn) **hoặc** tổng camera rows ≥ `max_cameras` (kể cả inactive) | Đọc `detail` tiếng Việt: nếu là lỗi license → `/license/status` + refresh/activate; nếu là quota → xoá bớt camera hoặc tăng addon `value` (khách mua thêm) rồi refresh license |
 | Timeout / connection error | Không có outbound 443, DNS, proxy, TLS | `curl -v "$KG/health"` từ chính host/container; kiểm tra firewall/proxy; license vẫn chạy bằng cache |
 | Keygate trả 5xx | Keygate quá tải/lỗi | Thử lại sau; app giữ cache; theo dõi `/health` Keygate |
 | `429` | Rate limit | Backoff theo `Retry-After`; mỗi bản cài chỉ check-in 6h/lần nên hiếm |
 | Token “hết hạn” ngay sau activate | Lệch đồng hồ máy khách (NTP) | `timedatectl`/`date -u`; bật NTP; kiểm tra timezone chỉ ảnh hưởng hiển thị, `exp` là UTC |
-| Không thấy màn hình nhập key | UI chỉ hiện first-run khi `status=unlicensed`; `invalid/suspended/revoked/expired` không hiện form | Dùng API `POST /license/activate` (admin) hoặc xử lý nguyên nhân trạng thái trước; xem `/status.last_error` |
+| Không thấy màn hình nhập key | UI hiện màn hình nhập key khi `status=unlicensed` hoặc `invalid`; `suspended/revoked/expired` không hiện form | Dùng API `POST /license/activate` (admin) hoặc xử lý nguyên nhân trạng thái trước; xem `/status.last_error` |
+| `last_error: offline token expired; check-in required` | Máy offline lâu hơn TTL token (mặc định 7 ngày) | Khôi phục mạng tới `license.dtgsoft.vn` rồi `POST /license/refresh` (admin); status về `valid`/`grace` sau verify thành công |
 | `last_error: machine changed` | Mã máy khác `instance_id` DB | Xoá activation cũ + activate lại (§10) |
 | `/status` vẫn `valid`/`grace` nhưng `license_key_hint: null`, `last_verified_at` đứng yên; log `Stored license key cannot be decrypted; treating as unlicensed`; `POST /license/refresh` trả 200 và **không** cập nhật `last_error`; không hiện màn hình nhập key | `SECRET_KEY` bị đổi sau khi lưu key → ciphertext cũ không giải mã được (app không đánh dấu `unlicensed`, chỉ bỏ qua verify) | Khôi phục `SECRET_KEY` cũ nếu biết rồi restart (ciphertext đọc lại được, không cần activate); nếu không, reveal key trên Keygate (`GET /api/v1/admin/licenses/{id}/key`, có audit) hoặc `rotate-key` nếu nghi lộ, rồi admin `POST /api/v1/license/activate` với key đó. Key không mất trên Keygate; chi tiết §16.3 |
-| `GET /api/v1/license` trả 307 | Thiếu dấu `/` cuối | Dùng `/api/v1/license/` hoặc `/status` |
+| `GET /api/v1/license` (không dấu `/`) | Hợp lệ — có alias không redirect | Dùng `/api/v1/license` hoặc `/status` |
 | 401/403 trên API DSight | Token hết hạn / không phải admin | Login lại; kiểm tra role; enforcement/refresh/activate cần admin |
 | Addon không có hiệu lực | Chưa attach, sai product, license cache chưa refresh | `GET /licenses/{id}/addons`; attach đúng; `POST /license/refresh` |
 | `delete plan/addon` bị chặn | Còn license/addon tham chiếu | Không xoá; detach/suspend/revoke theo quy trình |
@@ -693,7 +709,7 @@ python scripts/license_probe.py
 ### 16.2 License key
 
 - Key chỉ xuất hiện ở response `POST /admin/licenses` và `POST /admin/licenses/{id}/rotate-key` (và endpoint reveal có audit). Gửi khách qua kênh an toàn (email tới địa chỉ trên license; nếu không chắc thì bàn giao trực tiếp).
-- **Không** commit key, không dán vào issue/chat, không ghi file `.txt`/`.env`. Không đặt `LICENSE_KEY` trong `server/.env` — file bị bake vào image và dễ lộ; DSight lưu key trong DB đã mã hoá Fernet, chỉ trả `license_key_hint` (4 ký tự cuối).
+- **Không** commit key, không dán vào issue/chat, không ghi file `.txt`/`.env`. Không đặt `LICENSE_KEY` trong `server/.env` — file bị bake vào image và dễ lộ; DSight lưu key trong DB đã mã hoá Fernet, chỉ trả `license_key_hint` (4 ký tự cuối). App có bootstrap MỘT LẦN từ `LICENSE_KEY` khi DB chưa có key (dev/di trú, xem §0) — xoá biến khỏi `.env` ngay sau khi app đã lưu key.
 - Không log key: DSight không log key (chỉ hint/last_error); probe cũng redact. Keygate tự redact log phía server.
 - Khi nghi lộ: `rotate-key` ngay (§12); key cũ chết tức thì.
 
@@ -703,9 +719,9 @@ python scripts/license_probe.py
 - Đổi `SECRET_KEY` = ciphertext cũ không giải mã được (`decrypt_secret` trả `None`). Hành vi thực tế **không** phải "app thành `unlicensed`":
   - Helper giải mã `_decrypt_license_key()` chỉ log warning `Stored license key cannot be decrypted; treating as unlicensed` rồi trả `None`; **không** xoá ciphertext, **không** đổi `status` trong DB.
   - `verify_now()` trả về ngay khi không giải mã được key → **không gọi Keygate và không cập nhật `last_error`**; `POST /api/v1/license/refresh` trả 200 với `last_error` cũ (thường `null`).
-  - `_build_snapshot()` đặt `has_key = bool(license_key_enc)`; ciphertext vẫn còn nên `GET /api/v1/license/status` **vẫn trả status hiệu lực đã cache** — có thể `valid`/`grace` dù thực tế không verify được. Snapshot không tự rebuild khi verify bị bỏ qua (status có thể đứng nguyên trong tiến trình đang chạy); restart sẽ tính lại theo `valid_until`/`grace_days`.
+  - `_build_snapshot()` đặt `has_key = bool(license_key_enc)`; ciphertext vẫn còn nên `GET /api/v1/license/status` **vẫn trả status hiệu lực đã cache** — có thể `valid`/`grace` dù thực tế không verify được. Snapshot không tự rebuild khi verify bị bỏ qua (status có thể đứng nguyên trong tiến trình đang chạy); restart sẽ tính lại theo `valid_until`/`grace_days` và `token_exp` (nếu còn token cache).
   - `license_key_hint` trả `null` dù `status` vẫn `valid`/`grace`; `last_verified_at` không tăng sau các chu kỳ check-in 6h.
-  - Màn hình nhập key first-run **không hiện**: FE chỉ render khi `status === 'unlicensed'` (`client/src/layouts/MainLayout.tsx`).
+  - Màn hình nhập key **không hiện**: FE chỉ render khi `status` là `unlicensed` hoặc `invalid` (`client/src/layouts/MainLayout.tsx`); ở kịch bản này status vẫn `valid`/`grace` đã cache.
 - Phục hồi:
   1. Biết `SECRET_KEY` cũ và chưa coi là lộ: đặt lại giá trị cũ trong `server/.env`, restart app (Fernet key được cache trong process), rồi `POST /api/v1/license/refresh`. Ciphertext giải mã lại được — **không cần activate**, không tốn slot.
   2. Không còn `SECRET_KEY` cũ/coi là lộ: giữ `SECRET_KEY` mới mạnh; reveal key trên Keygate `GET /api/v1/admin/licenses/{id}/key` (có audit) — hoặc `POST /api/v1/admin/licenses/{id}/rotate-key` nếu nghi lộ key (key cũ chết, activation bị xoá) — rồi admin `POST /api/v1/license/activate` với key đó (cùng máy → `machine_code` không đổi; reveal giữ activation cũ nên activate trả `already_activated`, rotate-key thì tạo activation mới). Activate mã hoá lại key bằng `SECRET_KEY` hiện tại.
@@ -762,7 +778,7 @@ Wrapper: thành công `{"success":true,"data":...}`; danh sách nằm ở `.data
 | Mục đích | Endpoint | Quyền |
 |---|---|---|
 | Trạng thái cho FE | `GET /api/v1/license/status` | đăng nhập |
-| Chi tiết state | `GET /api/v1/license/` | admin |
+| Chi tiết state | `GET /api/v1/license` hoặc `/api/v1/license/` | admin |
 | Nhập/kích hoạt key | `POST /api/v1/license/activate` | admin |
 | Verify lại ngay | `POST /api/v1/license/refresh` | admin |
 | Đổi enforcement mode | `PUT /api/v1/license/enforcement` | admin |

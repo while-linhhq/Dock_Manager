@@ -15,6 +15,7 @@ Env:
     ``LICENSE_PROBE_IDENTIFIER``  tuỳ chọn — identifier gửi Keygate; mặc định
                                  ``probe-<uuid4>`` (mỗi lần chạy là một "máy"
                                  mới nên chỉ dùng với license tạm/throwaway).
+    ``LICENSE_HTTP_TIMEOUT_SEC``  tuỳ chọn — timeout HTTP (giây), mặc định 5.0.
 
 Script gọi ``activate`` → ``verify`` → ``entitlements`` → ``public_key`` rồi
 verify token offline bằng ``verify_license_token``. In status/plan/valid_until/
@@ -42,7 +43,19 @@ from app.core.license.keygate_client import (  # noqa: E402
 )
 from app.core.license.token import LicenseTokenError, verify_license_token  # noqa: E402
 
-_TIMEOUT_SEC = 5.0
+_DEFAULT_TIMEOUT_SEC = 5.0
+
+
+def _timeout_sec() -> float:
+    """Timeout HTTP từ ``LICENSE_HTTP_TIMEOUT_SEC`` (mặc định 5.0 giây)."""
+    raw = os.environ.get('LICENSE_HTTP_TIMEOUT_SEC', '').strip()
+    if not raw:
+        return _DEFAULT_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_TIMEOUT_SEC
+    return value if value > 0 else _DEFAULT_TIMEOUT_SEC
 
 
 def _redact(text: object, secret: str) -> str:
@@ -86,7 +99,7 @@ def main() -> int:
     if not identifier:
         identifier = f'probe-{uuid4().hex}'
 
-    client = KeygateClient(url, timeout=_TIMEOUT_SEC)
+    client = KeygateClient(url, timeout=_timeout_sec())
     print('License probe — không in license key')
     print(f'url: {url}')
     print(f'identifier: {identifier}')

@@ -64,7 +64,11 @@ class KeygateClient:
 
     def public_key(self) -> str:
         """Public key Ed25519 (hex) dùng verify token offline."""
-        return self._get('/api/v1/license/pubkey')['public_key']
+        data = self._get('/api/v1/license/pubkey')
+        value = data.get('public_key')
+        if not isinstance(value, str) or not value.strip():
+            raise KeygateError(status=None, message='malformed response')
+        return value.strip()
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request('POST', path, payload)
@@ -87,7 +91,21 @@ class KeygateClient:
         if not 200 <= response.status_code < 300:
             raise _error_from_response(response)
 
-        return response.json()['data']
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise KeygateError(
+                status=response.status_code,
+                message='malformed response',
+            ) from exc
+
+        data = body.get('data') if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            raise KeygateError(
+                status=response.status_code,
+                message='malformed response',
+            )
+        return data
 
 
 def _error_from_response(response: requests.Response) -> KeygateError:

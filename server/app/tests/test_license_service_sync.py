@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -212,6 +213,23 @@ def test_activate_failure_does_not_persist_key():
     assert row is not None and row.license_key_enc is None
 
 
+def test_activate_keeps_key_when_post_verify_unreachable():
+    """Activate OK nhưng verify mạng lỗi: key vẫn được lưu (mã hoá) để thử lại."""
+    fake = FakeClient()
+    svc = _service(fake)
+    fake.verify = lambda key, identifier: (_ for _ in ()).throw(
+        KeygateNetworkError('down')
+    )
+
+    out = svc.activate('KEYGATE-ACTIVATE-0002')
+
+    assert out['status'] == 'invalid'
+    row = _row()
+    assert row is not None
+    assert decrypt_secret(row.license_key_enc) == 'KEYGATE-ACTIVATE-0002'
+    assert row.last_error and 'verify network error' in row.last_error
+
+
 # --- verify edge cases -----------------------------------------------------
 
 
@@ -352,12 +370,102 @@ def test_verify_500_keeps_cached_state_and_sets_error():
     assert row is not None and row.last_error is not None
 
 
+def test_verify_200_malformed_valid_until_keeps_previous_expiry():
+    fake = FakeClient()
+    svc = _service(fake)
+    svc._persist_key(TEST_LICENSE_KEY)
+    svc.verify_now()
+    previous = _row().valid_until
+    assert previous is not None
+
+    fake.result = {**fake.result, 'valid_until': 'not-a-date'}
+    out = svc.verify_now()
+
+    row = _row()
+    assert row is not None
+    assert row.valid_until is not None
+    assert int(row.valid_until.timestamp()) == int(previous.timestamp())
+    assert out['status'] in {'valid', 'grace'}
+    assert row.last_error and 'malformed valid_until' in row.last_error
+
+
+def test_verify_200_missing_valid_until_keeps_previous_expiry():
+    fake = FakeClient()
+    svc = _service(fake)
+    svc._persist_key(TEST_LICENSE_KEY)
+    svc.verify_now()
+    previous = _row().valid_until
+
+    fake.result = {k: v for k, v in fake.result.items() if k != 'valid_until'}
+    svc.verify_now()
+
+    row = _row()
+    assert row is not None
+    assert row.valid_until is not None
+    assert int(row.valid_until.timestamp()) == int(previous.timestamp())
+    assert row.last_error and 'missing valid_until' in row.last_error
+
+
+def test_verify_200_missing_status_keeps_cached_status():
+    fake = FakeClient()
+    svc = _service(fake)
+    svc._persist_key(TEST_LICENSE_KEY)
+    svc.verify_now()
+    previous_verified_at = _row().last_verified_at
+
+    fake.result = {k: v for k, v in fake.result.items() if k != 'status'}
+    out = svc.verify_now()
+
+    row = _row()
+    assert row is not None
+    assert row.status == 'active'
+    assert out['status'] in {'valid', 'grace'}
+    assert row.last_error and 'missing status' in row.last_error
+    # Response thiếu status không được coi là verify thành công mới hơn.
+    assert row.last_verified_at == previous_verified_at
+
+
+def test_verify_200_unknown_status_keeps_cached_status():
+    fake = FakeClient()
+    svc = _service(fake)
+    svc._persist_key(TEST_LICENSE_KEY)
+    svc.verify_now()
+    previous_verified_at = _row().last_verified_at
+
+    fake.result = {**fake.result, 'status': 'weird'}
+    out = svc.verify_now()
+
+    row = _row()
+    assert row is not None
+    assert row.status == 'active'
+    assert out['status'] in {'valid', 'grace'}
+    assert row.last_error and 'unknown status' in row.last_error
+    assert row.last_verified_at == previous_verified_at
+
+
 def test_default_client_uses_settings():
     svc = LicenseService()
 
     assert isinstance(svc.client, KeygateClient)
     assert svc.client.base_url == settings.LICENSE_SERVER_URL.rstrip('/')
     assert svc.client.timeout == settings.LICENSE_HTTP_TIMEOUT_SEC
+
+
+def test_initialize_bootstraps_license_key_from_env_once(monkeypatch, caplog):
+    monkeypatch.setattr(settings, 'LICENSE_KEY', 'ENV-BOOTSTRAP-1234')
+
+    with caplog.at_level(logging.WARNING):
+        _service(FakeClient())
+
+    row = _row()
+    assert row is not None
+    assert decrypt_secret(row.license_key_enc) == 'ENV-BOOTSTRAP-1234'
+    assert 'ENV-BOOTSTRAP-1234' not in caplog.text  # không bao giờ log key
+
+    # DB đã có key: lần boot sau (env đổi) không được ghi đè.
+    monkeypatch.setattr(settings, 'LICENSE_KEY', 'ENV-BOOTSTRAP-SECOND')
+    _service(FakeClient())
+    assert decrypt_secret(_row().license_key_enc) == 'ENV-BOOTSTRAP-1234'
 
 
 @pytest.mark.parametrize('remote_status', ['active', 'trialing', 'past_due'])
@@ -427,10 +535,20 @@ def test_verify_404_classifies_via_activate(activate_error, expected_status):
 # --- background loop -------------------------------------------------------
 
 
-def test_background_checkin_calls_verify_and_stops(monkeypatch):
+def test_background_checkin_calls_initialize_then_verify_and_stops(monkeypatch):
     calls: list[str] = []
 
     class _FakeService:
+        def __init__(self) -> None:
+            self.initialized = False
+
+        def is_initialized(self) -> bool:
+            return self.initialized
+
+        def initialize(self) -> None:
+            calls.append('initialize')
+            self.initialized = True
+
         def verify_now(self):
             calls.append('verify')
             return {'status': 'valid', 'features': {}}
@@ -446,12 +564,25 @@ def test_background_checkin_calls_verify_and_stops(monkeypatch):
         background_module.start_license_background()  # guard: không tạo task 2
         assert background_module._task is first
         for _ in range(200):
-            if calls:
+            if 'verify' in calls:
                 break
             await asyncio.sleep(0.01)
         await background_module.stop_license_background()
 
     asyncio.run(scenario())
 
-    assert calls == ['verify']
+    assert calls == ['initialize', 'verify']
     assert background_module._task is None
+
+
+@pytest.mark.parametrize('hours', [0, -3, -0.5])
+def test_background_interval_clamps_nonpositive_hours_to_six_hours(monkeypatch, hours):
+    monkeypatch.setattr(background_module.settings, 'LICENSE_CHECKIN_HOURS', hours)
+
+    assert background_module._interval_seconds() == 6 * 3600.0
+
+
+def test_background_interval_keeps_positive_hours(monkeypatch):
+    monkeypatch.setattr(background_module.settings, 'LICENSE_CHECKIN_HOURS', 2.5)
+
+    assert background_module._interval_seconds() == 2.5 * 3600.0

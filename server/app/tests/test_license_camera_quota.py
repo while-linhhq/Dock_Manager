@@ -25,6 +25,10 @@ EXPECTED_DETAIL = (
     'Đã đạt giới hạn {limit} camera của license (hiện có {current}). '
     'Liên hệ DTG để nâng giới hạn.'
 )
+LICENSE_BLOCKED_DETAIL = (
+    'License không hợp lệ hoặc đã hết hạn. Không thể tạo camera mới; '
+    'dữ liệu hiện có vẫn giữ nguyên.'
+)
 
 
 def _admin_user():
@@ -64,10 +68,21 @@ def _clean_test_camera_rows():
     _delete_test_camera_rows()
 
 
-def _override(monkeypatch, limit=1, mode='enforce', current=1):
+@pytest.fixture(autouse=True)
+def _license_usable_by_default(monkeypatch):
+    """Các test quota cũ không quan tâm license state; mặc định cho usable."""
+    monkeypatch.setattr(
+        service_module.license_service, 'should_block_new_behavior', lambda: False
+    )
+
+
+def _override(monkeypatch, limit=1, mode='enforce', current=1, block=False):
     app.dependency_overrides[get_current_user] = lambda: _admin_user()
     monkeypatch.setattr(service_module.license_service, 'max_cameras', lambda: limit)
     monkeypatch.setattr(service_module.license_service, 'enforcement_mode', lambda: mode)
+    monkeypatch.setattr(
+        service_module.license_service, 'should_block_new_behavior', lambda: block
+    )
     from app.core.license import enforcement
 
     monkeypatch.setattr(enforcement.camera_repo, 'count_all', lambda db: current)
@@ -80,6 +95,19 @@ def test_create_camera_blocked_at_limit(monkeypatch):
         json={'camera_name': 'quota-test', 'rtsp_url': 'rtsp://quota-test/1', 'is_active': False},
     )
     assert r.status_code == 403 and 'giới hạn' in r.json()['detail']
+
+
+def test_create_camera_blocked_by_unusable_license_before_quota(monkeypatch):
+    """Enforce + license unusable: 403 license detail, kể cả khi còn slot."""
+    _override(monkeypatch, limit=12, mode='enforce', current=3, block=True)
+    r = client.post(
+        '/api/v1/cameras/',
+        json={'camera_name': 'quota-test', 'rtsp_url': 'rtsp://quota-test/1', 'is_active': False},
+    )
+
+    assert r.status_code == 403
+    assert r.json()['detail'] == LICENSE_BLOCKED_DETAIL
+    assert 'giới hạn' not in r.json()['detail']
 
 
 def test_create_camera_allowed_in_warn(monkeypatch):

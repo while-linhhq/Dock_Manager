@@ -8,7 +8,8 @@ import { useLicenseStore } from '../store/licenseStore';
 
 /**
  * Màn hình kích hoạt license duy nhất của app — hiện thay cho nội dung route
- * khi trạng thái license là `unlicensed`. Chỉ admin mới thấy form nhập key.
+ * khi trạng thái license là `unlicensed` hoặc `invalid` (key đã lưu nhưng chưa
+ * xác thực được, cho phép thử lại). Chỉ admin mới thấy form nhập key.
  */
 export const LicenseActivationView: React.FC = () => {
   const status = useLicenseStore((state) => state.status);
@@ -88,7 +89,8 @@ export const LicenseActivationView: React.FC = () => {
           Kích hoạt DSight
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-gray-500 dark:text-gray-400">
-          Bản cài này chưa được kích hoạt. Nhập license key do DTG cấp để bắt đầu sử dụng.
+          License chưa được kích hoạt hoặc chưa xác thực được. Nhập license key do DTG cấp để bắt
+          đầu sử dụng.
         </p>
 
         <div className="mt-6">
@@ -189,8 +191,8 @@ export const LicenseActivationView: React.FC = () => {
         )}
 
         <p className="mt-6 border-t border-gray-100 pt-4 text-[11px] leading-relaxed text-gray-400 dark:border-white/5 dark:text-gray-500">
-          Sau khi kích hoạt, app tự kiểm tra license server mỗi 6 giờ. Khi mất mạng tạm thời, app vẫn chạy
-          bằng token license đã lưu.
+          Sau khi kích hoạt, app tự kiểm tra license server mỗi 6 giờ. Khi mất mạng tạm thời, app vẫn
+          chạy bằng token license đã lưu trong thời hạn của token.
         </p>
       </div>
     </div>

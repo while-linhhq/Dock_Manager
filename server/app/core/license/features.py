@@ -50,7 +50,7 @@ def normalize_features(raw: Mapping[str, Any]) -> dict[str, Any]:
             normalized[key] = value is True or str(value).lower() == 'true'
         elif spec.type in ('int', 'quota'):
             try:
-                normalized[key] = int(value)
+                normalized[key] = max(int(value), 0)
             except (TypeError, ValueError, OverflowError):
                 normalized[key] = spec.default
         else:  # 'string'
@@ -72,12 +72,15 @@ def feature_bool(features: Mapping[str, Any], key: str) -> bool:
     return default if isinstance(default, bool) else False
 
 def feature_int(features: Mapping[str, Any], key: str) -> int:
-    """Đọc feature int; thiếu/không ép được -> default registry, không có spec -> 0."""
+    """Đọc feature int; thiếu/không ép được -> default registry, không có spec -> 0.
+
+    Giá trị âm bị kẹp về 0 (không biến quota âm thành "không giới hạn").
+    """
     value = features.get(key) if isinstance(features, Mapping) else None
     # bool là subclass của int nhưng không phải giá trị số hợp lệ cho feature int.
     if not isinstance(value, bool):
         try:
-            return int(value)
+            return max(int(value), 0)
         except (TypeError, ValueError, OverflowError):
             pass
     default = _registry_default(key)

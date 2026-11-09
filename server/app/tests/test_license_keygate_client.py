@@ -12,6 +12,13 @@ class _Resp:
         return self._payload
 
 
+class _BadJsonResp:
+    status_code = 200
+
+    def json(self):
+        raise ValueError('not json')
+
+
 def test_activate_unwraps_data(monkeypatch):
     calls = {}
 
@@ -24,6 +31,56 @@ def test_activate_unwraps_data(monkeypatch):
     assert out['status'] == 'activated'
     assert calls['url'] == 'https://kg.test/api/v1/license/activate'
     assert calls['json'] == {'license_key': 'K', 'identifier': 'inst-1', 'label': 'port-a'}
+
+
+def test_non_json_2xx_raises_malformed_response(monkeypatch):
+    monkeypatch.setattr(requests, 'request', lambda *a, **k: _BadJsonResp())
+
+    with pytest.raises(KeygateError) as ei:
+        KeygateClient('https://kg.test').verify('K', 'inst-1')
+
+    assert ei.value.status == 200
+    assert str(ei.value) == 'malformed response'
+
+
+def test_null_data_in_2xx_raises_malformed_response(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        'request',
+        lambda *a, **k: _Resp(200, {'success': True, 'data': None}),
+    )
+
+    with pytest.raises(KeygateError) as ei:
+        KeygateClient('https://kg.test').verify('K', 'inst-1')
+
+    assert ei.value.status == 200
+    assert str(ei.value) == 'malformed response'
+
+
+def test_non_dict_data_in_2xx_raises_malformed_response(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        'request',
+        lambda *a, **k: _Resp(200, {'success': True, 'data': ['unexpected']}),
+    )
+
+    with pytest.raises(KeygateError) as ei:
+        KeygateClient('https://kg.test').public_key()
+
+    assert str(ei.value) == 'malformed response'
+
+
+def test_pubkey_missing_field_raises_malformed_response(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        'request',
+        lambda *a, **k: _Resp(200, {'success': True, 'data': {}}),
+    )
+
+    with pytest.raises(KeygateError) as ei:
+        KeygateClient('https://kg.test').public_key()
+
+    assert str(ei.value) == 'malformed response'
 
 
 def test_404_maps_to_license_not_found(monkeypatch):
