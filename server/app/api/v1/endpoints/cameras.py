@@ -5,6 +5,7 @@ from typing import List
 
 from app.db.session import get_db
 from app.api.deps import get_current_user
+from app.core.license.enforcement import CameraLimitExceeded, check_camera_quota
 from app.schemas.camera import (
     CameraCreate,
     CameraUpdate,
@@ -111,6 +112,16 @@ def get_camera(camera_id: int, db: Session = Depends(get_db), _=Depends(get_curr
 @router.post('/', response_model=CameraRead, status_code=201)
 def create_camera(data: CameraCreate, db: Session = Depends(get_db), _=Depends(get_current_user)):
     from app.models.camera import Camera
+    try:
+        check_camera_quota(db)
+    except CameraLimitExceeded as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f'Đã đạt giới hạn {exc.limit} camera của license '
+                f'(hiện có {exc.current}). Liên hệ DTG để nâng giới hạn.'
+            ),
+        )
     db_obj = Camera(**data.model_dump())
     db.add(db_obj)
     db.commit()
