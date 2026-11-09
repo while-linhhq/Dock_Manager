@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Camera, Loader2, Plus, Trash2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Camera, Loader2, Plus, Trash2 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { Input } from '../../../components/Input/Input';
 import { Modal } from '../../../components/Modal/Modal';
@@ -16,13 +16,26 @@ import { matchesAnyField } from '../../../utils/table-filters';
 import { cameraSchema } from '../../port/port-schemas';
 import type { CameraCreate } from '../../port/services/portApi';
 import { usePortStore } from '../../port/store/portStore';
+import { useLicenseStore } from '../../license/store/licenseStore';
 
 export const SingleCameraListView: React.FC = () => {
   const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [cameraKeyword, setCameraKeyword] = useState('');
   const [cameraActive, setCameraActive] = useState<'all' | 'on' | 'off'>('all');
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const { cameras, isLoading, fetchCameras, upsertCamera, deleteCamera } = usePortStore();
+
+  const licenseStatus = useLicenseStore((state) => state.status);
+  const licenseLimit = Number(licenseStatus?.features?.max_cameras ?? 0);
+  const licenseEnforced = licenseStatus?.enforcement_mode === 'enforce';
+  const showNearLimitWarning = licenseLimit > 0 && licenseLimit - cameras.length <= 2;
+  const cameraLimitReached = licenseEnforced && cameras.length >= licenseLimit;
+  const addCameraTitle = cameraLimitReached
+    ? `Đã đạt giới hạn ${licenseLimit} camera của license (hiện có ${cameras.length}). Liên hệ DTG để nâng giới hạn.`
+    : licenseLimit > 0
+      ? `License cho phép tối đa ${licenseLimit} camera (hiện có ${cameras.length}).`
+      : undefined;
 
   const cameraForm = useForm<CameraCreate>({
     resolver: zodResolver(cameraSchema),
@@ -57,12 +70,14 @@ export const SingleCameraListView: React.FC = () => {
 
   const openCreateCamera = () => {
     setEditingId(null);
+    setCameraError(null);
     cameraForm.reset({ is_active: true });
     setIsCameraModalOpen(true);
   };
 
   const handleEditCamera = (cameraItem: CameraRead) => {
     setEditingId(String(cameraItem.id));
+    setCameraError(null);
     cameraForm.reset({
       name: cameraItem.camera_name || cameraItem.name || '',
       rtsp_url: cameraItem.rtsp_url,
@@ -84,9 +99,21 @@ export const SingleCameraListView: React.FC = () => {
     await deleteCamera(cameraItem.id);
   };
 
-  const onCameraSubmit = async (data: CameraCreate) => {
-    await upsertCamera(editingId, data);
+  const closeCameraModal = () => {
+    // Giữ `cameraError` để banner đỏ vẫn hiển thị trên lưới camera sau khi đóng modal lỗi.
     setIsCameraModalOpen(false);
+  };
+
+  const onCameraSubmit = async (data: CameraCreate) => {
+    try {
+      await upsertCamera(editingId, data);
+    } catch (err) {
+      // Giữ modal mở để người dùng thấy camera chưa được lưu (vd 403 CAMERA_LIMIT).
+      setCameraError(err instanceof Error ? err.message : 'Không lưu được camera');
+      return;
+    }
+    setIsCameraModalOpen(false);
+    setCameraError(null);
     setEditingId(null);
     cameraForm.reset({ is_active: true });
   };
@@ -130,12 +157,36 @@ export const SingleCameraListView: React.FC = () => {
         <Button
           type="button"
           onClick={openCreateCamera}
+          disabled={cameraLimitReached}
+          title={addCameraTitle}
           className="bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700"
         >
           <Plus className="mr-2 h-4 w-4" />
           Thêm Camera
         </Button>
       </div>
+
+      {showNearLimitWarning && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            {`Sắp đạt giới hạn camera: ${cameras.length}/${licenseLimit} — còn ${licenseLimit - cameras.length} slot. Liên hệ DTG để nâng giới hạn.`}
+          </span>
+        </div>
+      )}
+
+      {cameraError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{cameraError}</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
         {filteredCameras.length > 0 ? (
@@ -194,7 +245,7 @@ export const SingleCameraListView: React.FC = () => {
 
       <Modal
         isOpen={isCameraModalOpen}
-        onClose={() => setIsCameraModalOpen(false)}
+        onClose={closeCameraModal}
         title={editingId ? 'Chỉnh Sửa Camera' : 'Thêm Camera Mới'}
       >
         <form onSubmit={cameraForm.handleSubmit(onCameraSubmit)} className="space-y-4">
@@ -228,7 +279,7 @@ export const SingleCameraListView: React.FC = () => {
             <Button
               type="button"
               variant="outline"
-              onClick={() => setIsCameraModalOpen(false)}
+              onClick={closeCameraModal}
               className="flex-1"
             >
               Hủy
