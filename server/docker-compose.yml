@@ -111,6 +111,9 @@ services:
       - ./app:/app/app           # hot-reload code without rebuilding image
       - ./runs:/app/runs       # YOLO/OCR detection output
       - ./exports:/app/exports # Excel exports
+      # Hardware fingerprint (license instance id) — read-only, machine.py đọc /host/...
+      - /etc/machine-id:/host/etc/machine-id:ro
+      - /sys/class/dmi/id:/host/sys/class/dmi/id:ro
     deploy:
       resources:
         reservations:
