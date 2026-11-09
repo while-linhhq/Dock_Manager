@@ -256,6 +256,19 @@ class Settings(BaseSettings):
     ZALO_NOTIFY_MEDIA_WAIT_SEC: int = 180
     ZALO_NOTIFY_MEDIA_POLL_SEC: float = 3.0
 
+    # Licensing (Keygate) — kiểm tra bản quyền định kỳ qua license.dtgsoft.vn
+    LICENSE_SERVER_URL: str = 'https://license.dtgsoft.vn'
+    # Key nhập từ trang quản trị; chỉ lưu DB dưới dạng đã mã hoá (xem utils/crypto.py).
+    LICENSE_KEY: str = ''
+    # Mã định danh instance do Keygate cấp (để trống thì tự sinh).
+    LICENSE_INSTANCE_ID: str = ''
+    # off = tắt kiểm tra, warn = chỉ cảnh báo, enforce = chặn khi hết hạn.
+    LICENSE_ENFORCEMENT: Literal['off', 'warn', 'enforce'] = 'warn'
+    # Chu kỳ gọi check-in lên license server (giờ).
+    LICENSE_CHECKIN_HOURS: int = 6
+    # Timeout HTTP khi gọi license server (giây).
+    LICENSE_HTTP_TIMEOUT_SEC: float = 5.0
+
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'
     # Ghi log ra file để trang "Xem Logs" tail được. Rotating theo dung lượng.
