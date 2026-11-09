@@ -68,8 +68,9 @@ def _initial_enforcement_mode() -> str:
 def _parse_iso_datetime(value: Any) -> datetime | None:
     """Parse mốc thời gian ISO-8601 từ Keygate (chấp nhận hậu tố ``Z``).
 
-    Giá trị thiếu/rỗng/không parse được trả ``None`` — service coi như license
-    không đặt hạn, không để dữ liệu lỗi làm crash vòng verify.
+    Giá trị ``None``/rỗng/không parse được trả ``None``. Caller
+    ``_apply_verify_data`` phân biệt ``None`` hợp lệ (license không hạn) với
+    parse lỗi để giữ hạn cũ thay vì vô tình biến license có hạn thành vô hạn.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -208,8 +209,10 @@ class LicenseSnapshot:
 
     def __post_init__(self) -> None:
         # Chốt status hiệu lực ngay khi snapshot được tạo: thời gian trôi qua
-        # không tự đổi status cho tới lần refresh/verify kế tiếp. Token offline
-        # hết hạn (không có verify thành công mới hơn) hạ status về ``expired``.
+        # không tự đổi status cho tới lần refresh/verify kế tiếp (riêng token
+        # offline TTL được kiểm tra lại trong ``LicenseService.snapshot()``).
+        # Token hết hạn (không có verify thành công mới hơn) hạ status về
+        # ``expired``.
         moment = datetime.now(timezone.utc)
         effective = compute_effective_status(
             has_key=bool(self._has_key),
