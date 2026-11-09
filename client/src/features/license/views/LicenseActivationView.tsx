@@ -16,6 +16,8 @@ export const LicenseActivationView: React.FC = () => {
   const error = useLicenseStore((state) => state.error);
   const activate = useLicenseStore((state) => state.activate);
   const user = useAuthStore((state) => state.user);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const authBootstrapped = useAuthStore((state) => state.authBootstrapped);
 
   const [licenseKey, setLicenseKey] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -32,6 +34,21 @@ export const LicenseActivationView: React.FC = () => {
     const timer = window.setTimeout(() => setCopied(false), 2000);
     return () => window.clearTimeout(timer);
   }, [copied]);
+
+  // Hard reload: đã có token nhưng `/auth/me` chưa xong (backend chậm/khởi động lại) nên chưa
+  // biết quyền. Chờ phiên resolve thay vì đoán non-admin và hiện thông báo "liên hệ quản trị viên".
+  const isSessionResolving = isAuthenticated && (!authBootstrapped || user == null);
+
+  if (isSessionResolving) {
+    return (
+      <div className="flex min-h-[calc(100dvh-10rem)] w-full items-center justify-center py-4 sm:py-8">
+        <div className="flex flex-col items-center justify-center gap-3 text-gray-500 dark:text-gray-400">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" aria-hidden />
+          <p className="text-xs font-mono uppercase tracking-widest">Đang tải phiên đăng nhập…</p>
+        </div>
+      </div>
+    );
+  }
 
   const handleCopy = async () => {
     if (!machineCode) {
