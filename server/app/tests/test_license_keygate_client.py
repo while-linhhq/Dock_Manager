@@ -47,3 +47,27 @@ def test_network_error_wrapped(monkeypatch):
     monkeypatch.setattr(requests, 'request', boom)
     with pytest.raises(KeygateNetworkError):
         KeygateClient('https://kg.test').verify('K', 'inst-1')
+
+
+def test_error_constructors_accept_positional_args():
+    err = KeygateError(404, 'LICENSE_NOT_FOUND')
+    assert err.status == 404
+    assert err.code == 'LICENSE_NOT_FOUND'
+    assert err.details is None
+
+    err = KeygateError(403, 'LICENSE_SUSPENDED', {'reason': 'x'}, 'suspended')
+    assert (err.status, err.code, err.details, str(err)) == (
+        403,
+        'LICENSE_SUSPENDED',
+        {'reason': 'x'},
+        'suspended',
+    )
+
+    # Keyword construction keeps working.
+    err = KeygateError(status=500, code='INTERNAL', details={'attempt': 1}, message='boom')
+    assert (err.status, err.code, err.details, str(err)) == (500, 'INTERNAL', {'attempt': 1}, 'boom')
+
+    net = KeygateNetworkError('down')
+    assert isinstance(net, KeygateError)
+    assert net.status is None and net.code is None and net.details is None
+    assert str(net) == 'down'

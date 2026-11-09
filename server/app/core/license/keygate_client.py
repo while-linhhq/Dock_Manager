@@ -19,11 +19,10 @@ class KeygateError(Exception):
 
     def __init__(
         self,
-        message: str = '',
-        *,
         status: int | None = None,
         code: str | None = None,
         details: dict[str, Any] | None = None,
+        message: str = '',
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -35,7 +34,7 @@ class KeygateNetworkError(KeygateError):
     """Không kết nối được Keygate (timeout, DNS, mất mạng) — lỗi tạm thời."""
 
     def __init__(self, message: str = '') -> None:
-        super().__init__(message, status=None)
+        super().__init__(status=None, message=message)
 
 
 class KeygateClient:
@@ -106,8 +105,8 @@ def _error_from_response(response: requests.Response) -> KeygateError:
     details = error.get('details')
     message = error.get('message') or f'Keygate trả về HTTP {response.status_code}'
     return KeygateError(
+        response.status_code,
+        code if isinstance(code, str) else None,
+        details if isinstance(details, dict) else None,
         message,
-        status=response.status_code,
-        code=code if isinstance(code, str) else None,
-        details=details if isinstance(details, dict) else None,
     )
