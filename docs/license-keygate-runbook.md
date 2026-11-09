@@ -49,7 +49,7 @@
   - /sys/class/dmi/id:/host/sys/class/dmi/id:ro
   ```
   Thiếu mount → app không đọc được host identity, fallback UUID lưu DB + log warning (chỉ chấp nhận ở dev).
-- **`SECRET_KEY`** trong `server/.env` phải là giá trị ngẫu nhiên mạnh, **không phải `secret`** (mặc định trong code). `app/utils/crypto.py` dẫn xuất khoá Fernet từ `SECRET_KEY` để mã hoá license key trước khi lưu DB; ai biết `SECRET_KEY` mặc định có thể giải mã key đã lưu. Đổi `SECRET_KEY` làm ciphertext cũ không giải mã được → khách phải nhập lại license key (không mất dữ liệu khác).
+- **`SECRET_KEY`** trong `server/.env` phải là giá trị ngẫu nhiên mạnh, **không phải `secret`** (mặc định trong code). `app/utils/crypto.py` dẫn xuất khoá Fernet từ `SECRET_KEY` để mã hoá license key trước khi lưu DB; ai biết `SECRET_KEY` mặc định có thể giải mã key đã lưu. Đổi `SECRET_KEY` **sau khi đã activate** làm ciphertext cũ không giải mã được, nhưng app **không** chuyển sang `unlicensed` và **không** hiện màn hình nhập key: verify bị bỏ qua âm thầm (chỉ log warning), `/license/status` có thể vẫn báo `valid`/`grace` đã cache, `license_key_hint` thành `null`. Vì vậy **đặt `SECRET_KEY` mạnh trước lần activate đầu tiên** và **không rotate trên máy khách khi chưa có kế hoạch activate lại** — chi tiết + quy trình phục hồi ở §16.3. Không mất dữ liệu nghiệp vụ khác.
 - Không cần mở port inbound nào cho license; chỉ outbound 443.
 
 ### 0.2 Phía ops
@@ -670,7 +670,7 @@ python scripts/license_probe.py
 | Token “hết hạn” ngay sau activate | Lệch đồng hồ máy khách (NTP) | `timedatectl`/`date -u`; bật NTP; kiểm tra timezone chỉ ảnh hưởng hiển thị, `exp` là UTC |
 | Không thấy màn hình nhập key | UI chỉ hiện first-run khi `status=unlicensed`; `invalid/suspended/revoked/expired` không hiện form | Dùng API `POST /license/activate` (admin) hoặc xử lý nguyên nhân trạng thái trước; xem `/status.last_error` |
 | `last_error: machine changed` | Mã máy khác `instance_id` DB | Xoá activation cũ + activate lại (§10) |
-| `last_error: ... can not decrypt` / mất key | `SECRET_KEY` bị đổi sau khi lưu key | Set lại `SECRET_KEY` cũ nếu biết, hoặc khách nhập lại license key (key không mất trên Keygate) |
+| `/status` vẫn `valid`/`grace` nhưng `license_key_hint: null`, `last_verified_at` đứng yên; log `Stored license key cannot be decrypted; treating as unlicensed`; `POST /license/refresh` trả 200 và **không** cập nhật `last_error`; không hiện màn hình nhập key | `SECRET_KEY` bị đổi sau khi lưu key → ciphertext cũ không giải mã được (app không đánh dấu `unlicensed`, chỉ bỏ qua verify) | Khôi phục `SECRET_KEY` cũ nếu biết rồi restart (ciphertext đọc lại được, không cần activate); nếu không, reveal key trên Keygate (`GET /api/v1/admin/licenses/{id}/key`, có audit) hoặc `rotate-key` nếu nghi lộ, rồi admin `POST /api/v1/license/activate` với key đó. Key không mất trên Keygate; chi tiết §16.3 |
 | `GET /api/v1/license` trả 307 | Thiếu dấu `/` cuối | Dùng `/api/v1/license/` hoặc `/status` |
 | 401/403 trên API DSight | Token hết hạn / không phải admin | Login lại; kiểm tra role; enforcement/refresh/activate cần admin |
 | Addon không có hiệu lực | Chưa attach, sai product, license cache chưa refresh | `GET /licenses/{id}/addons`; attach đúng; `POST /license/refresh` |
@@ -700,7 +700,16 @@ python scripts/license_probe.py
 ### 16.3 `SECRET_KEY` và dữ liệu at-rest
 
 - `SECRET_KEY` (server/.env) là đầu vào dẫn xuất Fernet key mã hoá license key trong bảng `license_state`. **Không dùng giá trị mặc định `secret`** (public trong source) và không dùng lại key của hệ thống khác.
-- Đổi `SECRET_KEY` = ciphertext cũ không giải mã được → app coi như chưa có key, khách phải nhập lại license key. Không mất dữ liệu nghiệp vụ khác.
+- Đổi `SECRET_KEY` = ciphertext cũ không giải mã được (`decrypt_secret` trả `None`). Hành vi thực tế **không** phải "app thành `unlicensed`":
+  - Helper giải mã `_decrypt_license_key()` chỉ log warning `Stored license key cannot be decrypted; treating as unlicensed` rồi trả `None`; **không** xoá ciphertext, **không** đổi `status` trong DB.
+  - `verify_now()` trả về ngay khi không giải mã được key → **không gọi Keygate và không cập nhật `last_error`**; `POST /api/v1/license/refresh` trả 200 với `last_error` cũ (thường `null`).
+  - `_build_snapshot()` đặt `has_key = bool(license_key_enc)`; ciphertext vẫn còn nên `GET /api/v1/license/status` **vẫn trả status hiệu lực đã cache** — có thể `valid`/`grace` dù thực tế không verify được. Snapshot không tự rebuild khi verify bị bỏ qua (status có thể đứng nguyên trong tiến trình đang chạy); restart sẽ tính lại theo `valid_until`/`grace_days`.
+  - `license_key_hint` trả `null` dù `status` vẫn `valid`/`grace`; `last_verified_at` không tăng sau các chu kỳ check-in 6h.
+  - Màn hình nhập key first-run **không hiện**: FE chỉ render khi `status === 'unlicensed'` (`client/src/layouts/MainLayout.tsx`).
+- Phục hồi:
+  1. Biết `SECRET_KEY` cũ và chưa coi là lộ: đặt lại giá trị cũ trong `server/.env`, restart app (Fernet key được cache trong process), rồi `POST /api/v1/license/refresh`. Ciphertext giải mã lại được — **không cần activate**, không tốn slot.
+  2. Không còn `SECRET_KEY` cũ/coi là lộ: giữ `SECRET_KEY` mới mạnh; reveal key trên Keygate `GET /api/v1/admin/licenses/{id}/key` (có audit) — hoặc `POST /api/v1/admin/licenses/{id}/rotate-key` nếu nghi lộ key (key cũ chết, activation bị xoá) — rồi admin `POST /api/v1/license/activate` với key đó (cùng máy → `machine_code` không đổi; reveal giữ activation cũ nên activate trả `already_activated`, rotate-key thì tạo activation mới). Activate mã hoá lại key bằng `SECRET_KEY` hiện tại.
+- **Quy tắc vận hành:** đặt `SECRET_KEY` mạnh **trước lần activate đầu tiên**; **không rotate `SECRET_KEY` trên bản cài khách hàng khi chưa lên kế hoạch activate lại** (maintenance window + có license key trong tay). Sau mọi thay đổi `SECRET_KEY`: restart, kiểm tra `license_key_hint` ≠ `null`, `last_verified_at` tiếp tục tăng, log không còn `Stored license key cannot be decrypted`. Không mất dữ liệu nghiệp vụ khác.
 - Backup `server/.env` cùng secret manager; không đưa `SECRET_KEY` vào image public.
 
 ### 16.4 Hạ tầng
