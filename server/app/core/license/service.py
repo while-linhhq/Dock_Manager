@@ -466,7 +466,16 @@ class LicenseService:
             return self._persist_classified(
                 'invalid', f'verify 404; activate failed (HTTP {exc.status})'
             )
-        return self._record_error('verify 404 but activate ok')
+
+        # Activate vừa thành công: lần verify trước trả 404 vì máy chưa có
+        # activation. Thử verify lại ngay để lần kích hoạt đầu tiên nhận được
+        # features/token luôn, thay vì giữ trạng thái unlicensed đến kỳ check-in
+        # kế tiếp (hoặc đến lần restart sau).
+        try:
+            data = self.client.verify(license_key, self.machine_code())
+        except (KeygateError, KeygateNetworkError):
+            return self._record_error('verify 404 but activate ok')
+        return self._apply_verify_data(data)
 
     def _record_error(self, message: str) -> dict[str, Any]:
         """Ghi ``last_error`` nhưng giữ nguyên status/features đã cache."""

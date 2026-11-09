@@ -502,6 +502,55 @@ def test_verify_404_activate_already_activated_keeps_previous_state():
     assert row.last_error == 'verify 404 but activate ok'
 
 
+def test_verify_404_then_activate_ok_reverifies_and_applies_features():
+    fake = FakeClient()
+    svc = _service(fake)
+    svc._persist_key(TEST_LICENSE_KEY)
+    calls = {'n': 0}
+
+    def _verify_404_then_200(key, identifier):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise KeygateError(404, 'LICENSE_NOT_FOUND')
+        return fake.result
+
+    fake.verify = _verify_404_then_200
+    out = svc.verify_now()
+
+    assert out['status'] in {'valid', 'grace'}
+    assert fake.activate_calls == 1
+    assert calls['n'] == 2
+    row = _row()
+    assert row is not None
+    assert row.status == 'active'
+    # FakeClient không trả token nên service ghi cảnh báo này; features/hạn
+    # vẫn phải được áp từ lần verify thứ hai.
+    assert 'missing token' in (row.last_error or '')
+    assert row.features == {'max_cameras': 12}
+
+
+def test_activate_first_time_applies_features_after_classification():
+    fake = FakeClient()
+    svc = _service(fake)
+    calls = {'n': 0}
+
+    def _verify_404_then_200(key, identifier):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise KeygateError(404, 'LICENSE_NOT_FOUND')
+        return fake.result
+
+    fake.verify = _verify_404_then_200
+    out = svc.activate(TEST_LICENSE_KEY)
+
+    assert out['status'] in {'valid', 'grace'}
+    assert calls['n'] == 2
+    row = _row()
+    assert row is not None and row.status == 'active'
+    assert row.features == {'max_cameras': 12}
+    assert 'missing token' in (row.last_error or '')
+
+
 @pytest.mark.parametrize(
     ('activate_error', 'expected_status'),
     [
