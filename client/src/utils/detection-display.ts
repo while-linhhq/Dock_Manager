@@ -3,6 +3,27 @@ import { formatTimeVN, parseApiDate } from './date-time';
 
 const UNKNOWN_SHIP_LABEL = 'KH\u00d4NG X\u00c1C \u0110\u1ecaNH';
 
+/**
+ * Một id OCR đọc được thành nhãn tàu: phải là chuỗi, `trim()` xong còn nội dung.
+ * `typeof` giữ đúng như bản cũ nên id số/object vẫn rơi về nhãn mặc định.
+ */
+function readOcrShipId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * Nhãn tàu hiển thị: `vessel.ship_id`, rồi id OCR đầu tiên, cuối cùng là nhãn
+ * "không xác định".
+ *
+ * Id OCR đến từ hai dạng payload: danh sách đầy đủ (`ocr_results[0].id` — trang
+ * bến vẫn gọi vậy) hoặc bản rút gọn của dashboard (`first_ocr_result_id`, khi
+ * sidebar tắt `include_ocr_results` để không tải 98,98 % khối lượng thừa). Hai
+ * dạng cho **cùng một nhãn**: `readOcrShipId` là chỗ duy nhất trim/kiểm rỗng.
+ */
 export function getDetectionShipLabel(det: DetectionRead): string {
   const fromVessel = det.vessel?.ship_id?.trim();
   if (fromVessel) {
@@ -10,11 +31,15 @@ export function getDetectionShipLabel(det: DetectionRead): string {
   }
   const items = det.ocr_results;
   if (Array.isArray(items) && items.length > 0) {
-    const first = items[0] as Record<string, unknown>;
-    const id = first?.id;
-    if (typeof id === 'string' && id.trim()) {
-      return id.trim();
+    const first = items[0] as Record<string, unknown> | null | undefined;
+    const fromList = readOcrShipId(first?.id);
+    if (fromList) {
+      return fromList;
     }
+  }
+  const fromLiteField = readOcrShipId(det.first_ocr_result_id);
+  if (fromLiteField) {
+    return fromLiteField;
   }
   return UNKNOWN_SHIP_LABEL;
 }

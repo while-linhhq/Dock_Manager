@@ -76,6 +76,12 @@ export type DetectionRead = {
   is_accepted?: boolean | null;
   is_over_berth_limit?: boolean;
   ocr_results?: Array<Record<string, unknown>> | null;
+  /**
+   * Chỉ có khi gọi `/detections/` với `include_ocr_results=false`: id OCR đầu
+   * tiên, thay cho cả mảng `ocr_results` (99,5 % khối lượng phản hồi). Là nguồn
+   * nhãn tàu dự phòng thứ hai của `getDetectionShipLabel`.
+   */
+  first_ocr_result_id?: string | null;
   vessel?: VesselRead;
   berth_in_camera_id?: number | null;
   berth_in_camera_name?: string | null;
@@ -257,6 +263,35 @@ export type DashboardSummary = {
   boundary_volume_labels?: string[];
   boundary_in_counts?: number[];
   boundary_out_counts?: number[];
+};
+
+/** Một khung giờ của biểu đồ "24 giờ qua" — `hour` là instant ISO-8601 **UTC**. */
+export type DetectionAnalyticsHour = { hour: string; count: number };
+
+/** Một nhãn tàu (`getDetectionShipLabel`) và số lượt trong kỳ. */
+export type DetectionAnalyticsShip = { label: string; count: number };
+
+/** Trạng thái duyệt: accepted = `is_accepted IS TRUE`, rejected = FALSE, pending = NULL. */
+export type DetectionAnalyticsAcceptance = {
+  accepted: number;
+  rejected: number;
+  pending: number;
+};
+
+/** Một bucket độ tin cậy — nhãn do server trả, đúng chuỗi client đang hiển thị. */
+export type DetectionAnalyticsBucket = { bucket: string; count: number };
+
+/**
+ * `GET /dashboard/detection-analytics` — nguồn số của bốn widget phân tích.
+ *
+ * `by_hour` luôn đủ 24 khung giờ gần nhất (cửa sổ cuộn, KHÔNG theo `period`);
+ * `top_ships` / `acceptance` / `confidence_buckets` theo kỳ đã chọn.
+ */
+export type DashboardDetectionAnalytics = {
+  by_hour: DetectionAnalyticsHour[];
+  top_ships: DetectionAnalyticsShip[];
+  acceptance: DetectionAnalyticsAcceptance;
+  confidence_buckets: DetectionAnalyticsBucket[];
 };
 
 export type BoundaryPoint = { x: number; y: number };

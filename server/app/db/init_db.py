@@ -83,7 +83,7 @@ def _run_seed_data() -> None:
         ('detection_confidence_threshold', '0.6',        'Minimum OCR confidence to auto-accept'),
         ('invoice_tax_rate',               '0.1',        'Default tax rate (10%)'),
         ('invoice_due_days',               '30',         'Days until invoice is overdue'),
-        ('model_path',                     'app/yolo11n.pt', 'Path to YOLO model file'),
+        ('model_path',                     'models/yolo/yolo26s_finetuned.pt', 'Path to YOLO model file'),
         ('device',                         '0',          'Inference device (0 for GPU, cpu for CPU)'),
         ('conf',                           '0.75',       'YOLO detection confidence threshold'),
         ('yolo_imgsz',                     '640',        'YOLO inference input size (letterbox, e.g. 640 or 960)'),

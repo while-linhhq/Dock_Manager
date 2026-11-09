@@ -25,6 +25,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.repositories.audit_log_repository import audit_log_repo
+from app.utils.pagination import TOTAL_COUNT_HEADER
 import logging
 import sys
 import time
@@ -117,6 +118,22 @@ async def lifespan(app: FastAPI):
 
         start_sepay_background_sync()
 
+    # License: nạp state từ DB rồi chạy check-in nền. Lỗi license không được
+    # chặn boot (app vẫn chạy; enforcement/banner do state quyết định).
+    try:
+        from app.core.license.service import license_service
+
+        license_service.initialize()
+    except Exception:
+        logger.exception('License service initialization failed')
+
+    try:
+        from app.core.license.background import start_license_background
+
+        start_license_background()
+    except Exception:
+        logger.exception('License background check-in failed to start')
+
     if app_settings.ZALO_ENABLED:
         if app_settings.ZALO_POLLING_ENABLED:
             from app.services.zalo_polling_service import start_zalo_polling
@@ -147,6 +164,10 @@ async def lifespan(app: FastAPI):
         from app.services.sepay_background import stop_sepay_background_sync
 
         await stop_sepay_background_sync()
+
+    from app.core.license.background import stop_license_background
+
+    await stop_license_background()
     from app.services.pipeline_service import pipeline_service
 
     from app.core.startup_report import log_shutdown
@@ -169,6 +190,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[TOTAL_COUNT_HEADER],
 )
 
 

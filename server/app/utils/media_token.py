@@ -35,6 +35,41 @@ def decode_media_preview_token(token: str) -> Optional[str]:
     return path or None
 
 
+def build_media_view_url(
+    minio_path: str,
+    *,
+    request: object | None = None,
+    ttl_hours: int = 12,
+) -> Optional[str]:
+    """URL xem media trên chính origin API — mở được từ trình duyệt ở xa.
+
+    ``presign_get`` trỏ thẳng MinIO (``MINIO_ENDPOINT``, thường là 127.0.0.1:9100)
+    nên chỉ máy chủ mở được; URL này đi qua API nên trình duyệt ở đâu cũng xem được
+    miễn tới được API, và token là JWT ký sẵn nên thẻ ``<img>`` không cần header
+    Authorization.
+
+    Thứ tự chọn base: ``PUBLIC_BASE_URL`` → ``ZALO_PUBLIC_BASE_URL`` → origin của
+    chính request (dự phòng cho triển khai chưa cấu hình). Trả ``None`` nếu không
+    xác định được base để nơi gọi giữ nguyên giá trị cũ.
+    """
+    path = (minio_path or '').strip()
+    if not path:
+        return None
+
+    base = (
+        str(getattr(settings, 'PUBLIC_BASE_URL', '') or '').strip().rstrip('/')
+        or str(settings.ZALO_PUBLIC_BASE_URL or '').strip().rstrip('/')
+    )
+    if not base and request is not None:
+        base = str(getattr(request, 'base_url', '') or '').strip().rstrip('/')
+    if not base:
+        return None
+
+    token = create_media_preview_token(path, ttl_hours=ttl_hours)
+    suffix = '.mp4' if path.lower().endswith(('.mp4', '.webm')) else ''
+    return f'{base}/api/v1/media/preview/{token}{suffix}'
+
+
 def build_media_preview_url(minio_path: str, *, ttl_hours: int = 24) -> Optional[str]:
     base = str(settings.ZALO_PUBLIC_BASE_URL or '').strip().rstrip('/')
     path = (minio_path or '').strip()

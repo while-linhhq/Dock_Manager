@@ -22,6 +22,7 @@ from app.api.v1.endpoints import (
     zalo,
     media,
     ship_id_rules,
+    license,
 )
 
 
@@ -49,3 +50,4 @@ api_router.include_router(sepay.router, prefix='/sepay', tags=['sepay'])
 api_router.include_router(zalo.router, prefix='/zalo', tags=['zalo'])
 api_router.include_router(media.router, prefix='/media', tags=['media'])
 api_router.include_router(ship_id_rules.router, prefix='/ship-id-rules', tags=['ship-id-rules'])
+api_router.include_router(license.router, prefix='/license', tags=['license'])

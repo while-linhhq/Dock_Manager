@@ -1,46 +1,59 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useBackupStore } from '../store/backupStore';
-import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
+import type { AuditLogFilters } from '../services/backupApi';
+import type { AuditLogRead } from '../../../types/api.types';
+import { usePagedQuery } from '../../../hooks/usePagedQuery';
 import { BackupFiltersBar } from '../components/BackupFiltersBar';
 import { BackupAuditLogList } from '../components/BackupAuditLogList';
 
 export const BackupView: React.FC = () => {
-  const { auditLogs, isLoading, fetchAuditLogs } = useBackupStore();
+  const { fetchAuditLogsPage } = useBackupStore();
   const [q, setQ] = useState('');
   const [tableQ, setTableQ] = useState('');
   const [actionQ, setActionQ] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
-  useEffect(() => {
-    fetchAuditLogs();
-  }, [fetchAuditLogs]);
+  // Bốn bộ lọc `/audit-logs/` có tham số ⇒ server lọc, client không lọc lại
+  // (trước đây `filtered` lọc trên 50 dòng đã nạp).
+  const auditLogFilters = useMemo<AuditLogFilters>(
+    () => ({
+      q: q.trim() || undefined,
+      tableName: tableQ.trim() || undefined,
+      action: actionQ.trim() || undefined,
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
+    }),
+    [q, tableQ, actionQ, dateFrom, dateTo],
+  );
 
-  const filtered = useMemo(() => {
-    return auditLogs.filter((log) => {
-      if (
-        !matchesAnyField(q, log.action, log.record_id, log.user?.full_name, log.user?.email)
-      ) {
-        return false;
-      }
-      if (
-        tableQ.trim() &&
-        !(log.table_name ?? '').toLowerCase().includes(tableQ.trim().toLowerCase())
-      ) {
-        return false;
-      }
-      if (
-        actionQ.trim() &&
-        !(log.action ?? '').toLowerCase().includes(actionQ.trim().toLowerCase())
-      ) {
-        return false;
-      }
-      if (!isoInLocalDateRange(log.created_at, dateFrom, dateTo)) {
-        return false;
-      }
-      return true;
-    });
-  }, [auditLogs, q, tableQ, actionQ, dateFrom, dateTo]);
+  const {
+    items: auditLogs,
+    total: auditLogsTotal,
+    page: auditLogsPage,
+    pageSize: auditLogsPageSize,
+    isLoading: auditLogsLoading,
+    error: auditLogsError,
+    setPage: setAuditLogsPage,
+    setPageSize: setAuditLogsPageSize,
+    setFilters: setAuditLogFilters,
+    reload: reloadAuditLogs,
+  } = usePagedQuery<AuditLogRead, AuditLogFilters>({
+    fetcher: fetchAuditLogsPage,
+    filters: auditLogFilters,
+  });
+
+  // Đẩy nội dung bộ lọc xuống hook; object đã memo hoá nên hiệu ứng chỉ chạy khi
+  // bộ lọc THỰC SỰ đổi. Bỏ qua lần chạy đầu vì hook đã KHỞI TẠO bằng chính
+  // `auditLogFilters` (đẩy lại đúng object đó chỉ thêm một request thừa lúc mở trang).
+  const pushedAuditLogFiltersRef = useRef(auditLogFilters);
+  useEffect(() => {
+    if (pushedAuditLogFiltersRef.current === auditLogFilters) {
+      return;
+    }
+    pushedAuditLogFiltersRef.current = auditLogFilters;
+    setAuditLogFilters(auditLogFilters);
+  }, [auditLogFilters, setAuditLogFilters]);
 
   const filterCount =
     (q.trim() ? 1 : 0) +
@@ -75,10 +88,16 @@ export const BackupView: React.FC = () => {
       />
 
       <BackupAuditLogList
-        isLoading={isLoading}
+        isLoading={auditLogsLoading}
+        error={auditLogsError}
         auditLogs={auditLogs}
-        filtered={filtered}
-        onRefresh={() => fetchAuditLogs()}
+        total={auditLogsTotal}
+        filterCount={filterCount}
+        page={auditLogsPage}
+        pageSize={auditLogsPageSize}
+        onPageChange={setAuditLogsPage}
+        onPageSizeChange={setAuditLogsPageSize}
+        onRefresh={reloadAuditLogs}
       />
     </div>
   );

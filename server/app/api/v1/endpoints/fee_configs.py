@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -19,6 +19,12 @@ from app.services.ship_invoice_backfill_service import (
     run_vessel_type_backfill_task,
     should_backfill_after_fee_update,
 )
+from app.utils.pagination import (
+    DEFAULT_CATALOG_LIMIT,
+    MAX_CATALOG_LIMIT,
+    resolve_page,
+    set_total_header,
+)
 
 router = APIRouter()
 
@@ -38,16 +44,24 @@ def _schedule_fee_backfill(background_tasks: BackgroundTasks, fee) -> None:
 
 @router.get('/', response_model=List[FeeConfigRead])
 def list_fee_configs(
+    response: Response,
+    skip: int = 0,
+    limit: int = DEFAULT_CATALOG_LIMIT,
     active_only: bool = False,
     vessel_type_id: Optional[int] = None,
     vessel_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
+    skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
     if vessel_id:
-        return fee_config_repo.get_by_vessel(db, vessel_id, active_only=active_only)
-    if vessel_type_id:
-        return fee_config_repo.get_by_vessel_type(db, vessel_type_id)
-    return fee_config_repo.get_all(db, active_only=active_only)
+        filters = {'vessel_id': vessel_id, 'active_only': active_only}
+    elif vessel_type_id:
+        # Nhánh theo loại tàu giữ nguyên hành vi cũ: chỉ lấy phí đang bật.
+        filters = {'vessel_type_id': vessel_type_id, 'active_only': True}
+    else:
+        filters = {'active_only': active_only}
+    set_total_header(response, fee_config_repo.count_filtered(db, **filters))
+    return fee_config_repo.get_all(db, skip=skip, limit=limit, **filters)
 
 
 @router.get('/{fee_id}', response_model=FeeConfigRead)

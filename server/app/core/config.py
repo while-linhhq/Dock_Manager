@@ -22,9 +22,21 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
+    # Endpoint S3 tường minh. Trỏ MinIO local (mặc định) — đặt rỗng để dùng AWS thật.
+    # boto3 chỉ đọc biến môi trường, không đọc .env, nên s3_service truyền giá trị
+    # này vào client để chạy local không cần export gì thêm.
+    AWS_ENDPOINT_URL: str = "http://127.0.0.1:9100"
+    # Base công khai để dựng URL media mở được từ trình duyệt ở xa (ảnh đối chiếu,
+    # video). Để trống thì lấy ZALO_PUBLIC_BASE_URL, rồi mới tới origin của request.
+    PUBLIC_BASE_URL: str = ""
     
-    # Model settings
-    MODEL_PATH: str = "app/yolo11n.pt"
+    # Model settings — toàn bộ model AI nằm trong server/models/
+    # (xem scripts/export_engines.py để build lại engine trên từng máy)
+    MODEL_DIR: str = "models"
+    MODEL_PATH: str = "models/yolo/yolo26s_finetuned.pt"
+    # Ưu tiên TensorRT engine cùng tên (.pt → .engine) nếu có. Engine gắn cứng GPU
+    # arch + phiên bản TensorRT nên KHÔNG bê sang máy khác được → luôn có đường lùi .pt.
+    YOLO_PREFER_ENGINE: bool = True
     DEVICE: str = "0"
     CONF: float = 0.75
     YOLO_IMGSZ: int = 640
@@ -92,6 +104,22 @@ class Settings(BaseSettings):
     # Gray-world white balance before CLAHE (heaviest per-frame CPU step).
     # Toggle off to test whether YOLO still detects well without it.
     CLAHE_ENABLE_GRAY_WORLD: bool = True
+    # Cân bằng sáng trên uint8 (~10× nhanh hơn bản float32, lệch trung bình ~1.3 mức).
+    # Đặt false để quay lại đúng bản float32 cũ khi cần so sánh bitwise.
+    CLAHE_FAST: bool = True
+    # Tỉ lệ frame đưa vào CLAHE + detector. 1.0 = nguyên frame gốc (mặc định).
+    # 0.5 = nhanh hơn nhiều nhưng box lệch nhẹ (đo được IoU min 0.963) → chỉ bật sau
+    # khi chạy `make ab-detect` trên chính camera đó và thấy ĐẠT.
+    DETECT_SCALE: float = 1.0
+    # Nới crop OCR/embedding thêm tỉ lệ này khi DETECT_SCALE < 1.0 (bù box lệch vài px).
+    CROP_PAD_RATIO: float = 0.05
+    # Chạy CLAHE ở kích thước detector (letterbox nội dung trước, pad sau) thay vì ở
+    # full-res rồi mới letterbox. Đặt false để quay lại đường cũ.
+    CLAHE_AFTER_LETTERBOX: bool = True
+    # Hệ số letterbox trước CLAHE. 1.0 = đúng imgsz (nhanh nhất nhưng MẤT box trên frame
+    # cam6: mất 1 box conf 0.966). 1.5 = CLAHE ở 1440 rồi thu về 960: giữ đủ box, IoU min
+    # 0.9858, vẫn nhanh hơn ~70% so với CLAHE full-res. Kẹp trong [1.0, 2.0].
+    CLAHE_LETTERBOX_SCALE: float = 1.5
     FUSED_FRAME_MAX_WIDTH: int = 1280
     FUSED_FRAME_MAX_HEIGHT: int = 720
     PREVIEW_MAX_WIDTH: int = 1280
@@ -110,6 +138,16 @@ class Settings(BaseSettings):
     OCR_AUDIT_ENABLE: bool = True
     OCR_AUDIT_SAVE_FRAMES: bool = True
     OCR_CONFIDENCE_THRESHOLD: float = 0.0
+    # PaddleOCR: dùng model cục bộ trong models/paddle_ocr/ thay vì tải về ~/.paddlex.
+    # Rỗng = để PaddleX tự resolve/tải như cũ.
+    PADDLE_OCR_DET_MODEL_DIR: str = "models/paddle_ocr/PP-OCRv6_medium_det"
+    PADDLE_OCR_REC_MODEL_DIR: str = "models/paddle_ocr/PP-OCRv6_medium_rec"
+    # TensorRT cho Paddle: Paddle tự build + cache engine con (run_mode=trt_fp16 hoặc
+    # trt_fp32), KHÔNG sinh file .engine. Mặc định TẮT: Paddle 3.3.0 lỗi ở converter TRT
+    # (paddle/tensorrt/impls/manipulation.py → stack_converter) khi convert model OCR,
+    # bật lên sẽ tốn ~1-2 phút rồi mới lùi về fp32. Xem scripts/probe_paddle_trt.py.
+    PADDLE_USE_TENSORRT: bool = False
+    PADDLE_TRT_PRECISION: str = "fp16"
     
     # Video record configuration
     RECORD_ENABLE: bool = True
@@ -158,7 +196,12 @@ class Settings(BaseSettings):
     VISUAL_MATCH_THRESHOLD: float = 0.55
     VISUAL_NO_OCR_MATCH_THRESHOLD: float = 0.55
     VISUAL_TOP_K: int = 20
+    # Rỗng = tự tìm trong models/dinov2/: <backbone>.engine (TensorRT) → .safetensors (timm)
     VISUAL_MODEL_PATH: str = ""
+    VISUAL_WEIGHTS_PATH: str = ""
+    VISUAL_ENGINE_PATH: str = ""
+    VISUAL_PREFER_ENGINE: bool = True
+    VISUAL_ENGINE_MAX_BATCH: int = 8
     VISUAL_BACKBONE: str = "vit_base_patch14_dinov2"
     VISUAL_EMBEDDING_DIM: int = 768
     VISUAL_IMAGE_SIZE: int = 224
@@ -212,6 +255,23 @@ class Settings(BaseSettings):
     # Wait for detection image (+ video when expected) before sending Zalo notify
     ZALO_NOTIFY_MEDIA_WAIT_SEC: int = 180
     ZALO_NOTIFY_MEDIA_POLL_SEC: float = 3.0
+
+    # Licensing (Keygate) — kiểm tra bản quyền định kỳ qua license.dtgsoft.vn
+    LICENSE_SERVER_URL: str = 'https://license.dtgsoft.vn'
+    # Key nhập từ trang quản trị; chỉ lưu DB dưới dạng đã mã hoá (xem utils/crypto.py).
+    # Chỉ dùng để bootstrap MỘT LẦN khi DB chưa có key (dev/di trú); app mã hoá
+    # vào DB rồi ops nên xoá biến này khỏi .env.
+    LICENSE_KEY: str = ''
+    # CHỈ dev: override "mã máy" (identifier) gửi Keygate. Production để trống —
+    # mã máy thật tính từ hardware fingerprint (/etc/machine-id + DMI,
+    # xem app/core/license/machine.py và scripts/install_license_identity.sh).
+    LICENSE_INSTANCE_ID: str = ''
+    # off = tắt kiểm tra, warn = chỉ cảnh báo, enforce = chặn khi hết hạn.
+    LICENSE_ENFORCEMENT: Literal['off', 'warn', 'enforce'] = 'warn'
+    # Chu kỳ gọi check-in lên license server (giờ).
+    LICENSE_CHECKIN_HOURS: int = 6
+    # Timeout HTTP khi gọi license server (giây).
+    LICENSE_HTTP_TIMEOUT_SEC: float = 5.0
 
     # Logging
     LOG_LEVEL: Literal['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] = 'INFO'

@@ -16,6 +16,19 @@ _RUNTIME_CUDA_SYMLINKS: tuple[tuple[str, str, str], ...] = (
     ('libcublasLt.so', 'nvidia/cublas/lib', 'libcublasLt.so.12'),
 )
 
+# TensorRT: wheel chỉ có libnvinfer.so.N, Paddle lại tìm đúng tên 'libnvinfer.so'.
+_TENSORRT_LIB_STEMS: tuple[str, ...] = (
+    'libnvinfer.so',
+    'libnvinfer_plugin.so',
+    'libnvonnxparser.so',
+)
+
+
+def tensorrt_lib_dir() -> str | None:
+    """Thư mục lib của TensorRT pip wheel (``tensorrt_libs``), None nếu chưa cài."""
+    path = os.path.join(_site_packages(), 'tensorrt_libs')
+    return path if os.path.isdir(path) else None
+
 
 def _site_packages() -> str:
     return os.path.join(sys.prefix, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages')
@@ -54,11 +67,23 @@ def _init_linux_cuda_path() -> None:
     if _CUDA_BOOTSTRAP_DONE:
         return
 
+    # TensorRT (Myelin) đòi NVIDIA_TF32_OVERRIDE lúc chạy phải trùng lúc build engine, nếu
+    # không create_execution_context() trả None -> engine không load được. paddle đặt biến
+    # này = 0 khi import (muộn), nên đặt sớm ở đây cho cố định — engine build bằng
+    # `make engines` cũng dùng TF32=0.
+    os.environ.setdefault('NVIDIA_TF32_OVERRIDE', '0')
+
     site_packages = _site_packages()
     cudnn_lib = os.path.join(site_packages, 'nvidia', 'cudnn', 'lib')
     torch_lib = os.path.join(site_packages, 'torch', 'lib')
 
     lib_dirs = _nvidia_lib_dirs(site_packages)
+    runtime_dir = _runtime_cuda_link_dir()
+    if runtime_dir is not None:
+        lib_dirs.append(str(runtime_dir))
+    trt_lib = tensorrt_lib_dir()
+    if trt_lib:
+        lib_dirs.append(trt_lib)
     if os.path.isdir(torch_lib):
         lib_dirs.append(torch_lib)
     _prepend_env_path('LD_LIBRARY_PATH', lib_dirs, separator=':')
@@ -171,11 +196,40 @@ def _runtime_cuda_link_dir() -> Path | None:
         link.symlink_to(target)
         linked = True
 
+    if _link_tensorrt_libs(runtime_dir):
+        linked = True
+
     if not linked:
         return None
 
     _RUNTIME_CUDNN_LINK_DIR = runtime_dir
     return runtime_dir
+
+
+def _link_tensorrt_libs(runtime_dir: Path) -> bool:
+    """Tạo symlink tên không version cho TensorRT (``libnvinfer.so`` → ``libnvinfer.so.10``).
+
+    Paddle dlopen đúng tên ``libnvinfer.so``; wheel pip chỉ có ``.so.N`` nên thiếu
+    bước này Paddle báo "TensorRT is needed, but ... 'libnvinfer.so' is not found".
+    """
+    lib_dir = tensorrt_lib_dir()
+    if not lib_dir:
+        return False
+
+    linked = False
+    for stem in _TENSORRT_LIB_STEMS:
+        matches = sorted(Path(lib_dir).glob(f'{stem}.*'))
+        if not matches:
+            continue
+        target = matches[-1]
+        link = runtime_dir / stem
+        if link.is_symlink() and link.resolve() == target.resolve():
+            linked = True
+            continue
+        link.unlink(missing_ok=True)
+        link.symlink_to(target)
+        linked = True
+    return linked
 
 
 def _runtime_cudnn_link_dir() -> Path | None:
@@ -196,6 +250,9 @@ def prepare_paddle_subprocess_env() -> dict[str, str]:
     if os.path.isdir(cudnn_lib):
         lib_dirs.append(cudnn_lib)
     lib_dirs.extend(_nvidia_lib_dirs(site_packages))
+    trt_lib = tensorrt_lib_dir()
+    if trt_lib:
+        lib_dirs.append(trt_lib)
 
     patch: dict[str, str] = {}
     if lib_dirs:

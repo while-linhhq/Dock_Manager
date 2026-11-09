@@ -38,6 +38,7 @@ from app.services.ai.handoff_matcher import OverlapMergeConfig
 from app.services.ai.directional_handoff import DirectionalHandoffConfig
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
+from app.services.ai.frame_stats import FrameStats
 from app.services.ai.group_frame_hub import GroupFrameHub
 from app.services.ai.ocr_worker import OcrWorkerThread
 from app.services.ai.per_camera_pipeline import PerCameraPipeline, PerCameraPipelineConfig
@@ -152,6 +153,8 @@ class PipelineService:
         self._video_registry = TrackVideoRegistry()
         self._latest_fused_lock = threading.Lock()
         self._latest_fused_bgr: Any = None
+        self._frame_stats = FrameStats()
+        self._active_detect_scale: float = float(settings.DETECT_SCALE)
         self._media_sample_queue: queue.Queue[_MediaSampleJob | None] = queue.Queue(maxsize=5)
         self._media_sample_thread: threading.Thread | None = None
         self._primary_record_camera_id: int | None = None
@@ -463,6 +466,44 @@ class PipelineService:
             'clahe_enable_gray_world': self._to_bool(
                 cfg_map.get('clahe_enable_gray_world', ''),
                 bool(settings.CLAHE_ENABLE_GRAY_WORLD),
+            ),
+            'clahe_fast': self._to_bool(
+                cfg_map.get('clahe_fast', ''),
+                bool(settings.CLAHE_FAST),
+            ),
+            'clahe_after_letterbox': self._to_bool(
+                cfg_map.get('clahe_after_letterbox', ''),
+                bool(settings.CLAHE_AFTER_LETTERBOX),
+            ),
+            'clahe_letterbox_scale': max(
+                1.0,
+                min(
+                    2.0,
+                    self._to_float(
+                        cfg_map.get('clahe_letterbox_scale', ''),
+                        float(settings.CLAHE_LETTERBOX_SCALE),
+                    ),
+                ),
+            ),
+            'detect_scale': max(
+                0.1,
+                min(
+                    1.0,
+                    self._to_float(
+                        cfg_map.get('detect_scale', ''),
+                        float(settings.DETECT_SCALE),
+                    ),
+                ),
+            ),
+            'crop_pad_ratio': max(
+                0.0,
+                min(
+                    0.5,
+                    self._to_float(
+                        cfg_map.get('crop_pad_ratio', ''),
+                        float(settings.CROP_PAD_RATIO),
+                    ),
+                ),
             ),
             'fused_frame_max_width': max(
                 320,
@@ -858,6 +899,21 @@ class PipelineService:
             )
             if cam > 0:
                 self._media_collector.update_latest_single(tid, cam, frame, ts)
+
+    def frame_stats_payload(self) -> dict[str, Any]:
+        """Số frame đã xử lý + fps theo camera (khoá chuỗi để JSON hoá được)."""
+        stats = getattr(self, '_frame_stats', None)
+        if stats is None:
+            return {'frames_processed': {}, 'fps_per_camera': {}}
+        return {
+            'frames_processed': {str(key): int(value) for key, value in stats.totals().items()},
+            'fps_per_camera': {
+                str(key): round(float(value), 2) for key, value in stats.snapshot().items()
+            },
+            'process_ms_per_frame': {
+                str(key): round(float(value), 1) for key, value in stats.ms_snapshot().items()
+            },
+        }
 
     def _enqueue_media_sample(
         self,
@@ -1719,6 +1775,10 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
+        # Chế độ 1 camera cổ điển chạy qua YoloWorkerThread — đường đó không thu nhỏ frame
+        # nên báo đúng là 1.0 dù cấu hình có đặt detect_scale.
+        self._active_detect_scale = 1.0
+        self._frame_stats.reset()
         self._apply_rtsp_decode_config(runtime_cfg)
 
         # Load detector if not loaded
@@ -2156,6 +2216,11 @@ class PipelineService:
                 clahe_clip_limit=runtime_cfg['clahe_clip_limit'],
                 clahe_tile_size=runtime_cfg['clahe_tile_size'],
                 clahe_enable_gray_world=runtime_cfg['clahe_enable_gray_world'],
+                clahe_fast=runtime_cfg['clahe_fast'],
+                clahe_after_letterbox=runtime_cfg['clahe_after_letterbox'],
+                clahe_letterbox_scale=runtime_cfg['clahe_letterbox_scale'],
+                detect_scale=runtime_cfg['detect_scale'],
+                crop_pad_ratio=runtime_cfg['crop_pad_ratio'],
                 edge_zone_ratio=runtime_cfg['edge_zone_ratio'],
                 enable_visual_id=visual_enabled,
                 visual_interval_sec=runtime_cfg['visual_id_interval_sec'],
@@ -2193,6 +2258,7 @@ class PipelineService:
                     training_snapshot_collector=training_snapshot_collector,
                     rule_engine=get_rule_engine(),
                     ship_id_catalog=self._ship_id_catalog,
+                    frame_stats=self._frame_stats,
                 )
             )
 
@@ -2243,6 +2309,8 @@ class PipelineService:
         self._reset_runtime_queues()
         pipeline_preview.clear()
         runtime_cfg = self._load_runtime_config()
+        self._active_detect_scale = float(runtime_cfg['detect_scale'])
+        self._frame_stats.reset()
         self._apply_rtsp_decode_config(runtime_cfg)
 
         # Pre-warm GStreamer codec probe cache so per-camera pipelines open
@@ -2437,6 +2505,11 @@ class PipelineService:
     @property
     def gpu_status(self) -> dict[str, Any] | None:
         return self._gpu_status
+
+    @property
+    def active_detect_scale(self) -> float:
+        """Tỉ lệ frame đưa vào detector đang chạy (1.0 = nguyên frame)."""
+        return float(getattr(self, '_active_detect_scale', settings.DETECT_SCALE))
 
     def test_video_sync(
         self,

@@ -67,10 +67,38 @@ export type VesselVisualReference = {
   };
 };
 
+/**
+ * Ba bộ lọc của `/vessels/` — đúng ba tham số endpoint có
+ * (`classification`, `q`, `active_only`). Trang tàu còn ô "Loại tàu" và khoảng
+ * ngày không có tham số tương ứng phía server nên vẫn lọc trên trang hiện tại
+ * (xem `VesselsView`).
+ */
+export type VesselFilters = {
+  /** Tab phân loại đang mở; `undefined` = mọi phân loại. */
+  classification?: VesselClassification;
+  /** Từ khóa — server khớp chứa trên mã tàu / tên / chủ tàu / số đăng kiểm. */
+  q?: string;
+  /** Chỉ lấy tàu đang hoạt động. */
+  activeOnly?: boolean;
+};
+
+export type VesselPageRequest = {
+  skip: number;
+  limit: number;
+  filters: VesselFilters;
+};
+
+/** Bộ đếm tàu mỗi phân loại cho badge trên tab (đọc `X-Total-Count`). */
+export type VesselClassificationCounts = Record<'spot' | 'monthly' | 'unclassified', number>;
+
 export const vesselsApi = {
+  /**
+   * Danh mục tàu (dropdown chọn tàu, bộ lọc dùng chung). Mặc định lấy tới trần
+   * danh mục 1000 để không âm thầm mất tàu khi vượt mặc định 100 của server.
+   */
   getVessels: async (
     skip: number = 0,
-    limit: number = 100,
+    limit: number = 1000,
     activeOnly: boolean = false,
     classification?: VesselClassification,
   ): Promise<VesselRead[]> => {
@@ -81,6 +109,42 @@ export const vesselsApi = {
     });
     if (classification) params.set('classification', classification);
     return httpClient.get<VesselRead[]>(`/vessels/?${params.toString()}`);
+  },
+  /** Một trang tàu: `skip`/`limit` + ba bộ lọc chạy ở SQL phía server. */
+  getVesselsPage: async (
+    request: VesselPageRequest,
+  ): Promise<{ items: VesselRead[]; total: number }> => {
+    const { skip, limit, filters } = request;
+    return httpClient.getPaged<VesselRead>('/vessels/', {
+      skip,
+      limit,
+      active_only: filters.activeOnly === true,
+      classification: filters.classification,
+      q: filters.q || undefined,
+    });
+  },
+  /**
+   * Số tàu mỗi phân loại cho badge trên tab. Mỗi phân loại một request
+   * `limit=1` rồi đọc `X-Total-Count` — rẻ hơn nhiều so với nạp cả bảng như
+   * trước, và vẫn đúng khi danh sách đã phân trang.
+   */
+  getClassificationCounts: async (): Promise<VesselClassificationCounts> => {
+    const classifications = ['spot', 'monthly', 'unclassified'] as const;
+    const pages = await Promise.all(
+      classifications.map((classification) =>
+        httpClient.getPaged<VesselRead>('/vessels/', {
+          skip: 0,
+          limit: 1,
+          active_only: false,
+          classification,
+        }),
+      ),
+    );
+    return {
+      spot: pages[0].total,
+      monthly: pages[1].total,
+      unclassified: pages[2].total,
+    };
   },
   getVisualReferenceCounts: async (): Promise<{ counts: Record<string, number> }> => {
     return httpClient.get<{ counts: Record<string, number> }>('/vessels/visual-reference-counts');
@@ -122,8 +186,9 @@ export const vesselsApi = {
   deleteVesselReferenceImage: async (id: string, pointId: string): Promise<void> => {
     return httpClient.delete(`/vessels/${id}/visual-enroll/${pointId}`);
   },
+  /** Danh mục loại tàu — luôn xin tường minh tới trần danh mục 1000. */
   getVesselTypes: async (): Promise<VesselTypeRead[]> => {
-    return httpClient.get<VesselTypeRead[]>('/vessel-types/');
+    return httpClient.get<VesselTypeRead[]>('/vessel-types/?skip=0&limit=1000');
   },
   getAssignableVessels: async (): Promise<AssignableVessel[]> => {
     return httpClient.get<AssignableVessel[]>('/vessel-types/assignable-vessels');

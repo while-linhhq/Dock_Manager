@@ -4,17 +4,20 @@ import { cn } from '../../../utils/cn';
 import { buildPipelinePreviewWsUrl } from '../../../services/pipeline-preview-ws';
 import type { PipelineStatus } from '../services/dashboardApi';
 import type {
+  DashboardDetectionAnalytics,
   DashboardPeriod,
   DashboardStats,
   DashboardSummary,
-  DetectionRead,
 } from '../../../types/api.types';
 import { DashboardAiAnalyticsCharts } from './DashboardAiAnalyticsCharts';
 type AiPanelTab = 'live' | 'analytics';
 
 export type DashboardAiFeedPanelProps = {
   pipelineStatus: PipelineStatus | null;
-  detections: DetectionRead[];
+  /** Số tổng hợp của bốn widget phân tích (API tổng hợp, không đếm ở client). */
+  analytics: DashboardDetectionAnalytics | null;
+  /** Lỗi riêng của API tổng hợp bốn widget — hiện băng báo lỗi trong tab «Phân tích dữ liệu». */
+  analyticsError: string | null;
   stats: DashboardStats | null;
   summary: DashboardSummary | null;
   summaryPeriod: DashboardPeriod;
@@ -24,7 +27,8 @@ export type DashboardAiFeedPanelProps = {
 
 export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
   pipelineStatus,
-  detections,
+  analytics,
+  analyticsError,
   stats,
   summary,
   summaryPeriod,
@@ -440,7 +444,8 @@ export const DashboardAiFeedPanel: React.FC<DashboardAiFeedPanelProps> = ({
         </>
       ) : (
         <DashboardAiAnalyticsCharts
-          detections={detections}
+          analytics={analytics}
+          analyticsError={analyticsError}
           stats={stats}
           summary={summary}
           summaryPeriod={summaryPeriod}

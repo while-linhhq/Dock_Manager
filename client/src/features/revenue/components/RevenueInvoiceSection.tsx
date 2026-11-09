@@ -1,9 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   Clock,
   Eye,
   Loader2,
@@ -14,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { DetectionCompareModal } from '../../../components/DetectionCompareModal/DetectionCompareModal';
+import { DataPagination } from '../../../components/DataPagination';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
@@ -40,8 +39,15 @@ import {
   renderInvoiceRefFeesCell,
 } from './revenue-invoice-display';
 import { InvoiceDiscountStatusIcon } from './InvoiceDiscountStatusIcon';
+import { PageScopeNotice } from './PageScopeNotice';
 import { SortableTh } from '../../../components/SortableTh/SortableTh';
-import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
+import {
+  useTableSort,
+  type SortAccessors,
+  type SortDirection,
+  type SortState,
+} from '../../../hooks/useTableSort';
+import { isInvoiceSortKey, type InvoiceSort } from '../services/revenueApi';
 
 const invTh =
   'px-2.5 py-2 text-[11px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap';
@@ -74,13 +80,38 @@ function getInvoiceShipLabel(inv: InvoiceRead, vessels: VesselRead[]): string {
   return vessel?.ship_id ?? '—';
 }
 
+/**
+ * Mặc định của bảng: không cột nào được chọn nên KHÔNG gửi `sort`/`order` — server
+ * trả về đúng thứ tự mặc định `time desc` mà bảng vẫn hiển thị từ trước tới nay
+ * (`created_at desc` ở tab chờ thanh toán / đã thanh toán, `deleted_at desc` ở tab
+ * đã xoá, mỗi thứ tự đều có tiebreaker `id desc`).
+ */
+const INITIAL_INV_SORT: SortState = { key: null, direction: 'asc' };
+
+/**
+ * `useTableSort` ở đây CHỈ giữ trạng thái mũi tên trên tiêu đề: thứ tự của trang do
+ * server quyết định nên hook không được sắp lại trang tại chỗ. Truyền mảng rỗng và
+ * không accessor nào để `sortRows` trả về ngay — trước đây memo sort chạy lại MỖI
+ * render (vì `accessors` là object literal mới) rồi kết quả bị bỏ đi.
+ */
+const NO_INV_SORT_ACCESSORS: SortAccessors<InvoiceRead> = {};
+
 export type RevenueInvoiceSectionProps = {
   isAutoInvoiceTab: boolean;
   invoiceSubTab: InvoiceSubTab;
   onInvoiceSubTab: (t: InvoiceSubTab) => void;
-  filteredInvoices: InvoiceRead[];
+  /** Đúng MỘT trang hoá đơn lấy từ server (không phải toàn bộ tập kết quả). */
   invoices: InvoiceRead[];
+  /** Phân trang phía server — state do `usePagedQuery` ở RevenueView giữ. */
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  /** Đổi cột sắp xếp → server nạp lại trang 1 với `sort`/`order` mới. */
+  onSortChange: (sort: InvoiceSort) => void;
   isLoading: boolean;
+  error: string | null;
   invQ: string;
   setInvQ: (v: string) => void;
   invMinBerthMinutes: string;
@@ -117,9 +148,15 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   isAutoInvoiceTab,
   invoiceSubTab,
   onInvoiceSubTab,
-  filteredInvoices,
   invoices,
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  onSortChange,
   isLoading,
+  error,
   invQ,
   setInvQ,
   invMinBerthMinutes,
@@ -160,54 +197,37 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
   const discountSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const noteSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
-  const [pageSize, setPageSize] = useState<number>(50);
-  const [page, setPage] = useState(1);
-
-  const totalRows = filteredInvoices.length;
-  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-
-  // Kẹp trang hiện tại về khoảng hợp lệ khi tập kết quả / kích thước trang thay đổi.
-  useEffect(() => {
-    // Pagination state must follow filtered dataset bounds.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPage((prev) => Math.min(Math.max(1, prev), totalPages));
-  }, [totalPages]);
-
-  // Về trang 1 khi đổi bộ lọc, sub-tab, page size, hoặc tổng số dòng.
-  useEffect(() => {
-    // Filter/page-size changes must return table to first page.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPage(1);
-  }, [invFilterCount, invoiceSubTab, pageSize, totalRows]);
-
-  // Sắp xếp client-side TOÀN BỘ tập đã lọc rồi mới cắt trang → giữ nguyên phân trang hiện có.
-  const sortAccessors: SortAccessors<InvoiceRead> = {
-    invoice_number: (inv) => inv.invoice_number ?? '',
-    ship_order: (inv) =>
-      isAutoInvoiceTab
-        ? (inv.vessel_ship_id ?? '')
-        : inv.order_id != null && inv.order_id !== ''
-          ? String(inv.order_id)
-          : '',
-    created_at: (inv) => inv.created_at ?? '',
-    deleted_at: (inv) => inv.deleted_at ?? '',
-    payment_status: (inv) => normInvoicePaymentStatus(inv.payment_status),
-    total_amount: (inv) => Number(inv.total_amount ?? 0),
-  };
-  const { sorted: sortedInvoices, sort, toggle } = useTableSort(
-    filteredInvoices,
-    sortAccessors,
+  // Sắp xếp do SERVER thực hiện: `useTableSort` chỉ giữ trạng thái mũi tên trên tiêu
+  // đề. Không truyền dòng/accessor nào để hook không sắp lại trang nữa (`sorted`
+  // không dùng — thứ tự trong trang là của server, không sắp lại tại chỗ).
+  const { sort, setSort } = useTableSort<InvoiceRead>(
+    [],
+    NO_INV_SORT_ACCESSORS,
+    INITIAL_INV_SORT,
   );
+
+  /**
+   * Đổi cột/chiều: cập nhật mũi tên trên tiêu đề rồi báo server nạp lại trang 1 với
+   * `sort`/`order` mới (khóa cột trùng whitelist của API hoá đơn).
+   */
+  const handleSortChange = (key: string) => {
+    if (!isInvoiceSortKey(key)) {
+      return;
+    }
+    const direction: SortDirection =
+      sort.key === key && sort.direction === 'asc' ? 'desc' : 'asc';
+    setSort({ key, direction });
+    onSortChange({ key, order: direction });
+  };
 
   const pageStartIndex = (page - 1) * pageSize;
-  const pagedInvoices = useMemo(
-    () => sortedInvoices.slice(pageStartIndex, pageStartIndex + pageSize),
-    [sortedInvoices, pageStartIndex, pageSize],
-  );
 
-  const rangeFrom = totalRows === 0 ? 0 : pageStartIndex + 1;
-  const rangeTo = Math.min(pageStartIndex + pageSize, totalRows);
+  /**
+   * Danh sách chỉ tải MỘT trang: khi tập khớp bộ lọc (`total`) lớn hơn số dòng đang
+   * hiển thị thì «Thanh toán tất cả» chỉ trả được các hoá đơn của trang này — nhãn
+   * nút phải nói rõ phạm vi thay vì ngụ ý toàn bộ tập lọc.
+   */
+  const isPageScoped = total > invoices.length;
 
   useEffect(() => {
     const discountTimers = discountSaveTimers.current;
@@ -507,18 +527,21 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
         </TableFilterPanel>
 
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-            Tab hiện tại:{' '}
-            <span className="font-semibold text-gray-700 dark:text-gray-200">{invoices.length}</span>{' '}
-            hóa đơn
-            {filteredInvoices.length !== invoices.length ? (
-              <>
-                {' '}
-                · Khớp filter:{' '}
-                <span className="font-semibold">{filteredInvoices.length}</span>
-              </>
-            ) : null}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+              Tab hiện tại:{' '}
+              <span className="font-semibold text-gray-700 dark:text-gray-200">{total}</span>{' '}
+              hóa đơn
+              {invFilterCount > 0 ? (
+                <>
+                  {' '}
+                  · Đang lọc:{' '}
+                  <span className="font-semibold">{invFilterCount}</span> bộ lọc
+                </>
+              ) : null}
+            </p>
+            {error && <p className="text-[12px] normal-case text-red-500">{error}</p>}
+          </div>
           <Button
             type="button"
             variant="outline"
@@ -536,31 +559,36 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
         </div>
 
         {invoiceSubTab === 'pending' && (
-          <div
-            className={cn(
-              'flex flex-wrap items-center gap-3',
-              !isAutoInvoiceTab ? 'justify-between' : 'justify-start',
-            )}
-          >
-            <Button
-              type="button"
-              onClick={onOpenBulkPayment}
-              disabled={payableCount === 0 || isLoading}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+          <div className="space-y-2">
+            <div
+              className={cn(
+                'flex flex-wrap items-center gap-3',
+                !isAutoInvoiceTab ? 'justify-between' : 'justify-start',
+              )}
             >
-              <Banknote className="w-4 h-4 mr-2" />
-              Thanh toán tất cả ({payableCount}) — {formatMoney(bulkPaymentTotal)} ₫
-            </Button>
-            {!isAutoInvoiceTab && (
               <Button
                 type="button"
-                onClick={onOpenCreateInvoice}
-                className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
+                onClick={onOpenBulkPayment}
+                disabled={payableCount === 0 || isLoading}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-600/20 disabled:opacity-50"
               >
-                <Plus className="w-4 h-4 mr-2" />
-                Tạo Hóa Đơn
+                <Banknote className="w-4 h-4 mr-2" />
+                {isPageScoped
+                  ? `Thanh toán ${payableCount} hoá đơn đang hiển thị / tổng ${total} khớp bộ lọc — ${formatMoney(bulkPaymentTotal)} ₫`
+                  : `Thanh toán tất cả (${payableCount}) — ${formatMoney(bulkPaymentTotal)} ₫`}
               </Button>
-            )}
+              {!isAutoInvoiceTab && (
+                <Button
+                  type="button"
+                  onClick={onOpenCreateInvoice}
+                  className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Tạo Hóa Đơn
+                </Button>
+              )}
+            </div>
+            <PageScopeNotice shownCount={payableCount} filteredTotal={total} action="payment" />
           </div>
         )}
       </div>
@@ -571,22 +599,22 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
             <thead>
               <tr className={cn(dt.headRow, 'text-[11px] tracking-normal normal-case')}>
                 <th className={cn(invTh, 'w-10 text-center')}>#</th>
-                <SortableTh sortKey="invoice_number" sort={sort} onSort={toggle} className={invThSort}>
+                <SortableTh sortKey="invoice_number" sort={sort} onSort={handleSortChange} className={invThSort}>
                   Số HĐ
                 </SortableTh>
-                <SortableTh sortKey="ship_order" sort={sort} onSort={toggle} className={invThSort}>
+                <SortableTh sortKey="ship_order" sort={sort} onSort={handleSortChange} className={invThSort}>
                   {isAutoInvoiceTab ? 'Mã tàu' : 'Mã đơn'}
                 </SortableTh>
                 {isAutoInvoiceTab && <th className={invTh}>Neo đậu</th>}
-                <SortableTh sortKey="created_at" sort={sort} onSort={toggle} className={invThSort}>
+                <SortableTh sortKey="created_at" sort={sort} onSort={handleSortChange} className={invThSort}>
                   Ngày tạo
                 </SortableTh>
                 {invoiceSubTab === 'trash' && (
-                  <SortableTh sortKey="deleted_at" sort={sort} onSort={toggle} className={invThSort}>
+                  <SortableTh sortKey="deleted_at" sort={sort} onSort={handleSortChange} className={invThSort}>
                     Ngày xóa
                   </SortableTh>
                 )}
-                <SortableTh sortKey="payment_status" sort={sort} onSort={toggle} className={invThSort}>
+                <SortableTh sortKey="payment_status" sort={sort} onSort={handleSortChange} className={invThSort}>
                   Trạng thái
                 </SortableTh>
                 <th className={invTh}>Phí</th>
@@ -594,7 +622,7 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                 <SortableTh
                   sortKey="total_amount"
                   sort={sort}
-                  onSort={toggle}
+                  onSort={handleSortChange}
                   align="right"
                   className={cn(invThSort, 'text-right min-w-[8.5rem]')}
                 >
@@ -611,8 +639,8 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                     <Loader2 className="w-7 h-7 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
-              ) : pagedInvoices.length > 0 ? (
-                pagedInvoices.map((inv: InvoiceRead, rowIndex) => {
+              ) : invoices.length > 0 ? (
+                invoices.map((inv: InvoiceRead, rowIndex) => {
                   const payKey = normInvoicePaymentStatus(inv.payment_status);
                   const berthDuration = formatBerthDuration(inv);
                   const globalIndex = pageStartIndex + rowIndex;
@@ -836,19 +864,21 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
                     colSpan={invoiceTableColSpan}
                     className={cn(invTd, 'py-10 text-center text-sm text-gray-500 dark:text-gray-400')}
                   >
-                    {invoices.length === 0
-                      ? invoiceSubTab === 'pending'
-                        ? isAutoInvoiceTab
-                          ? 'Chưa có hóa đơn tự động chờ thanh toán'
-                          : 'Không có hóa đơn chờ thanh toán'
-                        : invoiceSubTab === 'paid'
+                    {total > 0
+                      ? 'Trang này không có hóa đơn'
+                      : invFilterCount > 0
+                        ? 'Không có hóa đơn khớp bộ lọc'
+                        : invoiceSubTab === 'pending'
                           ? isAutoInvoiceTab
-                            ? 'Chưa có hóa đơn tự động đã thanh toán'
-                            : 'Không có hóa đơn đã thanh toán'
-                          : isAutoInvoiceTab
-                            ? 'Chưa có hóa đơn tự động đã xóa'
-                            : 'Chưa có hóa đơn đã xóa'
-                      : 'Không có hóa đơn khớp bộ lọc'}
+                            ? 'Chưa có hóa đơn tự động chờ thanh toán'
+                            : 'Không có hóa đơn chờ thanh toán'
+                          : invoiceSubTab === 'paid'
+                            ? isAutoInvoiceTab
+                              ? 'Chưa có hóa đơn tự động đã thanh toán'
+                              : 'Không có hóa đơn đã thanh toán'
+                            : isAutoInvoiceTab
+                              ? 'Chưa có hóa đơn tự động đã xóa'
+                              : 'Chưa có hóa đơn đã xóa'}
                   </td>
                 </tr>
               )}
@@ -856,53 +886,13 @@ export const RevenueInvoiceSection: React.FC<RevenueInvoiceSectionProps> = ({
           </table>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-gray-100 dark:border-white/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            <span>
-              {totalRows === 0
-                ? 'Không có hóa đơn'
-                : `Hiển thị ${rangeFrom}–${rangeTo} / ${totalRows} hóa đơn`}
-            </span>
-            <label className="flex items-center gap-1.5 normal-case">
-              <span>Mỗi trang</span>
-              <select
-                value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
-                className="rounded-md border border-gray-200 bg-transparent px-1.5 py-1 text-xs dark:border-white/10"
-              >
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Trước
-            </button>
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Trang {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              Sau
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
+        <DataPagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
 
       <DetectionCompareModal

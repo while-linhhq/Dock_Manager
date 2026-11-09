@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -12,6 +12,12 @@ from app.schemas.vessel_type import (
 )
 from app.repositories.vessel_type_repository import vessel_type_repo
 from app.services.ship_invoice_backfill_service import run_vessel_backfill_task
+from app.utils.pagination import (
+    DEFAULT_CATALOG_LIMIT,
+    MAX_CATALOG_LIMIT,
+    resolve_page,
+    set_total_header,
+)
 
 router = APIRouter()
 
@@ -63,8 +69,15 @@ def _sync_type_members(db: Session, type_id: int, member_vessel_ids: Optional[Li
 
 
 @router.get('/', response_model=List[VesselTypeRead])
-def list_vessel_types(db: Session = Depends(get_db)):
-    return vessel_type_repo.get_all(db)
+def list_vessel_types(
+    response: Response,
+    skip: int = 0,
+    limit: int = DEFAULT_CATALOG_LIMIT,
+    db: Session = Depends(get_db),
+):
+    skip, limit = resolve_page(skip, limit, max_limit=MAX_CATALOG_LIMIT)
+    set_total_header(response, vessel_type_repo.count_all(db))
+    return vessel_type_repo.get_all(db, skip=skip, limit=limit)
 
 
 @router.get('/assignable-vessels', response_model=List[VesselTypeMemberVessel])

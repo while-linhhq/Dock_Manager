@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { VesselClassification, VesselRead, VesselTypeRead } from '../../../types/api.types';
 import { vesselsApi } from '../services/vesselsApi';
 import { enrichVesselReferenceCounts } from '../services/enrichVesselReferenceCounts';
-import type { VesselCreate, VesselTypeCreate } from '../services/vesselsApi';
+import type { VesselCreate, VesselPageRequest, VesselTypeCreate } from '../services/vesselsApi';
 
 interface VesselState {
   vessels: VesselRead[];
@@ -15,6 +15,14 @@ interface VesselState {
     activeOnly?: boolean,
     classification?: VesselClassification,
   ) => Promise<void>;
+  /**
+   * Một trang tàu cho `usePagedQuery` — KHÔNG ghi vào danh mục `vessels` (danh
+   * mục đó phục vụ dropdown chọn tàu ở trang đơn hàng / hoá đơn, ghi đè bằng
+   * một trang sẽ làm mất tàu khỏi dropdown).
+   */
+  fetchVesselsPage: (
+    request: VesselPageRequest,
+  ) => Promise<{ items: VesselRead[]; total: number }>;
   fetchVesselTypes: () => Promise<void>;
   upsertVessel: (id: string | null, data: VesselCreate) => Promise<void>;
   upsertVesselType: (id: string | null, data: VesselTypeCreate) => Promise<void>;
@@ -36,6 +44,13 @@ export const useVesselStore = create<VesselState>((set, get) => ({
     } catch (err: any) {
       set({ error: err.message || 'Failed to fetch vessels', isLoading: false });
     }
+  },
+  fetchVesselsPage: async (request) => {
+    const page = await vesselsApi.getVesselsPage(request);
+    return {
+      items: await enrichVesselReferenceCounts(page.items),
+      total: page.total,
+    };
   },
   fetchVesselTypes: async () => {
     set({ isLoading: true, error: null });

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -19,6 +20,8 @@ from app.services.ai.boundary_crossing import (
 )
 from app.services.ai.visual_ship_matching import aggregate_visual_hits
 from app.services.ai.clahe_preprocessor import ClahePreprocessConfig, preprocess_frame_clahe
+from app.utils.ai.box_scale import pad_box, scale_boxes
+from app.utils.ai.letterbox import Letterbox, letterbox_frame, unletterbox_boxes
 from app.services.ai.cross_camera_reid import CrossCameraReIdManager
 from app.services.ai.detection_filter import (
     dedup_overlapping_boxes,
@@ -27,6 +30,7 @@ from app.services.ai.detection_filter import (
 )
 from app.services.ai.embedding_extractor import EmbeddingExtractor
 from app.services.ai.frame_reader import FrameReaderThread
+from app.services.ai.frame_stats import FrameStats
 from app.services.ai.multi_frame_reader import TimedFrame
 from app.services.ai.motion_classifier import MOTION_STATIC, MotionClassifier
 from app.services.ai.seam_anchor_color import extract_dominant_hsv
@@ -52,6 +56,12 @@ _COLOR_CONFIRMED = (0, 255, 0)
 _COLOR_LOST = (0, 165, 255)
 
 
+logger = logging.getLogger(__name__)
+
+# Nhịp ghi log fps/frame mỗi camera (giây) — rẻ vì chỉ đọc bộ đếm.
+FRAME_STATS_LOG_INTERVAL_SEC = 30.0
+
+
 @dataclass(frozen=True)
 class PerCameraPipelineConfig:
     camera_id: int
@@ -73,6 +83,13 @@ class PerCameraPipelineConfig:
     clahe_tile_size: int
     clahe_enable_gray_world: bool
     edge_zone_ratio: float
+    clahe_fast: bool = True
+    detect_scale: float = 1.0
+    crop_pad_ratio: float = 0.05
+    #: Chạy CLAHE ở kích thước detector (letterbox trước) thay vì full-res.
+    clahe_after_letterbox: bool = True
+    #: Hệ số letterbox trước CLAHE (1.0 = đúng imgsz; 1.5 giữ đủ box, xem CLAHE_LETTERBOX_SCALE).
+    clahe_letterbox_scale: float = 1.5
     enable_visual_id: bool = False
     visual_interval_sec: float = 1.0
     visual_min_crop_area: int = 4096
@@ -114,6 +131,7 @@ class PerCameraPipeline(threading.Thread):
         training_snapshot_collector: TrainingSnapshotCollector | None = None,
         rule_engine=None,
         ship_id_catalog=None,
+        frame_stats: FrameStats | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.config = config
@@ -168,6 +186,7 @@ class PerCameraPipeline(threading.Thread):
             clip_limit=config.clahe_clip_limit,
             tile_grid_size=config.clahe_tile_size,
             enable_gray_world=config.clahe_enable_gray_world,
+            fast=config.clahe_fast,
         )
         self._shared_ocr_queue = shared_ocr_queue
         self._ocr_queue: queue.Queue | None = None
@@ -198,6 +217,13 @@ class PerCameraPipeline(threading.Thread):
                 )
         self._frame_count = 0
         self._fps_started_at: float | None = None
+        self._frame_stats: FrameStats | None = frame_stats
+        self._frame_stats_logged_at = 0.0
+        self._detect_scale = float(config.detect_scale or 1.0)
+        self._crop_pad_ratio = float(config.crop_pad_ratio or 0.0)
+        self._clahe_after_letterbox = bool(config.clahe_after_letterbox)
+        self._clahe_letterbox_scale = max(1.0, min(2.0, float(config.clahe_letterbox_scale or 1.0)))
+        self._detector_imgsz = int(getattr(self._detector, 'imgsz', 0) or 640)
         self._last_ocr_ts = 0.0
         self._last_visual_ts = 0.0
         self._training_snapshot: TrainingSnapshotCollector | None = training_snapshot_collector
@@ -271,16 +297,84 @@ class PerCameraPipeline(threading.Thread):
                 if self._fps_started_at is None:
                     self._fps_started_at = time.time()
                 fps_est = self._frame_count / max(1e-6, time.time() - self._fps_started_at)
+                started = time.perf_counter()
                 self._process_frame(raw_frame, fps_est, captured_mono=captured_mono)
+                self._record_frame_stats((time.perf_counter() - started) * 1000.0)
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).exception(
+            logger.exception(
                 'PerCameraPipeline crashed for camera_id=%s',
                 self.config.camera_id,
             )
         finally:
             self._stop_event.set()
+
+    def _detect_frame(self, raw_frame: np.ndarray) -> np.ndarray:
+        """Frame đưa vào CLAHE + detector; `detect_scale=1.0` thì dùng nguyên frame gốc."""
+        if self._detect_scale == 1.0:
+            return raw_frame
+        return cv2.resize(
+            raw_frame,
+            None,
+            fx=self._detect_scale,
+            fy=self._detect_scale,
+            interpolation=cv2.INTER_AREA,
+        )
+
+    def _queue_boxes(
+        self,
+        tracks: list[TrackedBoat],
+        width: int,
+        height: int,
+    ) -> list[tuple[str, np.ndarray]]:
+        """Box đưa sang OCR/visual, khớp hệ toạ độ crop của embedding.
+
+        Khi `detect_scale < 1.0` box bị lệch vài px nên crop được nới thêm
+        `crop_pad_ratio` — nếu chỉ nới ở `_enrich_track` thì embedding trong pipeline
+        và embedding của visual worker sẽ khác nhau.
+        """
+        return [
+            (
+                track.track_id,
+                np.asarray(
+                    self._crop_box_for_track(track.box, width, height),
+                    dtype=np.float32,
+                ),
+            )
+            for track in tracks
+        ]
+
+    def _crop_box_for_track(
+        self,
+        box: Any,
+        width: int,
+        height: int,
+    ) -> tuple[int, int, int, int]:
+        """Box crop cho OCR/embedding; nới thêm khi detection chạy ở tỉ lệ nhỏ."""
+        if self._detect_scale != 1.0:
+            return pad_box(box, self._crop_pad_ratio, width, height)
+        return clamp_box(box, width, height)
+
+    def _record_frame_stats(self, duration_ms: float | None = None) -> None:
+        """Ghi nhận 1 frame (kèm ms xử lý) và log định kỳ."""
+        stats = self._frame_stats
+        if stats is None:
+            return
+        camera_id = int(self.config.camera_id)
+        stats.record(camera_id, duration_ms)
+        now = time.time()
+        if now - self._frame_stats_logged_at < FRAME_STATS_LOG_INTERVAL_SEC:
+            return
+        self._frame_stats_logged_at = now
+        fps = stats.fps(camera_id)
+        avg_ms = stats.avg_ms(camera_id)
+        logger.info(
+            'camera %s: %s fps · %s ms/frame · %s frame đã xử lý (trung bình từ lúc chạy %.2f fps)',
+            camera_id,
+            f'{fps:.1f}' if fps is not None else 'n/a',
+            f'{avg_ms:.1f}' if avg_ms is not None else 'n/a',
+            stats.totals().get(camera_id, 0),
+            self._frame_count / max(1e-6, now - (self._fps_started_at or now)),
+        )
 
     def join(self, timeout: float | None = None) -> None:
         if self._reader is not None:
@@ -299,9 +393,39 @@ class PerCameraPipeline(threading.Thread):
         *,
         captured_mono: float | None = None,
     ) -> None:
-        processed = preprocess_frame_clahe(raw_frame, self._clahe_config)
+        detect_frame = self._detect_frame(raw_frame)
+        letterbox: Letterbox | None = None
+        if self._clahe_after_letterbox:
+            # CLAHE ở đúng kích thước detector: resize nội dung trước, tiền xử lý ở đó,
+            # rồi mới pad viền — chi tiết CLAHE tạo ra không bị bước letterbox xoá đi.
+            letterbox_size = int(round(self._detector_imgsz * self._clahe_letterbox_scale))
+            letterbox = letterbox_frame(raw_frame, letterbox_size)
+            detect_content = preprocess_frame_clahe(letterbox.content, self._clahe_config)
+            processed = letterbox.padded(detect_content)
+        else:
+            processed = preprocess_frame_clahe(detect_frame, self._clahe_config)
         with self._detector_lock:
             boxes_list, det_confs = self._detector.predict_boxes(processed)
+        if letterbox is not None:
+            height, width = raw_frame.shape[:2]
+            boxes_list = [
+                [float(value) for value in box]
+                for box in unletterbox_boxes(
+                    boxes_list,
+                    letterbox.scale,
+                    letterbox.pad_x,
+                    letterbox.pad_y,
+                    width=width,
+                    height=height,
+                )
+            ]
+        elif self._detect_scale != 1.0 and detect_frame.shape[1]:
+            # Điểm quy đổi DUY NHẤT từ hệ toạ độ detect về hệ full-res. Dùng tỉ lệ thật
+            # (cv2 làm tròn khi cạnh lẻ) thay vì hệ số danh nghĩa để mép ảnh không lệch px.
+            ratio = raw_frame.shape[1] / detect_frame.shape[1]
+            boxes_list = [
+                [float(value) for value in box] for box in scale_boxes(boxes_list, ratio)
+            ]
         boxes_list, det_confs = filter_boxes_by_min_size(
             boxes_list,
             det_confs,
@@ -399,81 +523,78 @@ class PerCameraPipeline(threading.Thread):
                 track.berth_zone_overlap = None
                 track.berth_zone_threshold = None
 
-        annotated = raw_frame.copy()
-        draw_berth_state_bbox_overlays(annotated, tracked_boats)
-        for track in tracked_boats:
-            color = _color_for_track(track)
-            box = track.box
-            cv2.rectangle(
-                annotated,
-                (int(box[0]), int(box[1])),
-                (int(box[2]), int(box[3])),
-                color,
-                2,
+        if self._needs_overlay_frame(tracked_boats):
+            annotated = raw_frame.copy()
+            draw_berth_state_bbox_overlays(annotated, tracked_boats)
+            for track in tracked_boats:
+                color = _color_for_track(track)
+                box = track.box
+                cv2.rectangle(
+                    annotated,
+                    (int(box[0]), int(box[1])),
+                    (int(box[2]), int(box[3])),
+                    color,
+                    2,
+                )
+            overlay_scale = (
+                self.config.resize_scale
+                if self.config.resize_scale != 1.0
+                else 1.0
             )
-        overlay_scale = (
-            self.config.resize_scale
-            if self.config.resize_scale != 1.0
-            else 1.0
-        )
-        overlay_zone_threshold = resolve_bbox_cross_threshold(self._boundary_lines_payload)
-        overlay_frame = draw_ship_detection_overlay(
-            annotated,
-            tracked_boats,
-            self._ocr_cache,
-            self._ocr_lock,
-            self.config.ocr_label_ttl_sec,
-            fps_est,
-            overlay_scale,
-            frame_captured_mono=captured_mono,
-            camera_id=int(self.config.camera_id),
-            zone_threshold=overlay_zone_threshold,
-        )
-        overlay_cfg = BoundaryConfig.for_overlay(self._boundary_lines_payload)
-        if overlay_cfg is not None:
-            from app.utils.ai.draw_boundary import draw_boundary_lines
+            overlay_zone_threshold = resolve_bbox_cross_threshold(self._boundary_lines_payload)
+            overlay_frame = draw_ship_detection_overlay(
+                annotated,
+                tracked_boats,
+                self._ocr_cache,
+                self._ocr_lock,
+                self.config.ocr_label_ttl_sec,
+                fps_est,
+                overlay_scale,
+                frame_captured_mono=captured_mono,
+                camera_id=int(self.config.camera_id),
+                zone_threshold=overlay_zone_threshold,
+            )
+            overlay_cfg = BoundaryConfig.for_overlay(self._boundary_lines_payload)
+            if overlay_cfg is not None:
+                from app.utils.ai.draw_boundary import draw_boundary_lines
 
-            overlay_frame = draw_boundary_lines(overlay_frame, overlay_cfg)
-        if self._on_overlay_media_sample is not None:
-            try:
-                self._on_overlay_media_sample(
-                    int(self.config.camera_id),
-                    overlay_frame,
-                    tracked_boats,
-                )
-            except Exception:
-                import logging
-
-                logging.getLogger(__name__).exception(
-                    'on_overlay_media_sample failed for camera_id=%s',
-                    self.config.camera_id,
-                )
-        if self._on_boundary_media_sample is not None:
-            try:
-                self._on_boundary_media_sample(
-                    int(self.config.camera_id),
-                    overlay_frame,
-                    tracked_boats,
-                    boundary_crossings,
-                )
-            except Exception:
-                import logging
-
-                logging.getLogger(__name__).exception(
-                    'on_boundary_media_sample failed for camera_id=%s',
-                    self.config.camera_id,
-                )
-        if self.config.enable_preview_stream:
-            pipeline_preview.push_bgr_frame(overlay_frame)
-        record_queues = (
-            self._video_queue is not None or self._single_camera_video_queue is not None
-        )
-        if record_queues:
-            item = (overlay_frame, tracked_boats)
-            if self._video_queue is not None:
-                put_queue_drop_oldest(self._video_queue, item)
-            if self._single_camera_video_queue is not None:
-                put_queue_drop_oldest(self._single_camera_video_queue, item)
+                overlay_frame = draw_boundary_lines(overlay_frame, overlay_cfg)
+            if self._on_overlay_media_sample is not None:
+                try:
+                    self._on_overlay_media_sample(
+                        int(self.config.camera_id),
+                        overlay_frame,
+                        tracked_boats,
+                    )
+                except Exception:
+                    logger.exception(
+                        'on_overlay_media_sample failed for camera_id=%s',
+                        self.config.camera_id,
+                    )
+            if self._on_boundary_media_sample is not None:
+                try:
+                    self._on_boundary_media_sample(
+                        int(self.config.camera_id),
+                        overlay_frame,
+                        tracked_boats,
+                        boundary_crossings,
+                    )
+                except Exception:
+                    logger.exception(
+                        'on_boundary_media_sample failed for camera_id=%s',
+                        self.config.camera_id,
+                    )
+            if self.config.enable_preview_stream:
+                pipeline_preview.push_bgr_frame(overlay_frame)
+            record_queues = (
+                self._video_queue is not None or self._single_camera_video_queue is not None
+            )
+            if record_queues:
+                item = (overlay_frame, tracked_boats)
+                if self._video_queue is not None:
+                    put_queue_drop_oldest(self._video_queue, item)
+                if self._single_camera_video_queue is not None:
+                    put_queue_drop_oldest(self._single_camera_video_queue, item)
 
         self._queue_ocr(raw_frame, tracked_boats)
         self._queue_visual(raw_frame, tracked_boats)
@@ -485,6 +606,23 @@ class PerCameraPipeline(threading.Thread):
                 if track.state
                 in (TrackState.TENTATIVE, TrackState.CONFIRMED, TrackState.LOST)
             ]
+
+    def _needs_overlay_frame(self, tracked_boats: list[TrackedBoat]) -> bool:
+        """Chỉ dựng overlay khi có consumer thật cần tới nó.
+
+        Preview stream và ghi video cần overlay mọi frame. Callback media chỉ dùng
+        overlay khi có track CONFIRMED (xem `PipelineService._enqueue_media_sample`:
+        không có track CONFIRMED thì job bị bỏ ngay).
+        """
+        if (
+            self.config.enable_preview_stream
+            or self._video_queue is not None
+            or self._single_camera_video_queue is not None
+        ):
+            return True
+        if self._on_overlay_media_sample is None and self._on_boundary_media_sample is None:
+            return False
+        return any(track.state == TrackState.CONFIRMED for track in tracked_boats)
 
     def _maybe_save_training_snapshots(
         self,
@@ -514,7 +652,7 @@ class PerCameraPipeline(threading.Thread):
             )
             return
         height, width = frame.shape[:2]
-        x1, y1, x2, y2 = clamp_box(track.box, width, height)
+        x1, y1, x2, y2 = self._crop_box_for_track(track.box, width, height)
         crop = frame[y1:y2, x1:x2]
         embedding = self._embedding_extractor.extract(crop)
         motion_state = self._motion_classifier.classify(frame, track)
@@ -554,9 +692,7 @@ class PerCameraPipeline(threading.Thread):
                 entry['time'] = time.time()
                 self._ocr_cache[ck] = entry
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).exception(
+            logger.exception(
                 'reid diagnose_track failed for camera_id=%s track_id=%s',
                 self.config.camera_id,
                 track.track_id,
@@ -599,7 +735,8 @@ class PerCameraPipeline(threading.Thread):
         if not confirmed:
             return
 
-        items = [(track.track_id, track.box.copy()) for track in confirmed]
+        height, width = frame.shape[:2]
+        items = self._queue_boxes(confirmed, width, height)
         if self._shared_ocr_queue is not None:
             put_queue_drop_oldest(
                 self._ocr_queue,
@@ -632,7 +769,8 @@ class PerCameraPipeline(threading.Thread):
         )
         if not confirmed:
             return
-        items = [(track.track_id, track.box.copy()) for track in confirmed]
+        height, width = frame.shape[:2]
+        items = self._queue_boxes(confirmed, width, height)
         put_queue_drop_oldest(
             self._visual_queue,
             VisualQueueItem(

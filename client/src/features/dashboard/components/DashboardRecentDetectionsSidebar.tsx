@@ -1,11 +1,9 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { Loader2, ScanSearch } from 'lucide-react';
 import type { DetectionRead } from '../../../types/api.types';
 import { cn } from '../../../utils/cn';
 import { formatDateTimeVN } from '../../../utils/date-time';
 import { getDetectionDisplayTimeIso, getDetectionShipLabel } from '../../../utils/detection-display';
-
-const SIDEBAR_LIMIT = 18;
 
 function formatShortDateTime(iso: string | null): string {
   return formatDateTimeVN(iso, {
@@ -18,6 +16,10 @@ function formatShortDateTime(iso: string | null): string {
 }
 
 export type DashboardRecentDetectionsSidebarProps = {
+  /**
+   * Cửa sổ mới nhất do store tải (`DASHBOARD_DETECTIONS_LIMIT` = 18 dòng, xem
+   * `services/dashboardApi`) — sidebar vẽ đúng mảng này, không cắt lại.
+   */
   detections: DetectionRead[];
   isLoading: boolean;
 };
@@ -26,11 +28,6 @@ export const DashboardRecentDetectionsSidebar: React.FC<DashboardRecentDetection
   detections,
   isLoading,
 }) => {
-  const rows = useMemo(
-    () => detections.slice(0, SIDEBAR_LIMIT),
-    [detections],
-  );
-
   return (
     <div className="bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl p-5 shadow-xl space-y-3">
       <div className="flex items-start gap-2">
@@ -40,7 +37,7 @@ export const DashboardRecentDetectionsSidebar: React.FC<DashboardRecentDetection
             Nhận diện gần đây
           </h4>
           <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-            {rows.length}/{detections.length} mục hiển thị (mới nhất).
+            {detections.length} mục hiển thị (mới nhất).
           </p>
         </div>
       </div>
@@ -49,7 +46,7 @@ export const DashboardRecentDetectionsSidebar: React.FC<DashboardRecentDetection
         <div className="flex items-center justify-center py-10">
           <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
         </div>
-      ) : rows.length === 0 ? (
+      ) : detections.length === 0 ? (
         <p className="py-8 text-center text-[10px] font-mono uppercase tracking-wide text-gray-500">
           Không có dữ liệu nhận diện
         </p>
@@ -58,7 +55,7 @@ export const DashboardRecentDetectionsSidebar: React.FC<DashboardRecentDetection
           className="max-h-[min(22rem,55vh)] overflow-y-auto divide-y divide-gray-100 dark:divide-white/5 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/2"
           aria-label="Danh sách nhận diện gần đây"
         >
-          {rows.map((row) => {
+          {detections.map((row) => {
             const iso = getDetectionDisplayTimeIso(row);
             const ship = getDetectionShipLabel(row);
             const accepted = row.is_accepted === true;

@@ -1,6 +1,7 @@
+from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -28,6 +29,8 @@ from app.services.invoice_snapshot_service import is_invoice_financially_locked
 from app.services.bulk_sepay_service import create_bulk_sepay_session, sync_bulk_sepay_session
 from app.services.invoice_payment_service import bulk_record_payments
 from app.services.sepay_sync_service import sync_sepay_payments
+from app.utils.datetimes import as_utc
+from app.utils.pagination import resolve_page, set_total_header
 
 router = APIRouter()
 
@@ -48,8 +51,9 @@ def _invoice_to_read(db: Session, inv) -> InvoiceRead:
 
 @router.get('/', response_model=List[InvoiceRead])
 def list_invoices(
+    response: Response,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 50,
     payment_status: Optional[str] = None,
     awaiting_payment: Optional[bool] = Query(None, description='Mọi trạng thái trừ PAID (chờ / một phần / quá hạn / hủy…)'),
     deleted_only: bool = Query(False, description='Chỉ hóa đơn đã xóa mềm'),
@@ -61,33 +65,73 @@ def list_invoices(
         None,
         description='Loại trừ nguồn (VD: AI để tab hóa đơn thủ công/đơn hàng)',
     ),
+    q: Optional[str] = Query(
+        None,
+        description='Tìm không phân biệt hoa thường: số hoá đơn, order/vessel/detection id, ship_id, nhãn người tạo',
+    ),
+    vessel_id: Optional[int] = None,
+    vessel_type_id: Optional[int] = None,
+    created_from: Optional[datetime] = Query(None, description='Instant UTC (ISO-8601) so với created_at'),
+    created_to: Optional[datetime] = Query(None, description='Instant UTC (ISO-8601) so với created_at'),
+    min_total: Optional[Decimal] = None,
+    max_total: Optional[Decimal] = None,
+    min_berth_minutes: Optional[float] = Query(
+        None,
+        description='Số phút neo tối thiểu, tính từ (end_time - start_time) của detection',
+    ),
+    sort: str = Query('time', description='time | invoice_number | ship_order | created_at | deleted_at | payment_status | total_amount'),
+    order: str = Query('desc', description='asc | desc'),
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
-    rows = invoice_repo.get_all(
-        db,
-        skip=skip,
-        limit=limit,
-        payment_status=payment_status,
-        awaiting_payment=awaiting_payment,
-        deleted_only=deleted_only,
-        creation_source=creation_source,
-        exclude_creation_source=exclude_creation_source,
-    )
+    """Danh sách hoá đơn — 8 bộ lọc của trang thu nhập chạy ở SQL, kèm sắp xếp cột.
+
+    `q` tìm không phân biệt hoa thường trên số hoá đơn, order/vessel/detection id,
+    ship_id và nhãn người tạo; wildcard trong `q` bị escape.
+    `created_from`/`created_to` là instant UTC so với `created_at`;
+    `min_berth_minutes` tính từ `(end_time - start_time)` của detection.
+    `sort` chỉ nhận các khóa trong whitelist, giá trị lạ rơi về mặc định
+    (không bao giờ được nội suy vào SQL).
+    """
+    skip, limit = resolve_page(skip, limit)
+    filters = {
+        'payment_status': payment_status,
+        'awaiting_payment': awaiting_payment,
+        'deleted_only': deleted_only,
+        'creation_source': creation_source,
+        'exclude_creation_source': exclude_creation_source,
+        'q': q,
+        'vessel_id': vessel_id,
+        'vessel_type_id': vessel_type_id,
+        'created_from': as_utc(created_from),
+        'created_to': as_utc(created_to),
+        'min_total': min_total,
+        'max_total': max_total,
+        'min_berth_minutes': min_berth_minutes,
+        'sort': sort,
+        'order': order,
+    }
+    total = invoice_repo.count_filtered(db, **filters)
+    set_total_header(response, total)
+    rows = invoice_repo.get_all(db, skip=skip, limit=limit, **filters)
     return [_invoice_to_read(db, inv) for inv in rows]
 
 
 @router.get('/discount-requests', response_model=List[InvoiceRead])
 def list_discount_requests(
+    response: Response,
     status: str = Query('pending', description='pending | approved | rejected'),
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 50,
     db: Session = Depends(get_db),
     _=Depends(require_discount_approver),
 ):
     normalized = (status or 'pending').strip().lower()
     if normalized not in {'pending', 'approved', 'rejected'}:
         raise HTTPException(status_code=422, detail='status không hợp lệ')
+    skip, limit = resolve_page(skip, limit)
+    total = invoice_repo.count_filtered(db, discount_status=normalized)
+    set_total_header(response, total)
     rows = invoice_repo.get_by_discount_status(db, normalized, skip=skip, limit=limit)
     return [_invoice_to_read(db, inv) for inv in rows]
 

@@ -13,16 +13,41 @@ import {
   portLogTimeIso,
 } from '../utils/port-log-display';
 import { StatisticsLogTd, StatisticsLogTh } from './statistics-log-table-cells';
+import { DataPagination } from '../../../components/DataPagination';
 import { SortableTh } from '../../../components/SortableTh/SortableTh';
-import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
+import {
+  isPortLogSortKey,
+  type PortLogSort,
+} from '../services/statisticsApi';
+import {
+  useTableSort,
+  type SortAccessors,
+  type SortDirection,
+  type SortState,
+} from '../../../hooks/useTableSort';
 
 export type StatisticsLogsTableProps = {
   isLoading: boolean;
+  error: string | null;
+  /** Đúng MỘT trang nhật ký lấy từ server (không phải toàn bộ tập kết quả). */
   logs: PortLogRead[];
-  displayLogs: PortLogRead[];
+  /** Phân trang phía server — state do `usePagedQuery` ở `StatisticsView` giữ. */
+  total: number;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  /** Đổi cột sắp xếp → server nạp lại trang 1 với `sort`/`order` mới. */
+  onSortChange: (sort: PortLogSort) => void;
   /** Map 'SHIP_ID|YYYY-MM-DD' (ngày VN) → số lượt neo ngoài giờ trong ngày đó. */
   outsideCountByShipDate: Map<string, number>;
 };
+
+/**
+ * Mặc định của bảng: không cột nào được chọn nên không gửi `sort`/`order` —
+ * server trả về đúng thứ tự `time desc` như trước.
+ */
+const INITIAL_LOG_SORT: SortState = { key: null, direction: 'asc' };
 
 // Ngày VN 'YYYY-MM-DD' của một thời điểm ISO (dùng để khớp với summary theo ngày).
 function vnDateKey(iso: string | null | undefined): string | null {
@@ -43,16 +68,34 @@ const logThSort =
 
 export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
   isLoading,
+  error,
   logs,
-  displayLogs,
+  total,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+  onSortChange,
   outsideCountByShipDate,
 }) => {
-  // Sắp xếp client-side trên chính mảng đang render (displayLogs). Bảng không phân trang.
+  // Sắp xếp do SERVER thực hiện: `useTableSort` chỉ giữ trạng thái mũi tên trên
+  // tiêu đề (`sorted` không dùng — thứ tự trong trang là của server).
   const sortAccessors: SortAccessors<PortLogRead> = {
     time: (log) => portLogTimeIso(log),
     voted_ship_id: (log) => log.voted_ship_id ?? '',
   };
-  const { sorted, sort, toggle } = useTableSort(displayLogs, sortAccessors);
+  const { sort, setSort } = useTableSort(logs, sortAccessors, INITIAL_LOG_SORT);
+
+  /** Đổi cột/chiều: cập nhật mũi tên rồi báo server nạp lại trang 1. */
+  const handleSortChange = (key: string) => {
+    if (!isPortLogSortKey(key)) {
+      return;
+    }
+    const direction: SortDirection =
+      sort.key === key && sort.direction === 'asc' ? 'desc' : 'asc';
+    setSort({ key, direction });
+    onSortChange({ key, order: direction });
+  };
 
   return (
     <div className="bg-white dark:bg-[#121214] border border-gray-200 dark:border-white/5 rounded-2xl shadow-2xl overflow-hidden">
@@ -60,9 +103,12 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
         <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-widest">
           Nhật ký cảng (OCR / port log)
         </h3>
-        <span className="text-xs sm:text-sm font-mono text-gray-500 dark:text-gray-400 uppercase">
-          {displayLogs.length}/{logs.length} · scroll ngang để xem đủ cột
-        </span>
+        <div className="flex items-center gap-3">
+          {error && <span className="text-[12px] normal-case text-red-500">{error}</span>}
+          <span className="text-xs sm:text-sm font-mono text-gray-500 dark:text-gray-400 uppercase">
+            {logs.length}/{total} · scroll ngang để xem đủ cột
+          </span>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-max min-w-full text-left border-collapse">
@@ -72,14 +118,14 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
               <StatisticsLogTh title="ships_completed_today — tàu hoàn thành trong ngày (OCR audit)">
                 ships_today
               </StatisticsLogTh>
-              <SortableTh sortKey="time" sort={sort} onSort={toggle} className={logThSort}>
+              <SortableTh sortKey="time" sort={sort} onSort={handleSortChange} className={logThSort}>
                 logged_at
               </SortableTh>
               <StatisticsLogTh title="track_id">track_id</StatisticsLogTh>
               <StatisticsLogTh title="first_seen_at">first_seen</StatisticsLogTh>
               <StatisticsLogTh title="last_seen_at">last_seen</StatisticsLogTh>
               <StatisticsLogTh title="confidence (YOLO / track)">confidence</StatisticsLogTh>
-              <SortableTh sortKey="voted_ship_id" sort={sort} onSort={toggle} className={logThSort}>
+              <SortableTh sortKey="voted_ship_id" sort={sort} onSort={handleSortChange} className={logThSort}>
                 voted_ship_id
               </SortableTh>
               <StatisticsLogTh title="Số lượt tàu này neo NGOÀI khung giờ cho phép trong ngày (theo mã tàu · ngày VN)">
@@ -104,8 +150,8 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
                   <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                 </td>
               </tr>
-            ) : sorted.length > 0 ? (
-              sorted.map((log) => {
+            ) : logs.length > 0 ? (
+              logs.map((log) => {
                 const shipsToday = log.ships_completed_today ?? log.seq;
                 const voteText = formatVoteSummary(log);
                 const shipKey = (log.voted_ship_id ?? log.ship_id ?? '').trim().toUpperCase();
@@ -161,13 +207,21 @@ export const StatisticsLogsTable: React.FC<StatisticsLogsTableProps> = ({
                   colSpan={PORT_LOG_TABLE_COL_COUNT}
                   className={cn(dt.pad, 'py-12 text-center font-mono uppercase tracking-wide', dt.empty)}
                 >
-                  {logs.length === 0 ? 'Không tìm thấy nhật ký' : 'Không có bản ghi khớp bộ lọc'}
+                  {total === 0 ? 'Không tìm thấy nhật ký' : 'Trang này không có bản ghi'}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+
+      <DataPagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
     </div>
   );
 };

@@ -36,7 +36,8 @@ export type RoleUpdate = {
 }
 
 export const usersApi = {
-  getUsers: async (skip: number = 0, limit: number = 100): Promise<UserRead[]> => {
+  /** Danh mục người dùng — mặc định xin tới trần danh mục 1000 (server: 100). */
+  getUsers: async (skip: number = 0, limit: number = 1000): Promise<UserRead[]> => {
     return httpClient.get<UserRead[]>(`/users/?skip=${skip}&limit=${limit}`);
   },
   getUser: async (id: string): Promise<UserRead> => {
@@ -51,8 +52,9 @@ export const usersApi = {
   deleteUser: async (id: string): Promise<void> => {
     return httpClient.delete(`/users/${id}`);
   },
+  /** Danh mục vai trò — xin tường minh tới trần danh mục 1000. */
   getRoles: async (): Promise<RoleRead[]> => {
-    return httpClient.get<RoleRead[]>('/roles/');
+    return httpClient.get<RoleRead[]>('/roles/?skip=0&limit=1000');
   },
   createRole: async (data: RoleCreate): Promise<RoleRead> => {
     return httpClient.post<RoleRead>('/roles/', data);

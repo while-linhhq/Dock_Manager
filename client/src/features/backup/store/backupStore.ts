@@ -1,34 +1,28 @@
 import { create } from 'zustand';
 import type { AuditLogRead } from '../../../types/api.types';
 import { backupApi } from '../services/backupApi';
-import type { DetectionMediaRead } from '../services/backupApi';
+import type { AuditLogPageRequest, DetectionMediaRead } from '../services/backupApi';
 
 interface BackupState {
-  auditLogs: AuditLogRead[];
-  isLoading: boolean;
-  error: string | null;
-  fetchAuditLogs: (userId?: string, limit?: number) => Promise<void>;
+  /**
+   * Một trang lịch sử hệ thống cho `usePagedQuery`. Trang/bộ lọc/loading do hook
+   * giữ nên store không còn sao chép danh sách và cờ loading về đây.
+   */
+  fetchAuditLogsPage: (
+    request: AuditLogPageRequest,
+  ) => Promise<{ items: AuditLogRead[]; total: number }>;
   fetchMedia: (detectionId: string) => Promise<DetectionMediaRead[]>;
 }
 
-export const useBackupStore = create<BackupState>((set) => ({
-  auditLogs: [],
-  isLoading: false,
-  error: null,
-  fetchAuditLogs: async (userId, limit) => {
-    set({ isLoading: true, error: null });
-    try {
-      const auditLogs = await backupApi.getAuditLogs(userId, limit);
-      set({ auditLogs, isLoading: false });
-    } catch (err: any) {
-      set({ error: err.message || 'Failed to fetch audit logs', isLoading: false });
-    }
+export const useBackupStore = create<BackupState>(() => ({
+  fetchAuditLogsPage: async (request) => {
+    return backupApi.getAuditLogsPage(request);
   },
   fetchMedia: async (detectionId) => {
     try {
       return await backupApi.getDetectionMedia(detectionId);
-    } catch (err) {
+    } catch {
       return [];
     }
-  }
+  },
 }));

@@ -7,6 +7,8 @@ Cần file ONNX export từ Ultralytics, ví dụ:
 """
 from __future__ import annotations
 
+import threading
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -33,7 +35,13 @@ def _letterbox(
 
 
 class OnnxYoloDetector:
-    """Wrapper tương thích với TorchYoloWrapper.predict_boxes."""
+    """Wrapper tương thích với TorchYoloWrapper.predict_boxes.
+
+    Lời gọi `session.run` được tuần tự hoá bằng ``_lock`` cho đồng nhất với đường torch:
+    tài liệu onnxruntime không khẳng định rõ `InferenceSession.run` an toàn luồng, và detector
+    này cũng bị gọi từ nhiều luồng (per-camera, yolo_worker, endpoint test-video). Chỉ `run`
+    nằm trong khoá — phần tiền/hậu xử lý dùng biến cục bộ nên để ngoài cho khỏi nghẽn CPU.
+    """
 
     def __init__(
         self,
@@ -45,6 +53,7 @@ class OnnxYoloDetector:
         self.conf = conf
         self.target_classes = set(target_classes)
         self.iou_thres = iou_thres
+        self._lock = threading.Lock()
 
         available = ort.get_available_providers()
         preferred = []
@@ -73,7 +82,8 @@ class OnnxYoloDetector:
         image_data = np.transpose(img_rgb, (2, 0, 1)).astype(np.float32) / 255.0
         image_data = np.expand_dims(image_data, 0)
 
-        outputs = self.session.run(None, {self.input_name: image_data})
+        with self._lock:
+            outputs = self.session.run(None, {self.input_name: image_data})
         # Giống examples/YOLOv8-ONNXRuntime/main.py: [1, 84, 8400] -> [8400, 84]
         out = outputs[0]
         outputs_t = np.transpose(np.squeeze(out)).copy()

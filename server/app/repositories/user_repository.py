@@ -29,10 +29,16 @@ class UserRepository:
         return (
             db.query(User)
             .options(joinedload(User.role))
+            # Thứ tự xác định để phân trang không trả trùng/mất row.
+            .order_by(User.id.asc())
             .offset(skip)
             .limit(limit)
             .all()
         )
+
+    def count_all(self, db: Session) -> int:
+        """Tổng số user (trước khi phân trang) — khớp đúng tập `get_all` trả về."""
+        return db.query(User).count()
 
     def create(self, db: Session, username: str, hashed_password: str, **kwargs) -> User:
         db_user = User(username=username, hashed_password=hashed_password, **kwargs)

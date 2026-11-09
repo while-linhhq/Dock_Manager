@@ -3,7 +3,7 @@ project:
   device: "0"
 
 yolo:
-  base_model: server/app/yolo26n.pt
+  base_model: server/models/yolo/yolo26n.pt
   data_yaml: fine-tune/yolo/data.yaml
   epochs: 100
   imgsz: 960
@@ -17,7 +17,7 @@ yolo:
   min_box_area: 0.0005
   val_ratio: 0.15
   lr0: 0.006
-  deployed_weights: server/app/yolo26n_finetuned.pt
+  deployed_weights: server/models/yolo/yolo26n_finetuned.pt
   # recall_boost: adaptive hard-case oversample (see train_recall_boost.py)
   recall_boost_max_rounds: 6
   recall_boost_continuous: true

@@ -24,8 +24,21 @@ class PortConfigRepository:
     def get_by_key(self, db: Session, key: str) -> Optional[PortConfig]:
         return db.query(PortConfig).filter(PortConfig.key == key).first()
 
-    def get_all(self, db: Session) -> List[PortConfig]:
-        return db.query(PortConfig).all()
+    def get_all(self, db: Session, skip: int = 0, limit: Optional[int] = None) -> List[PortConfig]:
+        """`limit=None` = không giới hạn.
+
+        Các service (`pipeline_service`, `port_config_runtime`, …) đọc cả bảng để
+        dựng map cấu hình, nên mặc định phải giữ nguyên hành vi cũ; endpoint danh
+        mục truyền `limit` đã kẹp theo trần catalog.
+        """
+        q = db.query(PortConfig).order_by(PortConfig.id.asc()).offset(skip)
+        if limit is not None:
+            q = q.limit(limit)
+        return q.all()
+
+    def count_all(self, db: Session) -> int:
+        """Tổng số config (trước khi phân trang) — khớp đúng tập `get_all` trả về."""
+        return db.query(PortConfig).count()
 
     def upsert(self, db: Session, key: str, value: str, updated_by: Optional[int] = None, description: Optional[str] = None) -> PortConfig:
         db_obj = self.get_by_key(db, key)

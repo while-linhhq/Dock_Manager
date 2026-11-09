@@ -1,17 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useRevenueStore } from '../store/revenueStore';
 import { useVesselStore } from '../../vessels/store/vesselStore';
 import { useOrderStore } from '../../orders/store/orderStore';
 import type { FeeConfigRead } from '../../../types/api.types';
-import { revenueApi, type InvoiceCreate, type PaymentCreate, type FeeConfigCreate } from '../services/revenueApi';
+import { revenueApi, type InvoiceCreate, type InvoiceFilters, type InvoiceSort, type PaymentCreate, type FeeConfigCreate } from '../services/revenueApi';
 import { downloadBlobFile } from '../../../utils/download-blob';
 import { ApiError } from '../../../services/httpClient';
 import { isoInLocalDateRange, matchesAnyField } from '../../../utils/table-filters';
 import {
   formatMoney,
-  getInvoiceBerthMinutes,
   isInvoicePayable,
   sumInvoiceDisplayAmounts,
 } from '../components/revenue-invoice-display';
@@ -20,6 +19,7 @@ import { BulkPaymentMethodChoiceModal } from '../components/BulkPaymentMethodCho
 import { BulkSepayPaymentModal } from '../components/BulkSepayPaymentModal';
 import { normalizeFeeBillingUnit } from '../../../utils/fee-billing-unit';
 import { useFilterOptions } from '../../../hooks/useFilterOptions';
+import { usePagedQuery } from '../../../hooks/usePagedQuery';
 import {
   invoiceSchema,
   paymentSchema,
@@ -83,10 +83,11 @@ export const RevenueView: React.FC = () => {
     invoices,
     feeConfigs,
     invoiceSubTab,
+    invoiceListKind,
     isLoading,
     setInvoiceSubTab,
     setInvoiceListKind,
-    fetchInvoices,
+    fetchInvoicesPage,
     fetchFeeConfigs,
     createInvoice,
     recordPayment,
@@ -146,7 +147,7 @@ export const RevenueView: React.FC = () => {
 
   useEffect(() => {
     if (activeTab === 'invoices' || activeTab === 'auto_invoices') {
-      void fetchInvoices();
+      // Danh sách hoá đơn do `usePagedQuery` tự nạp (trang/bộ lọc/sắp xếp ở dưới).
       if (activeTab === 'invoices') {
         void fetchOrders();
       }
@@ -155,74 +156,69 @@ export const RevenueView: React.FC = () => {
       void fetchVesselTypes();
       void fetchVessels();
     }
-  }, [
-    activeTab,
-    invoiceSubTab,
-    fetchInvoices,
-    fetchFeeConfigs,
-    fetchOrders,
-    fetchVesselTypes,
-    fetchVessels,
-  ]);
+  }, [activeTab, fetchFeeConfigs, fetchOrders, fetchVesselTypes, fetchVessels]);
 
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((inv) => {
-      const matchedVessel = filterVessels.find(
-        (vessel) => String(vessel.id) === String(inv.vessel_id ?? ''),
-      );
-      if (
-        !matchesAnyField(
-          invQ,
-          inv.invoice_number,
-          String(inv.order_id ?? ''),
-          inv.vessel_ship_id ?? matchedVessel?.ship_id,
-          String(inv.vessel_id ?? ''),
-          String(inv.detection_id ?? ''),
-          inv.created_by_label ?? '',
-        )
-      ) {
-        return false;
-      }
-      if (invMinBerthMinutes.trim()) {
-        const berthMinutes = getInvoiceBerthMinutes(inv);
-        const min = Number(invMinBerthMinutes);
-        if (berthMinutes === null || !Number.isFinite(min) || berthMinutes < min) {
-          return false;
-        }
-      }
-      if (invShipIdFilter && String(inv.vessel_id ?? matchedVessel?.id ?? '') !== invShipIdFilter) {
-        return false;
-      }
-      if (
-        invVesselTypeFilter &&
-        String(matchedVessel?.vessel_type_id ?? '') !== invVesselTypeFilter
-      ) {
-        return false;
-      }
-      if (!isoInLocalDateRange(inv.created_at, invDateFrom, invDateTo)) {
-        return false;
-      }
-      const total = Number(inv.total_amount ?? 0);
-      if (invMinTotal.trim() && total < Number(invMinTotal)) {
-        return false;
-      }
-      if (invMaxTotal.trim() && total > Number(invMaxTotal)) {
-        return false;
-      }
-      return true;
-    });
-  }, [
-    invoices,
-    invQ,
-    invMinBerthMinutes,
-    invShipIdFilter,
-    invVesselTypeFilter,
-    invDateFrom,
-    invDateTo,
-    invMinTotal,
-    invMaxTotal,
-    filterVessels,
-  ]);
+  // Tám bộ lọc + sub-tab + tab nguồn tạo → tham số API. Server lọc/sắp xếp, client
+  // không lọc lại (trước đây `filteredInvoices` lọc trên tối đa 200 bản ghi).
+  const invFilters = useMemo<InvoiceFilters>(
+    () => ({
+      subTab: invoiceSubTab,
+      listKind: invoiceListKind,
+      q: invQ.trim() || undefined,
+      minBerthMinutes: invMinBerthMinutes.trim() || undefined,
+      vesselId: invShipIdFilter || undefined,
+      vesselTypeId: invVesselTypeFilter || undefined,
+      dateFrom: invDateFrom || undefined,
+      dateTo: invDateTo || undefined,
+      minTotal: invMinTotal.trim() || undefined,
+      maxTotal: invMaxTotal.trim() || undefined,
+    }),
+    [
+      invoiceSubTab,
+      invoiceListKind,
+      invQ,
+      invMinBerthMinutes,
+      invShipIdFilter,
+      invVesselTypeFilter,
+      invDateFrom,
+      invDateTo,
+      invMinTotal,
+      invMaxTotal,
+    ],
+  );
+
+  // `usePagedQuery` là nguồn sự thật duy nhất cho trang/bộ lọc/sắp xếp của danh sách
+  // hoá đơn. `fetcher` là action của store nên store giữ ĐÚNG các dòng của trang đang
+  // hiển thị (thao tác ghi chú/giảm giá tại chỗ vẫn cập nhật được dòng đó); `filters`
+  // truyền vào chỉ là giá trị KHỞI TẠO.
+  const {
+    total: invoicesTotal,
+    page: invoicesPage,
+    pageSize: invoicesPageSize,
+    isLoading: invoicesLoading,
+    error: invoicesError,
+    setPage: setInvoicesPage,
+    setPageSize: setInvoicesPageSize,
+    setFilters: setInvoiceFilters,
+    setSort: setInvoiceSort,
+    reload: reloadInvoices,
+  } = usePagedQuery<InvoiceRead, InvoiceFilters, InvoiceSort>({
+    fetcher: fetchInvoicesPage,
+    filters: invFilters,
+  });
+
+  // Đẩy nội dung bộ lọc xuống hook. Object đã memo hoá nên hiệu ứng chỉ chạy khi bộ
+  // lọc THỰC SỰ đổi; hook tự đưa `page` về 1 rồi debounce trước khi gọi API.
+  // Bỏ qua lần chạy đầu vì hook đã KHỞI TẠO bằng chính `invFilters` (đẩy lại đúng
+  // object đó chỉ làm hook tăng token nạp lại → thêm một request thừa lúc mở trang).
+  const pushedInvFiltersRef = useRef(invFilters);
+  useEffect(() => {
+    if (pushedInvFiltersRef.current === invFilters) {
+      return;
+    }
+    pushedInvFiltersRef.current = invFilters;
+    setInvoiceFilters(invFilters);
+  }, [invFilters, setInvoiceFilters]);
 
   const filteredFeeConfigs = useMemo(() => {
     return feeConfigs.filter((fee) => {
@@ -277,14 +273,16 @@ export const RevenueView: React.FC = () => {
 
   const isAutoInvoiceTab = activeTab === 'auto_invoices';
 
-  const payableFilteredInvoices = useMemo(
-    () => filteredInvoices.filter((inv) => isInvoicePayable(inv)),
-    [filteredInvoices],
+  // «Thanh toán tất cả» chỉ tác động lên các hoá đơn chưa thanh toán CỦA TRANG đang
+  // xem (server chỉ trả một trang) — đúng danh sách mà nút đang đếm.
+  const payableInvoices = useMemo(
+    () => invoices.filter((inv) => isInvoicePayable(inv)),
+    [invoices],
   );
 
   const bulkPaymentTotal = useMemo(
-    () => sumInvoiceDisplayAmounts(payableFilteredInvoices),
-    [payableFilteredInvoices],
+    () => sumInvoiceDisplayAmounts(payableInvoices),
+    [payableInvoices],
   );
 
   const invFilterCount =
@@ -328,18 +326,20 @@ export const RevenueView: React.FC = () => {
       await createInvoice(data);
       setIsInvoiceModalOpen(false);
       invoiceForm.reset();
+      // Nạp lại ĐÚNG trang/bộ lọc đang xem sau khi tạo hoá đơn.
+      reloadInvoices();
     } catch (err) {
       console.error(err);
     }
   };
 
   const handleBulkPaymentConfirm = async () => {
-    if (payableFilteredInvoices.length === 0) {
+    if (payableInvoices.length === 0) {
       return;
     }
     try {
       const result = await recordBulkPayments({
-        invoice_ids: payableFilteredInvoices.map((inv) => Number(inv.id)),
+        invoice_ids: payableInvoices.map((inv) => Number(inv.id)),
         payment_method: 'cash',
         notes: invFilterCount > 0 ? 'Thanh toán hàng loạt (theo bộ lọc)' : 'Thanh toán hàng loạt',
       });
@@ -347,6 +347,7 @@ export const RevenueView: React.FC = () => {
       window.alert(
         `Đã thanh toán ${result.invoice_count} hóa đơn — ${formatMoney(result.total_amount)} ₫`,
       );
+      reloadInvoices();
     } catch (err) {
       console.error(err);
     }
@@ -359,6 +360,7 @@ export const RevenueView: React.FC = () => {
         setIsPaymentModalOpen(false);
         paymentForm.reset();
         setSelectedInvoiceId(null);
+        reloadInvoices();
       }
     } catch (err) {
       console.error(err);
@@ -380,6 +382,7 @@ export const RevenueView: React.FC = () => {
         paymentForm.reset();
       }
       await deleteInvoice(invId);
+      reloadInvoices();
     } catch (err) {
       console.error(err);
     }
@@ -559,14 +562,18 @@ export const RevenueView: React.FC = () => {
   };
 
   const handleExportInvoicesFiltered = async () => {
-    if (filteredInvoices.length === 0) {
+    // Server chỉ trả một trang, nên «Xuất theo filter» xuất đúng các dòng đang tải
+    // (trang hiện tại + bộ lọc/sub-tab hiện tại) — khớp phần đếm trên modal, và modal
+    // nói rõ phạm vi khi `total > số dòng đang tải` (`PageScopeNotice`). Muốn xuất
+    // toàn bộ tập lọc thì phải có endpoint xuất-theo-bộ-lọc ở server (xem báo cáo).
+    if (invoices.length === 0) {
       return;
     }
     setIsExporting(true);
     setIsExcelExportChoiceModalOpen(false);
     try {
       const blob = await revenueApi.exportInvoicesExcel({
-        invoice_ids: filteredInvoices.map((inv) => Number(inv.id)),
+        invoice_ids: invoices.map((inv) => Number(inv.id)),
         list_kind: activeTab === 'auto_invoices' ? 'ai' : 'invoices',
         invoice_sub_tab: invoiceSubTab,
       });
@@ -611,9 +618,15 @@ export const RevenueView: React.FC = () => {
           isAutoInvoiceTab={isAutoInvoiceTab}
           invoiceSubTab={invoiceSubTab}
           onInvoiceSubTab={setInvoiceSubTab}
-          filteredInvoices={filteredInvoices}
           invoices={invoices}
-          isLoading={isLoading}
+          total={invoicesTotal}
+          page={invoicesPage}
+          pageSize={invoicesPageSize}
+          onPageChange={setInvoicesPage}
+          onPageSizeChange={setInvoicesPageSize}
+          onSortChange={setInvoiceSort}
+          isLoading={invoicesLoading}
+          error={invoicesError}
           invQ={invQ}
           setInvQ={setInvQ}
           invMinBerthMinutes={invMinBerthMinutes}
@@ -642,7 +655,7 @@ export const RevenueView: React.FC = () => {
           onDeleteInvoice={handleDeleteInvoice}
           onUpdateDiscount={updateInvoiceDiscount}
           onUpdateNotes={updateInvoiceNotes}
-          payableCount={payableFilteredInvoices.length}
+          payableCount={payableInvoices.length}
           bulkPaymentTotal={bulkPaymentTotal}
           onOpenBulkPayment={() => setIsBulkPaymentChoiceModalOpen(true)}
           onExportExcel={openExcelExportModal}
@@ -680,9 +693,10 @@ export const RevenueView: React.FC = () => {
       <BulkPaymentMethodChoiceModal
         isOpen={isBulkPaymentChoiceModalOpen}
         onClose={() => setIsBulkPaymentChoiceModalOpen(false)}
-        invoiceCount={payableFilteredInvoices.length}
+        invoiceCount={payableInvoices.length}
         totalAmount={bulkPaymentTotal}
         hasActiveFilters={invFilterCount > 0}
+        filteredTotal={invoicesTotal}
         onSelect={(method: PaymentMethodChoice) => {
           setIsBulkPaymentChoiceModalOpen(false);
           if (method === 'transfer') {
@@ -696,9 +710,10 @@ export const RevenueView: React.FC = () => {
       <BulkPaymentConfirmModal
         isOpen={isBulkCashConfirmModalOpen}
         onClose={() => setIsBulkCashConfirmModalOpen(false)}
-        invoiceCount={payableFilteredInvoices.length}
+        invoiceCount={payableInvoices.length}
         totalAmount={bulkPaymentTotal}
         hasActiveFilters={invFilterCount > 0}
+        filteredTotal={invoicesTotal}
         isLoading={isLoading}
         onConfirm={() => void handleBulkPaymentConfirm()}
       />
@@ -706,10 +721,12 @@ export const RevenueView: React.FC = () => {
       <BulkSepayPaymentModal
         isOpen={isBulkSepayModalOpen}
         onClose={() => setIsBulkSepayModalOpen(false)}
-        invoices={payableFilteredInvoices}
+        invoices={payableInvoices}
         hasActiveFilters={invFilterCount > 0}
+        filteredTotal={invoicesTotal}
         onPaid={() => {
-          void fetchInvoices();
+          // Nạp lại đúng trang đang xem sau khi hoá đơn được thanh toán.
+          reloadInvoices();
         }}
       />
 
@@ -719,8 +736,8 @@ export const RevenueView: React.FC = () => {
         onExportAll={() => void handleExportInvoicesAll()}
         onExportFiltered={() => void handleExportInvoicesFiltered()}
         totalCount={allRevenueCount ?? 0}
-        filteredCount={filteredInvoices.length}
-        tabCount={invoices.length}
+        filteredCount={invoices.length}
+        tabCount={invoicesTotal}
         isExporting={isExporting}
       />
 
@@ -759,7 +776,8 @@ export const RevenueView: React.FC = () => {
         }}
         invoice={pendingPaymentInvoice}
         onPaid={() => {
-          void fetchInvoices();
+          // Nạp lại đúng trang đang xem sau khi hoá đơn được thanh toán.
+          reloadInvoices();
         }}
       />
 

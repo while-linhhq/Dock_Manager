@@ -1,8 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   Loader2,
   Pencil,
   RefreshCw,
@@ -12,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../../../components/Button/Button';
 import { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBadge';
+import { DataPagination } from '../../../components/DataPagination';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
 import { formatDateTimeVN } from '../../../utils/date-time';
@@ -22,14 +21,24 @@ import {
   getDetectionShipLabel,
 } from '../../../utils/detection-display';
 import type { DetectionMediaRead, DetectionRead, VesselRead, VesselTypeRead } from '../../../types/api.types';
-import { portApi, type DetectionUpdate } from '../services/portApi';
+import {
+  isDetectionSortKey,
+  portApi,
+  type DetectionSort,
+  type DetectionUpdate,
+} from '../services/portApi';
 import {
   FilterField,
   TableFilterPanel,
   filterControlClass,
 } from '../../../components/TableFilterPanel/TableFilterPanel';
 import { SortableTh } from '../../../components/SortableTh/SortableTh';
-import { useTableSort, type SortAccessors } from '../../../hooks/useTableSort';
+import {
+  useTableSort,
+  type SortAccessors,
+  type SortDirection,
+  type SortState,
+} from '../../../hooks/useTableSort';
 
 export type PortDetectionsSectionProps = {
   detQ: string;
@@ -50,14 +59,30 @@ export type PortDetectionsSectionProps = {
   detFilterCount: number;
   onRefresh: () => void;
   isLoading: boolean;
+  error: string | null;
+  /** Đúng MỘT trang nhận diện lấy từ server (không phải toàn bộ tập kết quả). */
   detections: DetectionRead[];
-  filteredDetections: DetectionRead[];
+  /** Phân trang phía server — state do `usePagedQuery` ở PortView giữ. */
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  /** Đổi cột sắp xếp → server nạp lại trang 1 với `sort`/`order` mới. */
+  onSortChange: (sort: DetectionSort) => void;
   vessels: VesselRead[];
   vesselTypes: VesselTypeRead[];
   onVerify: (id: string, data: { is_accepted: boolean }) => void;
   onDeleteDetection: (id: string) => void;
   onUpdateDetection: (id: string, data: DetectionUpdate) => Promise<void>;
 };
+
+/**
+ * Mặc định của bảng: không cột nào được chọn nên không gửi `sort`/`order` —
+ * server trả về đúng thứ tự `berth desc` như trước. Cột "neo đậu" không có tiêu
+ * đề để gắn mũi tên nên không cột nào hiện trạng thái sắp xếp là đúng.
+ */
+const INITIAL_DET_SORT: SortState = { key: null, direction: 'asc' };
 
 export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   detQ,
@@ -78,8 +103,14 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   detFilterCount,
   onRefresh,
   isLoading,
+  error,
   detections,
-  filteredDetections,
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  onSortChange,
   vessels,
   vesselTypes,
   onVerify,
@@ -110,27 +141,8 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
   const [compareMedia, setCompareMedia] = useState<DetectionMediaRead[]>([]);
   const [compareLoading, setCompareLoading] = useState(false);
 
-  const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
-  const [pageSize, setPageSize] = useState<number>(50);
-  const [page, setPage] = useState(1);
-
-  const totalRows = filteredDetections.length;
-  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-
-  // Clamp/reset the current page whenever the filtered set or page size changes.
-  useEffect(() => {
-    // Pagination state must follow filtered dataset bounds.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPage((prev) => Math.min(Math.max(1, prev), totalPages));
-  }, [totalPages]);
-
-  useEffect(() => {
-    // Filter/page-size changes must return table to first page.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPage(1);
-  }, [detFilterCount, pageSize, totalRows]);
-
-  // Sắp xếp client-side TOÀN BỘ tập đã lọc rồi mới phân trang → không phá phân trang.
+  // Sắp xếp do SERVER thực hiện (Task 12): `useTableSort` chỉ giữ trạng thái mũi
+  // tên trên tiêu đề (`sorted` không dùng — thứ tự trong trang là của server).
   const sortAccessors: SortAccessors<DetectionRead> = {
     time: (d) => {
       const iso = getDetectionDisplayTimeIso(d);
@@ -141,19 +153,24 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
     camera: (d) => d.berth_in_camera_name ?? '',
     status: (d) => (d.is_accepted === true ? 'Đã Xác Nhận' : 'Chờ Duyệt'),
   };
-  const { sorted: sortedDetections, sort, toggle } = useTableSort(
-    filteredDetections,
-    sortAccessors,
-  );
+  const { sort, setSort } = useTableSort(detections, sortAccessors, INITIAL_DET_SORT);
 
-  const pageStartIndex = (page - 1) * pageSize;
-  const pagedDetections = useMemo(
-    () => sortedDetections.slice(pageStartIndex, pageStartIndex + pageSize),
-    [sortedDetections, pageStartIndex, pageSize],
-  );
-
-  const rangeFrom = totalRows === 0 ? 0 : pageStartIndex + 1;
-  const rangeTo = Math.min(pageStartIndex + pageSize, totalRows);
+  /**
+   * Đổi cột/chiều: cập nhật mũi tên trên tiêu đề rồi báo server nạp lại trang 1
+   * với `sort`/`order` mới (khóa cột trùng whitelist của API).
+   *
+   * Dùng `setSort` của `useTableSort` (thay vì `toggle`) để trạng thái mũi tên và
+   * tham số gửi server luôn tính từ CÙNG một giá trị `direction`.
+   */
+  const handleSortChange = (key: string) => {
+    if (!isDetectionSortKey(key)) {
+      return;
+    }
+    const direction: SortDirection =
+      sort.key === key && sort.direction === 'asc' ? 'desc' : 'asc';
+    setSort({ key, direction });
+    onSortChange({ key, order: direction });
+  };
 
   const mediaOrigin = useMemo(() => {
     const apiBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
@@ -407,7 +424,8 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
         </FilterField>
       </TableFilterPanel>
 
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {error && <p className="mr-auto text-[12px] normal-case text-red-500">{error}</p>}
         <Button
           type="button"
           variant="outline"
@@ -424,20 +442,20 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className={dt.headRow}>
-                <SortableTh sortKey="time" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="time" sort={sort} onSort={handleSortChange}>
                   Thời Gian
                 </SortableTh>
                 <th className={dt.pad}>Thời Lượng Neo Đậu</th>
-                <SortableTh sortKey="ship_id" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="ship_id" sort={sort} onSort={handleSortChange}>
                   Mã Tàu
                 </SortableTh>
-                <SortableTh sortKey="confidence" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="confidence" sort={sort} onSort={handleSortChange}>
                   Độ Tin Cậy
                 </SortableTh>
-                <SortableTh sortKey="camera" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="camera" sort={sort} onSort={handleSortChange}>
                   Camera IN / OUT
                 </SortableTh>
-                <SortableTh sortKey="status" sort={sort} onSort={toggle}>
+                <SortableTh sortKey="status" sort={sort} onSort={handleSortChange}>
                   Trạng Thái
                 </SortableTh>
                 <th className={cn(dt.pad, 'text-right')}>Thao Tác</th>
@@ -450,8 +468,8 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                     <Loader2 className="w-8 h-8 animate-spin text-blue-500 mx-auto" />
                   </td>
                 </tr>
-              ) : pagedDetections.length > 0 ? (
-                pagedDetections.map((det) => (
+              ) : detections.length > 0 ? (
+                detections.map((det) => (
                   <tr
                     key={det.id}
                     className="hover:bg-gray-50 dark:hover:bg-white/2 transition-colors"
@@ -567,9 +585,11 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                       dt.empty,
                     )}
                   >
-                    {detections.length === 0
-                      ? 'Không có dữ liệu nhận diện'
-                      : 'Không có bản ghi khớp bộ lọc'}
+                    {total === 0
+                      ? detFilterCount > 0
+                        ? 'Không có bản ghi khớp bộ lọc'
+                        : 'Không có dữ liệu nhận diện'
+                      : 'Trang này không có bản ghi'}
                   </td>
                 </tr>
               )}
@@ -577,53 +597,13 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
           </table>
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-gray-100 dark:border-white/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            <span>
-              {totalRows === 0
-                ? 'Không có bản ghi'
-                : `Hiển thị ${rangeFrom}–${rangeTo} / ${totalRows} bản ghi`}
-            </span>
-            <label className="flex items-center gap-1.5 normal-case">
-              <span>Mỗi trang</span>
-              <select
-                value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
-                className="rounded-md border border-gray-200 bg-transparent px-1.5 py-1 text-xs dark:border-white/10"
-              >
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Trước
-            </button>
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Trang {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              Sau
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
+        <DataPagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
 
       {previewImageUrl && (

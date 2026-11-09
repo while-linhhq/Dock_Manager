@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Optional, Tuple
@@ -68,6 +69,16 @@ def get_s3_client():
         if access_key and secret_key:
             kwargs['aws_access_key_id'] = access_key
             kwargs['aws_secret_access_key'] = secret_key
+
+        # MinIO local cần endpoint_url tường minh; nếu không, botocore rơi về
+        # s3.amazonaws.com. settings đọc từ server/.env, còn os.environ là đường
+        # tương thích ngược (biến AWS_ENDPOINT_URL do môi trường export sẵn).
+        endpoint = (
+            str(getattr(settings, 'AWS_ENDPOINT_URL', '') or '').strip()
+            or os.environ.get('AWS_ENDPOINT_URL', '').strip()
+        )
+        if endpoint:
+            kwargs['endpoint_url'] = endpoint
 
         _s3_client = boto3.client('s3', **kwargs)
         return _s3_client

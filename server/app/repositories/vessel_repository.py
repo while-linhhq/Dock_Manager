@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
-from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Query, Session, joinedload
 from app.models.vessel import Vessel
+from app.utils.sql_filters import ilike_contains
 from typing import List, Optional
 
 
@@ -31,6 +32,40 @@ class VesselRepository:
             .first()
         )
 
+    def _filtered_query(
+        self,
+        db: Session,
+        *,
+        active_only: bool = False,
+        classification: Optional[str] = None,
+        q: Optional[str] = None,
+    ) -> Query:
+        """Query đã áp bộ lọc, dùng chung cho `get_all` và `count_filtered`.
+
+        `q` tìm không phân biệt hoa thường trên **cùng bốn cột** mà bộ lọc
+        client-side cũ (`matchesAnyField`) đưa vào: `ship_id`, `name`, `owner` và
+        `registration_number` — nhờ vậy gõ tên chủ tàu hay số đăng kiểm vẫn ra
+        kết quả. (`owner_info` của client chỉ là alias của form: `toApiVesselPayload`
+        gửi nó vào cột `owner` và API không trả về, nên không có cột để OR.)
+        Wildcard trong `q` bị escape nên gõ `%` không biến thành "khớp tất cả".
+        """
+        query = db.query(Vessel)
+        if active_only:
+            query = query.filter(Vessel.is_active == True)
+        if classification:
+            query = query.filter(Vessel.classification == classification)
+        if q and q.strip():
+            needle = q.strip()
+            query = query.filter(
+                or_(
+                    ilike_contains(Vessel.ship_id, needle),
+                    ilike_contains(Vessel.name, needle),
+                    ilike_contains(Vessel.owner, needle),
+                    ilike_contains(Vessel.registration_number, needle),
+                )
+            )
+        return query
+
     def get_all(
         self,
         db: Session,
@@ -38,13 +73,32 @@ class VesselRepository:
         limit: int = 100,
         active_only: bool = False,
         classification: Optional[str] = None,
+        q: Optional[str] = None,
     ) -> List[Vessel]:
-        q = db.query(Vessel).options(joinedload(Vessel.vessel_type))
-        if active_only:
-            q = q.filter(Vessel.is_active == True)
-        if classification:
-            q = q.filter(Vessel.classification == classification)
-        return q.offset(skip).limit(limit).all()
+        return (
+            self._filtered_query(
+                db, active_only=active_only, classification=classification, q=q
+            )
+            .options(joinedload(Vessel.vessel_type))
+            # Tên tàu rồi id: thứ tự xác định cho phân trang và cho dropdown chọn tàu.
+            .order_by(Vessel.name.asc(), Vessel.id.asc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def count_filtered(
+        self,
+        db: Session,
+        *,
+        active_only: bool = False,
+        classification: Optional[str] = None,
+        q: Optional[str] = None,
+    ) -> int:
+        """Tổng số tàu khớp bộ lọc (trước khi phân trang)."""
+        return self._filtered_query(
+            db, active_only=active_only, classification=classification, q=q
+        ).count()
 
     def create(self, db: Session, data) -> Vessel:
         payload = data.model_dump() if hasattr(data, 'model_dump') else dict(data)

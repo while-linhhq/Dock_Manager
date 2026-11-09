@@ -7,6 +7,7 @@ import type { InvoiceRead } from '../../../types/api.types';
 import { ApiError } from '../../../services/httpClient';
 import { revenueApi, type BulkSepaySessionRead, type SepayBankInfo } from '../services/revenueApi';
 import { formatMoney } from './revenue-invoice-display';
+import { PageScopeNotice } from './PageScopeNotice';
 import { buildSepayQrUrl } from '../utils/sepay-payment-utils';
 
 const POLL_INTERVAL_MS = 3000;
@@ -16,6 +17,12 @@ export type BulkSepayPaymentModalProps = {
   onClose: () => void;
   invoices: InvoiceRead[];
   hasActiveFilters: boolean;
+  /**
+   * Tổng số hoá đơn chờ thanh toán khớp tab + bộ lọc hiện tại (server trả qua
+   * `X-Total-Count`). Lớn hơn `invoices.length` nghĩa là chỉ một trang được tải →
+   * phải nói rõ phạm vi của lần chuyển khoản gộp này.
+   */
+  filteredTotal?: number;
   onPaid: () => void;
 };
 
@@ -24,6 +31,7 @@ export const BulkSepayPaymentModal: React.FC<BulkSepayPaymentModalProps> = ({
   onClose,
   invoices,
   hasActiveFilters,
+  filteredTotal,
   onPaid,
 }) => {
   const [bankInfo, setBankInfo] = useState<SepayBankInfo | null>(null);
@@ -178,6 +186,12 @@ export const BulkSepayPaymentModal: React.FC<BulkSepayPaymentModalProps> = ({
               {formatMoney(session?.total_amount ?? 0)} ₫
             </p>
           </div>
+
+          <PageScopeNotice
+            shownCount={invoices.length}
+            filteredTotal={filteredTotal ?? invoices.length}
+            action="payment"
+          />
 
           {isLoading ? (
             <div className="flex justify-center py-8">
