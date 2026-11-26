@@ -63,3 +63,4 @@ server/models/paddle_ocr/
 
 # Ultralytics training/predict runs
 runs/
+docs_Tot/

@@ -45,11 +45,16 @@ def _ship_label_expr():
 def _berth_time_expr():
     """Instant tàu vào vùng neo đậu — port `getDetectionSortTs` của client.
 
-    `berth_in_time` là `timestamp with time zone`, còn `start_time`/`created_at`
-    là `timestamp without time zone` chứa giờ UTC: phải `timezone('UTC', ...)` để
-    coalesce cùng kiểu và **không** phụ thuộc timezone của session DB.
+    `berth_in_time` là `timestamp with time zone`; `start_time`/`created_at` có
+    thể còn là `timestamp without time zone` (DB chưa chạy migration Task 01)
+    chứa giờ UTC. `timezone('UTC', ...)` diễn giải naive là UTC nên coalesce
+    cùng kiểu và **không** phụ thuộc TimeZone của session DB.
+
+    Sau khi migration `2026_11_detection_timestamptz.sql` chạy, `timezone('UTC',
+    <timestamptz>)` trả về đúng instant đó dạng naive-UTC — biểu thức giữ
+    nguyên kết quả nên không cần sửa truy vấn theo kiểu cột.
     """
-    # Giả định: `start_time`/`created_at` tuy là naive nhưng chứa giờ UTC, không
+    # Giả định: `start_time`/`created_at` khi còn naive thì chứa giờ UTC, không
     # phải giờ local — nếu không, mốc sort này sẽ lệch so với `getDetectionSortTs`.
     return func.coalesce(
         Detection.berth_in_time,
@@ -127,10 +132,13 @@ def _period_window_filters(start: datetime, end: datetime) -> list:
     """Lọc chung của ba widget theo kỳ: chưa xoá mềm + `created_at` ∈ [start, end).
 
     Cố ý dùng ĐÚNG cách `/dashboard/summary` đang làm: lọc trên `created_at`,
-    nửa khoảng mở, so trực tiếp với biên aware. `created_at` là `timestamp without
-    time zone` chứa giờ UTC (xem `_berth_time_expr`) nên phép so này dựa vào
-    TimeZone của session DB — đúng bằng UTC ở deployment hiện tại, và giữ nguyên
-    con số của summary thay vì tự ý đổi ngữ nghĩa.
+    nửa khoảng mở, so trực tiếp với biên aware.
+
+    `created_at` có thể còn là `timestamp without time zone` chứa giờ UTC (DB
+    chưa chạy migration Task 01). Khi đó PostgreSQL ép naive → timestamptz theo
+    TimeZone của session; `app/db/session.py` ghim TimeZone = UTC cho mọi
+    connection nên phép so luôn đúng, không phụ thuộc cấu hình server. Sau
+    migration cột đã là timestamptz nên không còn quy đổi ngầm.
     """
     return [
         Detection.deleted_at.is_(None),
@@ -382,16 +390,22 @@ class DetectionRepository:
         """Biểu đồ "24 giờ qua" — MỘT truy vấn, trả đủ `hours` bucket tăng dần.
 
         Port `buildDetectionsByHourLast24h` của client: mốc thời gian là
-        `coalesce(start_time, created_at)` (hai cột naive chứa giờ UTC), bucket là
-        giờ đã cắt phút. Cửa sổ CỐ ĐỊNH `hours` giờ gần nhất, khung giờ hiện tại là
-        bucket cuối (có thể mới chạy được một phần) — đúng như biểu đồ mô tả và
-        KHÔNG phụ thuộc `period`.
+        `coalesce(start_time, created_at)` (naive chứa giờ UTC khi DB chưa
+        migrate Task 01, timestamptz sau migration), bucket là giờ đã cắt phút.
+        Cửa sổ CỐ ĐỊNH `hours` giờ gần nhất, khung giờ hiện tại là bucket cuối
+        (có thể mới chạy được một phần) — đúng như biểu đồ mô tả và KHÔNG phụ
+        thuộc `period`.
 
         Trục giờ sinh bằng `generate_series` rồi LEFT JOIN nên bucket rỗng vẫn có
         mặt với `count = 0`: biểu đồ luôn đủ 24 điểm, repository không phải đệm 0 ở
         Python. Trục để dạng naive-UTC và `date_trunc` cũng trên giá trị naive của
         row, nên phép so không kéo TimeZone của session DB vào; cột `hour` trả ra
         được gắn `timezone('UTC', ...)` để client nhận ISO-8601 UTC.
+
+        Sau migration cột là timestamptz: `date_trunc('hour', timestamptz)` trả
+        timestamptz, so với trục naive vẫn đúng nhờ TimeZone session = UTC (ghim
+        ở `app/db/session.py`), và `timezone('UTC', ...)` ở cột `hour` giữ nguyên
+        chuỗi ISO-8601 UTC mà client đang nhận.
 
         Row đã xoá mềm bị loại. Row có cả `start_time` lẫn `created_at` NULL không
         khớp bucket nào nên không được đếm (client cũng bỏ qua row đó).
@@ -570,6 +584,11 @@ class DetectionRepository:
             'berth_out_time',
             'confidence',
         }
+        # Aware values written to legacy TIMESTAMP columns must retain UTC wall
+        # time, regardless of the database user's default timezone. Transaction
+        # local only; also works when these columns are migrated to TIMESTAMPTZ.
+        if db.get_bind().dialect.name == 'postgresql':
+            db.execute(text("SET LOCAL TIME ZONE 'UTC'"))
         for key, value in data.items():
             if key in editable:
                 setattr(db_obj, key, value)

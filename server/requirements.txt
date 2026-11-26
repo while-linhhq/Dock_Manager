@@ -1,6 +1,8 @@
 fastapi
 uvicorn[standard]
 wsproto>=1.2.0
+sqlalchemy
+psycopg[binary]>=3.1
 # SQLAlchemy 2.1 đổi driver mặc định của `postgresql://` sang psycopg 3 (image chỉ có
 # psycopg2-binary) -> pin dưới 2.1 cho tới khi thêm psycopg[binary].
 sqlalchemy>=2.0.36,<2.1
@@ -29,7 +31,7 @@ safetensors>=0.4.0
 #   rồi   : make engines          (build engine cho đúng GPU của máy)
 # Thiếu TensorRT thì app tự chạy .pt — không lỗi.
 pillow>=10.0.0
-protobuf==3.20.2
+protobuf>=6.31.1
 shapely==2.1.2
 scikit-image==0.26.0
 pyclipper==1.4.0

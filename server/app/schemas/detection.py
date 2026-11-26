@@ -1,11 +1,19 @@
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, field_validator
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from app.schemas.vessel import VesselRead
+from app.utils.datetimes import as_utc
 
 
-class DetectionBase(BaseModel):
+class DetectionTimes(BaseModel):
+    @field_validator('start_time', 'end_time', 'berth_in_time', 'berth_out_time', check_fields=False)
+    @classmethod
+    def normalize_time(cls, value):
+        return as_utc(value)
+
+
+class DetectionBase(DetectionTimes):
     track_id: Optional[str] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
@@ -24,7 +32,7 @@ class DetectionCreate(DetectionBase):
     vessel_id: Optional[int] = None
 
 
-class DetectionUpdate(BaseModel):
+class DetectionUpdate(DetectionTimes):
     """Sửa thông tin detection. Chỉ field gửi lên (exclude_unset) mới được ghi."""
     vessel_id: Optional[int] = None
     track_id: Optional[str] = None

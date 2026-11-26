@@ -18,7 +18,7 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: pgsty/silo:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -37,7 +37,7 @@ services:
       retries: 10
 
   minio-init:
-    image: minio/mc:latest
+    image: pgsty/silo:latest
     restart: "no"
     env_file: .env
     depends_on:
@@ -108,8 +108,8 @@ services:
       qdrant:
         condition: service_healthy
     volumes:
-      - ./app:/app/app           # hot-reload code without rebuilding image
-      - ./runs:/app/runs       # YOLO/OCR detection output
+      - ./app:/app/app # hot-reload code without rebuilding image
+      - ./runs:/app/runs # YOLO/OCR detection output
       - ./exports:/app/exports # Excel exports
       # Hardware fingerprint (license instance id) — read-only, machine.py đọc /host/...
       - /etc/machine-id:/host/etc/machine-id:ro

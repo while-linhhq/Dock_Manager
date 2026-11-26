@@ -13,7 +13,7 @@ import { OverBerthLimitBadge } from '../../../components/Badge/OverBerthLimitBad
 import { DataPagination } from '../../../components/DataPagination';
 import { cn } from '../../../utils/cn';
 import { dt } from '../../../utils/data-table-classes';
-import { formatDateTimeVN } from '../../../utils/date-time';
+import { formatDateTimeVN, apiToVietnamInput as isoToLocalInput, vietnamInputToApi as localInputToIso } from '../../../utils/date-time';
 import {
   formatBerthDuration,
   getBerthDurationRange,
@@ -255,31 +255,6 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
     }
   };
 
-  // ISO (UTC) -> giá trị input datetime-local (giờ địa phương, không có 'Z').
-  const isoToLocalInput = (iso?: string | null): string => {
-    if (!iso) {
-      return '';
-    }
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) {
-      return '';
-    }
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-
-  // input datetime-local (giờ địa phương) -> ISO UTC để gửi backend.
-  const localInputToIso = (value: string): string | null => {
-    const v = (value || '').trim();
-    if (!v) {
-      return null;
-    }
-    const d = new Date(v);
-    if (Number.isNaN(d.getTime())) {
-      return null;
-    }
-    return d.toISOString();
-  };
 
   const openEditModal = (det: DetectionRead) => {
     setEditError(null);
@@ -309,11 +284,21 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
 
     const payload: DetectionUpdate = {
       vessel_id: editForm.vessel_id ? Number(editForm.vessel_id) : null,
-      start_time: localInputToIso(editForm.start_time),
-      end_time: localInputToIso(editForm.end_time),
-      berth_in_time: localInputToIso(editForm.berth_in_time),
-      berth_out_time: localInputToIso(editForm.berth_out_time),
     };
+    // Do not send untouched times: preserve original microseconds and avoid
+    // overwriting concurrent updates with a rounded form representation.
+    try {
+      for (const key of ['start_time', 'end_time', 'berth_in_time', 'berth_out_time'] as const) {
+        const value = editForm[key];
+        const canonical = value.length === 16 ? `${value}:00` : value;
+        if (canonical !== isoToLocalInput(editDet[key])) {
+          payload[key] = localInputToIso(value);
+        }
+      }
+    } catch {
+      setEditError('Thời gian không hợp lệ (giờ Việt Nam).');
+      return;
+    }
 
     const confTrim = editForm.confidence.trim();
     if (confTrim) {
@@ -326,9 +311,9 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
     }
 
     if (
-      payload.start_time &&
-      payload.end_time &&
-      new Date(payload.end_time).getTime() < new Date(payload.start_time).getTime()
+      editForm.start_time &&
+      editForm.end_time &&
+      localInputToIso(editForm.end_time)! < localInputToIso(editForm.start_time)!
     ) {
       setEditError('Thời gian kết thúc phải sau thời gian bắt đầu.');
       return;
@@ -677,11 +662,13 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                 </select>
               </label>
 
+              <p className="text-xs text-gray-500">Thời gian theo giờ Việt Nam (UTC+7).</p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="block text-[11px] font-bold uppercase tracking-widest text-gray-600 dark:text-gray-300">
                   Bắt đầu
                   <input
                     type="datetime-local"
+                    step="1"
                     value={editForm.start_time}
                     onChange={(e) => setEditForm((f) => ({ ...f, start_time: e.target.value }))}
                     className={cn(filterControlClass, 'mt-1 normal-case')}
@@ -691,6 +678,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                   Kết thúc
                   <input
                     type="datetime-local"
+                    step="1"
                     value={editForm.end_time}
                     onChange={(e) => setEditForm((f) => ({ ...f, end_time: e.target.value }))}
                     className={cn(filterControlClass, 'mt-1 normal-case')}
@@ -700,6 +688,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                   Vào vùng (berth in)
                   <input
                     type="datetime-local"
+                    step="1"
                     value={editForm.berth_in_time}
                     onChange={(e) => setEditForm((f) => ({ ...f, berth_in_time: e.target.value }))}
                     className={cn(filterControlClass, 'mt-1 normal-case')}
@@ -709,6 +698,7 @@ export const PortDetectionsSection: React.FC<PortDetectionsSectionProps> = ({
                   Rời vùng (berth out)
                   <input
                     type="datetime-local"
+                    step="1"
                     value={editForm.berth_out_time}
                     onChange={(e) => setEditForm((f) => ({ ...f, berth_out_time: e.target.value }))}
                     className={cn(filterControlClass, 'mt-1 normal-case')}
